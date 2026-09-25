@@ -35,6 +35,28 @@ def generate_launch_description():
             }],
         ),
 
+        # ROI 叠加节点：订阅图像并画出 ROI 区域，弹窗显示（调试用）
+        Node(
+            package='identify_pack',
+            executable='roi_overlay_node',
+            name='roi_overlay_node',
+            output='screen',
+            parameters=[{
+                'image_topic': image_topic,
+            }],
+        ),
+
+        # 霍夫圆检测节点：识别圆形物块（初步），发布 circle_detect
+        Node(
+            package='identify_pack',
+            executable='color_identify_node',
+            name='color_identify_node',
+            output='screen',
+            parameters=[{
+                'image_topic': image_topic,
+            }],
+        ),
+
         # QR 解码节点：订阅图像话题，发布 QR_Decode
         Node(
             package='identify_pack',

@@ -7,7 +7,7 @@ package_name = 'identify_pack'
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name, package_name + '.vision_identify', package_name + '.serial'],
+    packages=[package_name, package_name + '.vision_identify', package_name + '.serial', package_name + '.scripts'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -23,8 +23,10 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_node = identify_pack.vision_identify.camera_node:main',
+            'color_identify_node = identify_pack.vision_identify.color_identify:main',
             'qr_decode_node = identify_pack.vision_identify.qr_decode_node:main',
             'qr_serial_bridge = identify_pack.serial.qr_serial_bridge:main',
+            'roi_overlay_node = identify_pack.scripts.roi_overlay_node:main',
         ],
     },
 )
