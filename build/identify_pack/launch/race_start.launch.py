@@ -1,1 +1,0 @@
-/home/lulu/gcs/natsiie_gcs/src/identify_pack/launch/race_start.launch.py
