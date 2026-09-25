@@ -1,0 +1,9 @@
+# Colcon (ROS 2) build artifacts
+build/
+install/
+log/
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
