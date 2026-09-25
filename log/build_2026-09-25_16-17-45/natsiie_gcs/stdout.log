@@ -1,0 +1,58 @@
+running egg_info
+creating ../../build/natsiie_gcs/natsiie_gcs.egg-info
+writing ../../build/natsiie_gcs/natsiie_gcs.egg-info/PKG-INFO
+writing dependency_links to ../../build/natsiie_gcs/natsiie_gcs.egg-info/dependency_links.txt
+writing entry points to ../../build/natsiie_gcs/natsiie_gcs.egg-info/entry_points.txt
+writing requirements to ../../build/natsiie_gcs/natsiie_gcs.egg-info/requires.txt
+writing top-level names to ../../build/natsiie_gcs/natsiie_gcs.egg-info/top_level.txt
+writing manifest file '../../build/natsiie_gcs/natsiie_gcs.egg-info/SOURCES.txt'
+reading manifest file '../../build/natsiie_gcs/natsiie_gcs.egg-info/SOURCES.txt'
+writing manifest file '../../build/natsiie_gcs/natsiie_gcs.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build
+creating /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib
+creating /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs
+copying natsiie_gcs/__init__.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs
+creating /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify
+copying natsiie_gcs/vision_identify/__init__.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify
+copying natsiie_gcs/vision_identify/qr_decode_node.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify
+copying natsiie_gcs/vision_identify/QR_Code_identify.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify
+copying natsiie_gcs/vision_identify/color_identify.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify
+creating /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/serial
+copying natsiie_gcs/serial/__init__.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/serial
+copying natsiie_gcs/serial/qr_serial_bridge.py -> /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/serial
+running install
+running install_lib
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/serial
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/serial/__init__.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/serial
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/serial/qr_serial_bridge.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/serial
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/__init__.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify/__init__.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify/qr_decode_node.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify/QR_Code_identify.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify
+copying /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build/lib/natsiie_gcs/vision_identify/color_identify.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/serial/__init__.py to __init__.cpython-310.pyc
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/serial/qr_serial_bridge.py to qr_serial_bridge.cpython-310.pyc
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/__init__.py to __init__.cpython-310.pyc
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify/__init__.py to __init__.cpython-310.pyc
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify/qr_decode_node.py to qr_decode_node.cpython-310.pyc
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify/QR_Code_identify.py to QR_Code_identify.cpython-310.pyc
+byte-compiling /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs/vision_identify/color_identify.py to color_identify.cpython-310.pyc
+running install_data
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/ament_index
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/ament_index/resource_index
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/ament_index/resource_index/packages
+copying resource/natsiie_gcs -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/ament_index/resource_index/packages
+copying package.xml -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/natsiie_gcs
+creating /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/natsiie_gcs/launch
+copying launch/race_start.launch.py -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/natsiie_gcs/launch
+copying natsiie_gcs/serial/serial_config.json -> /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/share/natsiie_gcs
+running install_egg_info
+Copying ../../build/natsiie_gcs/natsiie_gcs.egg-info to /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs-0.0.0-py3.10.egg-info
+running install_scripts
+Installing qr_decode_node script to /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/natsiie_gcs
+Installing qr_serial_bridge script to /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/natsiie_gcs
+writing list of installed files to '/home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/install.log'

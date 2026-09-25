@@ -1,0 +1,30 @@
+import os
+from glob import glob
+from setuptools import setup
+
+package_name = 'identify_pack'
+
+setup(
+    name=package_name,
+    version='0.0.0',
+    packages=[package_name, package_name + '.vision_identify', package_name + '.serial'],
+    data_files=[
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name), glob('identify_pack/serial/serial_config.json')),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='lulu',
+    maintainer_email='lulu@todo.todo',
+    description='GCS QR decode and serial bridge nodes',
+    license='Apache-2.0',
+    entry_points={
+        'console_scripts': [
+            'camera_node = identify_pack.vision_identify.camera_node:main',
+            'qr_decode_node = identify_pack.vision_identify.qr_decode_node:main',
+            'qr_serial_bridge = identify_pack.serial.qr_serial_bridge:main',
+        ],
+    },
+)

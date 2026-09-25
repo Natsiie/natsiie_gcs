@@ -1,0 +1,5 @@
+[console_scripts]
+camera_node = identify_pack.vision_identify.camera_node:main
+qr_decode_node = identify_pack.vision_identify.qr_decode_node:main
+qr_serial_bridge = identify_pack.serial.qr_serial_bridge:main
+

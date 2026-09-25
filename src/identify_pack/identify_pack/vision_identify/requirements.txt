@@ -1,0 +1,4 @@
+opencv-contrib-python<5
+numpy<2
+pyzbar
+pyserial

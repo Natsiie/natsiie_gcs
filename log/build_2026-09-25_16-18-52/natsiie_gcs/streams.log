@@ -1,0 +1,22 @@
+[0.363s] Invoking command in '/home/lulu/gcs/natsiie_gcs/src/natsiie_gcs': PYTHONPATH=/home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/natsiie_gcs build --build-base /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build install --record /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/install.log --single-version-externally-managed install_data
+[0.483s] running egg_info
+[0.483s] writing ../../build/natsiie_gcs/natsiie_gcs.egg-info/PKG-INFO
+[0.483s] writing dependency_links to ../../build/natsiie_gcs/natsiie_gcs.egg-info/dependency_links.txt
+[0.483s] writing entry points to ../../build/natsiie_gcs/natsiie_gcs.egg-info/entry_points.txt
+[0.483s] writing requirements to ../../build/natsiie_gcs/natsiie_gcs.egg-info/requires.txt
+[0.483s] writing top-level names to ../../build/natsiie_gcs/natsiie_gcs.egg-info/top_level.txt
+[0.484s] reading manifest file '../../build/natsiie_gcs/natsiie_gcs.egg-info/SOURCES.txt'
+[0.484s] writing manifest file '../../build/natsiie_gcs/natsiie_gcs.egg-info/SOURCES.txt'
+[0.484s] running build
+[0.484s] running build_py
+[0.485s] running install
+[0.485s] running install_lib
+[0.485s] running install_data
+[0.485s] running install_egg_info
+[0.486s] removing '/home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs-0.0.0-py3.10.egg-info' (and everything under it)
+[0.486s] Copying ../../build/natsiie_gcs/natsiie_gcs.egg-info to /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages/natsiie_gcs-0.0.0-py3.10.egg-info
+[0.486s] running install_scripts
+[0.495s] Installing qr_decode_node script to /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/natsiie_gcs
+[0.496s] Installing qr_serial_bridge script to /home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/natsiie_gcs
+[0.496s] writing list of installed files to '/home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/install.log'
+[0.507s] Invoked command in '/home/lulu/gcs/natsiie_gcs/src/natsiie_gcs' returned '0': PYTHONPATH=/home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/lulu/gcs/natsiie_gcs/install/natsiie_gcs/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/natsiie_gcs build --build-base /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/build install --record /home/lulu/gcs/natsiie_gcs/build/natsiie_gcs/install.log --single-version-externally-managed install_data

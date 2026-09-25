@@ -1,0 +1,23 @@
+[0.377s] Invoking command in '/home/lulu/gcs/natsiie_gcs/build/identify_pack': PYTHONPATH=/home/lulu/gcs/natsiie_gcs/build/identify_pack/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/lulu/gcs/natsiie_gcs/install/identify_pack/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/lulu/gcs/natsiie_gcs/build/identify_pack/build --no-deps symlink_data --force
+[0.535s] running develop
+[0.625s] running egg_info
+[0.626s] writing identify_pack.egg-info/PKG-INFO
+[0.626s] writing dependency_links to identify_pack.egg-info/dependency_links.txt
+[0.626s] writing entry points to identify_pack.egg-info/entry_points.txt
+[0.626s] writing requirements to identify_pack.egg-info/requires.txt
+[0.626s] writing top-level names to identify_pack.egg-info/top_level.txt
+[0.627s] reading manifest file 'identify_pack.egg-info/SOURCES.txt'
+[0.627s] writing manifest file 'identify_pack.egg-info/SOURCES.txt'
+[0.641s] running build_ext
+[0.641s] Creating /home/lulu/gcs/natsiie_gcs/install/identify_pack/lib/python3.10/site-packages/identify-pack.egg-link (link to .)
+[0.641s] Installing camera_node script to /home/lulu/gcs/natsiie_gcs/install/identify_pack/lib/identify_pack
+[0.641s] Installing qr_decode_node script to /home/lulu/gcs/natsiie_gcs/install/identify_pack/lib/identify_pack
+[0.641s] Installing qr_serial_bridge script to /home/lulu/gcs/natsiie_gcs/install/identify_pack/lib/identify_pack
+[0.641s] 
+[0.641s] Installed /home/lulu/gcs/natsiie_gcs/build/identify_pack
+[0.641s] running symlink_data
+[0.641s] symbolically linking /home/lulu/gcs/natsiie_gcs/build/identify_pack/resource/identify_pack -> /home/lulu/gcs/natsiie_gcs/install/identify_pack/share/ament_index/resource_index/packages
+[0.641s] symbolically linking /home/lulu/gcs/natsiie_gcs/build/identify_pack/package.xml -> /home/lulu/gcs/natsiie_gcs/install/identify_pack/share/identify_pack
+[0.641s] symbolically linking /home/lulu/gcs/natsiie_gcs/build/identify_pack/launch/race_start.launch.py -> /home/lulu/gcs/natsiie_gcs/install/identify_pack/share/identify_pack/launch
+[0.642s] symbolically linking /home/lulu/gcs/natsiie_gcs/build/identify_pack/identify_pack/serial/serial_config.json -> /home/lulu/gcs/natsiie_gcs/install/identify_pack/share/identify_pack
+[0.660s] Invoked command in '/home/lulu/gcs/natsiie_gcs/build/identify_pack' returned '0': PYTHONPATH=/home/lulu/gcs/natsiie_gcs/build/identify_pack/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/lulu/gcs/natsiie_gcs/install/identify_pack/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/lulu/gcs/natsiie_gcs/build/identify_pack/build --no-deps symlink_data --force
