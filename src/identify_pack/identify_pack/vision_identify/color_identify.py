@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ROS2 节点：订阅图像话题，做初步的霍夫圆检测，输出圆心 + 半径。
-
+霍夫圆检测
 检测思路提取自 zongchengxu20250724chusai.py 的 run_wukuaiyuanxin_* 函数：
     ① 灰度化  ->  ② 高斯模糊  ->  ③ HoughCircles(HOUGH_GRADIENT)  ->  ④ 圆心 + 半径
 """
