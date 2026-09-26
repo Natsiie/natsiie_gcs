@@ -23,7 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_node = identify_pack.vision_identify.camera_node:main',
-            'color_identify_node = identify_pack.vision_identify.color_identify:main',
+            'circle_detect_node = identify_pack.vision_identify.circle_detect:main',
             'qr_decode_node = identify_pack.vision_identify.qr_decode_node:main',
             'qr_serial_bridge = identify_pack.serial.qr_serial_bridge:main',
             'roi_overlay_node = identify_pack.scripts.roi_overlay_node:main',

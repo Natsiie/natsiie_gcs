@@ -17,9 +17,9 @@ import cv2
 import numpy as np
 
 
-class ColorIdentifyNode(Node):
+class CircleDetectNode(Node):
     def __init__(self):
-        super().__init__('color_identify_node')
+        super().__init__('circle_detect_node')
 
         # 圆检测参数
         self.declare_parameter('image_topic', '/camera/image_raw')
@@ -235,7 +235,7 @@ class ColorIdentifyNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = ColorIdentifyNode()
+    node = CircleDetectNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

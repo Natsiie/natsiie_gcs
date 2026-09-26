@@ -69,8 +69,8 @@ def generate_launch_description():
         # 霍夫圆检测节点：订阅副相机
         Node(
             package='identify_pack',
-            executable='color_identify_node',
-            name='color_identify_node',
+            executable='circle_detect_node',
+            name='circle_detect_node',
             output='screen',
             parameters=[{
                 'image_topic': SECONDARY_TOPIC,
