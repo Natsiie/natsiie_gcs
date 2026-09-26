@@ -77,16 +77,16 @@ def generate_launch_description():
             }],
         ),
 
-        # ROI 叠加节点：订阅副相机（调试用）
-        Node(
-            package='identify_pack',
-            executable='roi_overlay_node',
-            name='roi_overlay_node',
-            output='screen',
-            parameters=[{
-                'image_topic': SECONDARY_TOPIC,
-            }],
-        ),
+        # # ROI 叠加节点：订阅副相机（调试用）
+        # Node(
+        #     package='identify_pack',
+        #     executable='roi_overlay_node',
+        #     name='roi_overlay_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #     }],
+        # ),
 
         # 串口桥接节点：串口参数由 serial_config.json 提供
         Node(
