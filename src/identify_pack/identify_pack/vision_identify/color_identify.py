@@ -20,12 +20,13 @@ class ColorIdentifyNode(Node):
 
         # 可调参数（默认值与原始文件的 circle_params 一致）
         self.declare_parameter('image_topic', '/camera/image_raw')
-        self.declare_parameter('param1', 25)      # HoughCircles 内部 Canny 高阈值
+        self.declare_parameter('param1', 80)      # HoughCircles 内部 Canny 高阈值
         self.declare_parameter('param2', 25)      # 圆心累加器阈值
         self.declare_parameter('min_radius', 35)  # 最小半径
         self.declare_parameter('max_radius', 45)  # 最大半径
         self.declare_parameter('min_dist', 20)    # 圆心最小间距
         self.declare_parameter('show', True)      # 是否弹窗显示
+        self.declare_parameter('show_edges', True)  # 是否显示 Canny 边缘（调试）
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.param1 = self.get_parameter('param1').get_parameter_value().integer_value
@@ -34,6 +35,7 @@ class ColorIdentifyNode(Node):
         self.max_radius = self.get_parameter('max_radius').get_parameter_value().integer_value
         self.min_dist = self.get_parameter('min_dist').get_parameter_value().integer_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
+        self.show_edges = self.get_parameter('show_edges').get_parameter_value().bool_value
 
         self.br = CvBridge()
         self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
@@ -51,6 +53,10 @@ class ColorIdentifyNode(Node):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # ② 高斯模糊（去噪，提升霍夫圆稳定性）
         gray = cv2.GaussianBlur(gray, (9, 9), 2, 2)
+        # ②.5 调试：显式 Canny 边缘（复现 HoughCircles 内部边缘检测，高阈值=param1，低阈值=param1/2）
+        if self.show_edges:
+            edges = cv2.Canny(gray, max(int(self.param1 / 2), 1), self.param1)
+            cv2.imshow('edges (Canny)', edges)
         # ③ 霍夫圆检测
         circles = cv2.HoughCircles(
             gray, cv2.HOUGH_GRADIENT, 1, self.min_dist,
