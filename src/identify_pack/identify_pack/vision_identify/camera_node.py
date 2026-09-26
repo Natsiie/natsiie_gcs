@@ -17,12 +17,14 @@ class CameraNode(Node):
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('fps', 30)
+        self.declare_parameter('fourcc', 'MJPG')  # 像素格式：MJPG 压缩，避免 YUYV 高分辨率卡顿
 
         device = self.get_parameter('device').get_parameter_value().string_value
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         width = self.get_parameter('width').get_parameter_value().integer_value
         height = self.get_parameter('height').get_parameter_value().integer_value
         fps = self.get_parameter('fps').get_parameter_value().integer_value
+        fourcc = self.get_parameter('fourcc').get_parameter_value().string_value
 
         self.cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         if not self.cap.isOpened():
@@ -35,10 +37,13 @@ class CameraNode(Node):
             self.cap = None
             self.get_logger().error(f'无法打开摄像头: {device}，请检查 camera_device 参数')
         else:
+            # 先设像素格式（MJPG 压缩），否则部分相机高分辨率下 YUYV 会读不到帧/卡第一帧
+            if fourcc and len(fourcc) == 4:
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             self.cap.set(cv2.CAP_PROP_FPS, fps)
-            self.get_logger().info(f'Publishing {device} -> {image_topic} @ {fps}fps')
+            self.get_logger().info(f'Publishing {device} -> {image_topic} @ {fps}fps fourcc={fourcc}')
 
         self.br = CvBridge()
         self.pub = self.create_publisher(Image, image_topic, 10)

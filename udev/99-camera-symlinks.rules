@@ -1,0 +1,14 @@
+# 用 USB 序列号绑定固定相机名，重启后 /dev/videoN 变化也不影响
+# 安装：
+#   sudo cp 本文件 /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+
+# HJ USB 2.0 Camera → /dev/camera_front
+SUBSYSTEM=="video4linux", ATTRS{serial}=="SN0001", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_front"
+
+# USB Camera → /dev/camera_upper（serial "0001" 太通用，改用 VID:PID）
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="1e45", ATTRS{idProduct}=="2050", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_upper"
+
+# ASUS FHD webcam（接口 0 = 彩色采集；接口 2 是 IR/灰度）→ /dev/camera_asus
+SUBSYSTEM=="video4linux", ATTRS{serial}=="200901010001", ATTRS{bInterfaceNumber}=="00", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_asus"
