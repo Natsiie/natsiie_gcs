@@ -27,7 +27,8 @@ class ColorIdentifyNode(Node):
         self.declare_parameter('max_radius', 60)     # 最大半径（放宽，覆盖外环）
         self.declare_parameter('min_dist', 20)       # 圆心最小间距
         self.declare_parameter('center_dist', 10)    # 同心圆分组阈值（圆心距离 < 该值算同一组）
-        self.declare_parameter('close_kernel', 7)    # 形态学闭运算核大小（焊虚线间隙，0=关闭）
+        self.declare_parameter('close_kernel', 7)    # 形态学核大小（焊虚线间隙，0=关闭）
+        self.declare_parameter('morph_mode', 'open')  # 'open'=深色线(默认)，'close'=浅色线
         self.declare_parameter('show', True)         # 是否弹窗显示
         self.declare_parameter('show_edges', True)   # 是否显示 Canny 边缘（调试）
 
@@ -39,6 +40,7 @@ class ColorIdentifyNode(Node):
         self.min_dist = self.get_parameter('min_dist').get_parameter_value().integer_value
         self.center_dist = self.get_parameter('center_dist').get_parameter_value().integer_value
         self.close_kernel = self.get_parameter('close_kernel').get_parameter_value().integer_value
+        self.morph_mode = self.get_parameter('morph_mode').get_parameter_value().string_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
         self.show_edges = self.get_parameter('show_edges').get_parameter_value().bool_value
 
@@ -58,14 +60,16 @@ class ColorIdentifyNode(Node):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # ② 高斯模糊（去噪，提升霍夫圆稳定性）
         gray = cv2.GaussianBlur(gray, (9, 9), 2, 2)
-        # ②.5 形态学闭运算：把虚线的间隙"焊"上（核要大于虚线间隙、小于实虚线间距）
+        # ②.5 形态学：把虚线的间隙"焊"上（核要大于虚线间隙、小于实虚线间距）
+        # 深色线用开运算(OPEN)连接；浅色线用闭运算(CLOSE)
         if self.close_kernel > 0:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.close_kernel, self.close_kernel))
-            gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, k)
-        # ②.6 调试：显式 Canny 边缘（闭运算之后，看虚线是否被连上）
+            op = cv2.MORPH_OPEN if self.morph_mode == 'open' else cv2.MORPH_CLOSE
+            gray = cv2.morphologyEx(gray, op, k)
+        # ②.6 调试：显式 Canny 边缘（形态学之后，看虚线是否被连上）
         if self.show_edges:
             edges = cv2.Canny(gray, max(int(self.param1 / 2), 1), self.param1)
-            cv2.imshow('edges (Canny, 闭运算后)', edges)
+            cv2.imshow('edges (Canny)', edges)
         # ③ 霍夫圆检测
         circles = cv2.HoughCircles(
             gray, cv2.HOUGH_GRADIENT, 1, self.min_dist,
