@@ -16,7 +16,7 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
-from identify_pack.vision_identify.color_detect import detect_color, build_circle_mask, COLOR_DISPLAY
+from identify_pack.vision_identify.color_detect import color_masks, build_circle_mask
 
 
 class CircleDetectNode(Node):
@@ -38,6 +38,7 @@ class CircleDetectNode(Node):
         self.declare_parameter('max_miss', 10)        # 目标失配多少帧后移除
         self.declare_parameter('min_hits', 3)         # 连续检测多少帧才确认目标（防闪烁）
         self.declare_parameter('min_support', 0.6)    # 圆周边缘覆盖率阈值（排除圆弧假圆）
+        self.declare_parameter('red_ratio', 0.5)      # 色块判红：红色面积占圆面积比例阈值
         # 数字识别参数
         self.declare_parameter('crop_fraction', 0.75)  # 裁剪圆内中心区域的比例(0~1)
         self.declare_parameter('digit_size', 40)       # 数字归一化尺寸
@@ -61,6 +62,7 @@ class CircleDetectNode(Node):
         self.max_miss = self.get_parameter('max_miss').get_parameter_value().integer_value
         self.min_hits = self.get_parameter('min_hits').get_parameter_value().integer_value
         self.min_support = self.get_parameter('min_support').get_parameter_value().double_value
+        self.red_ratio = self.get_parameter('red_ratio').get_parameter_value().double_value
         self.crop_fraction = self.get_parameter('crop_fraction').get_parameter_value().double_value
         self.digit_size = self.get_parameter('digit_size').get_parameter_value().integer_value
         self.min_score = self.get_parameter('min_score').get_parameter_value().double_value
@@ -293,9 +295,10 @@ class CircleDetectNode(Node):
             out_order.data = '/'.join(order_parts)
             self.pub_order.publish(out_order)
 
-        # ⑦.5 色块：颜色识别（单圆组）
+        # ⑦.5 色块：红色识别（暂只识别红色）
         hsv = cv2.cvtColor(img_clean, cv2.COLOR_BGR2HSV)
-        color_parts = []
+        red_mask = color_masks(hsv).get('red')
+        red_parts = []
         for g in color_groups:
             cx = float(np.mean(g['xs']))
             cy = float(np.mean(g['ys']))
@@ -303,19 +306,25 @@ class CircleDetectNode(Node):
             center = (int(round(cx)), int(round(cy)))
             radius = int(round(r))
             cmask = build_circle_mask(gray.shape, center, radius)
-            color, area, _ = detect_color(hsv, cmask)
-            color_parts.append(color)
-            self.get_logger().info(f'色块({center}, r={radius}) -> {color} (面积 {area})',
-                                   throttle_duration_sec=1.0)
+            red_area = int(cv2.countNonZero(cv2.bitwise_and(red_mask, cmask)))
+            circle_area = max(1, int(cv2.countNonZero(cmask)))
+            ratio = red_area / circle_area
+            is_red = ratio >= self.red_ratio
+            self.get_logger().info(
+                f'色块({center}, r={radius}) 红占比 {ratio:.2f} -> {"红色" if is_red else "非红"}',
+                throttle_duration_sec=1.0)
             if self.show:
-                cv2.circle(img, center, radius, (255, 255, 0), 2)
-                cv2.putText(img, color, (center[0] - 20, center[1] - radius - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_DISPLAY.get(color, (255, 255, 255)), 2)
+                c = (0, 0, 255) if is_red else (255, 255, 0)  # 红=红圈，非红=黄圈
+                cv2.circle(img, center, radius, c, 2)
+                cv2.putText(img, 'red' if is_red else '-', (center[0] - 20, center[1] - radius - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
+            if is_red:
+                red_parts.append(f'{center[0]},{center[1]}')
 
-        # 发布色块颜色到 /Color（用 / 连接）
-        if color_parts:
+        # 发布红色色块位置到 /Color（多个用 / 连接）
+        if red_parts:
             out_color = String()
-            out_color.data = '/'.join(color_parts)
+            out_color.data = '/'.join(red_parts)
             self.pub_color.publish(out_color)
 
         # ⑧ 统一显示
