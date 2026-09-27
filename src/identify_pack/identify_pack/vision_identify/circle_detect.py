@@ -24,7 +24,7 @@ class CircleDetectNode(Node):
         # 圆检测参数
         self.declare_parameter('image_topic', '/camera/image_raw')
         self.declare_parameter('param1', 80)         # HoughCircles 内部 Canny 高阈值
-        self.declare_parameter('param2', 50)         # 圆心累加器阈值
+        self.declare_parameter('param2', 36)         # 圆心累加器阈值
         self.declare_parameter('min_radius', 15)     # 最小半径
         self.declare_parameter('max_radius', 40)     # 最大半径
         self.declare_parameter('min_dist', 20)       # 圆心最小间距
@@ -35,6 +35,7 @@ class CircleDetectNode(Node):
         self.declare_parameter('match_dist', 20)      # 多目标匹配阈值（< 相邻目标间距）
         self.declare_parameter('max_miss', 10)        # 目标失配多少帧后移除
         self.declare_parameter('min_hits', 3)         # 连续检测多少帧才确认目标（防闪烁）
+        self.declare_parameter('min_support', 0.6)    # 圆周边缘覆盖率阈值（排除圆弧假圆）
         # 数字识别参数
         self.declare_parameter('crop_fraction', 0.75)  # 裁剪圆内中心区域的比例(0~1)
         self.declare_parameter('digit_size', 40)       # 数字归一化尺寸
@@ -57,6 +58,7 @@ class CircleDetectNode(Node):
         self.match_dist = self.get_parameter('match_dist').get_parameter_value().integer_value
         self.max_miss = self.get_parameter('max_miss').get_parameter_value().integer_value
         self.min_hits = self.get_parameter('min_hits').get_parameter_value().integer_value
+        self.min_support = self.get_parameter('min_support').get_parameter_value().double_value
         self.crop_fraction = self.get_parameter('crop_fraction').get_parameter_value().double_value
         self.digit_size = self.get_parameter('digit_size').get_parameter_value().integer_value
         self.min_score = self.get_parameter('min_score').get_parameter_value().double_value
@@ -150,6 +152,22 @@ class CircleDetectNode(Node):
                 t['hits'] = 0
         self.targets = [t for t in self.targets if t['miss'] <= self.max_miss]
 
+    def _edge_support(self, edge_map, cx, cy, r):
+        """圆周边缘覆盖率：完整圆≈1.0，圆弧 <1.0。采样 36 点看 3x3 邻域是否有边缘。"""
+        n = 36
+        h, w = edge_map.shape
+        cnt = 0
+        for k in range(n):
+            th = 2.0 * np.pi * k / n
+            x = int(round(cx + r * np.cos(th)))
+            y = int(round(cy + r * np.sin(th)))
+            if 0 <= x < w and 0 <= y < h:
+                x0, x1 = max(0, x - 1), min(w, x + 2)
+                y0, y1 = max(0, y - 1), min(h, y + 2)
+                if np.any(edge_map[y0:y1, x0:x1] > 0):
+                    cnt += 1
+        return cnt / n
+
     def image_cb(self, msg: Image):
         try:
             img = self.br.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -166,15 +184,21 @@ class CircleDetectNode(Node):
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.close_kernel, self.close_kernel))
             op = cv2.MORPH_OPEN if self.morph_mode == 'open' else cv2.MORPH_CLOSE
             gray = cv2.morphologyEx(gray, op, k)
-        edges = None
-        if self.show_edges:
-            edges = cv2.Canny(gray, max(int(self.param1 / 2), 1), self.param1)
+        # ②.6 Canny 边缘（用于圆周覆盖率校验 + 调试显示）
+        edges = cv2.Canny(gray, max(int(self.param1 / 2), 1), self.param1)
         # ③ 霍夫圆检测
         circles = cv2.HoughCircles(
             gray, cv2.HOUGH_GRADIENT, 1, self.min_dist,
             param1=self.param1, param2=self.param2,
             minRadius=self.min_radius, maxRadius=self.max_radius
         )
+
+        if circles is not None:
+            circles = circles[0]
+            # ③.5 圆周覆盖率过滤：排除圆弧假圆（圆周上边缘覆盖不足的）
+            kept = [c for c in circles
+                    if self._edge_support(edges, float(c[0]), float(c[1]), float(c[2])) >= self.min_support]
+            circles = np.array(kept, dtype=np.float32) if kept else None
 
         if circles is None:
             self.get_logger().info('未检测到圆', throttle_duration_sec=1.0)
@@ -183,7 +207,6 @@ class CircleDetectNode(Node):
                 cv2.waitKey(1)
             return
 
-        circles = circles[0]
         # ④ 分组（同心圆归一组）
         groups = []
         for x, y, r in circles:
