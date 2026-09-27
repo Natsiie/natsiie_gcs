@@ -31,9 +31,10 @@ class CircleDetectNode(Node):
         self.declare_parameter('center_dist', 10)    # 同心圆分组阈值
         self.declare_parameter('close_kernel', 0)    # 形态学核大小（焊虚线间隙，0=关闭）
         self.declare_parameter('morph_mode', 'open') # 'open'=深色线(默认)，'close'=浅色线
-        self.declare_parameter('smooth_alpha', 0.3)  # 时间平滑系数：0~1，越小越"锁"
-        self.declare_parameter('match_dist', 20)     # 多目标匹配阈值（< 相邻目标间距）
-        self.declare_parameter('max_miss', 10)       # 目标失配多少帧后移除
+        self.declare_parameter('smooth_alpha', 0.15)  # 时间平滑系数：0~1，越小越"锁"
+        self.declare_parameter('match_dist', 20)      # 多目标匹配阈值（< 相邻目标间距）
+        self.declare_parameter('max_miss', 10)        # 目标失配多少帧后移除
+        self.declare_parameter('min_hits', 3)         # 连续检测多少帧才确认目标（防闪烁）
         # 数字识别参数
         self.declare_parameter('crop_fraction', 0.75)  # 裁剪圆内中心区域的比例(0~1)
         self.declare_parameter('digit_size', 40)       # 数字归一化尺寸
@@ -55,6 +56,7 @@ class CircleDetectNode(Node):
         self.smooth_alpha = self.get_parameter('smooth_alpha').get_parameter_value().double_value
         self.match_dist = self.get_parameter('match_dist').get_parameter_value().integer_value
         self.max_miss = self.get_parameter('max_miss').get_parameter_value().integer_value
+        self.min_hits = self.get_parameter('min_hits').get_parameter_value().integer_value
         self.crop_fraction = self.get_parameter('crop_fraction').get_parameter_value().double_value
         self.digit_size = self.get_parameter('digit_size').get_parameter_value().integer_value
         self.min_score = self.get_parameter('min_score').get_parameter_value().double_value
@@ -135,15 +137,17 @@ class CircleDetectNode(Node):
                 t['cx'] = (1.0 - a) * t['cx'] + a * cx
                 t['cy'] = (1.0 - a) * t['cy'] + a * cy
                 t['r'] = (1.0 - a) * t['r'] + a * r
+                t['hits'] += 1
                 t['miss'] = 0
                 matched.add(best_i)
             else:
-                self.targets.append({'cx': cx, 'cy': cy, 'r': r, 'miss': 0})
+                self.targets.append({'cx': cx, 'cy': cy, 'r': r, 'hits': 1, 'miss': 0})
                 matched.add(len(self.targets) - 1)
-        # 失配的目标计数 +1，超过 max_miss 则移除
+        # 失配的目标：miss+1、hits 清零；超过 max_miss 则移除
         for i, t in enumerate(self.targets):
             if i not in matched:
                 t['miss'] += 1
+                t['hits'] = 0
         self.targets = [t for t in self.targets if t['miss'] <= self.max_miss]
 
     def image_cb(self, msg: Image):
@@ -211,9 +215,12 @@ class CircleDetectNode(Node):
         # 按 x 坐标排序，保证索引稳定（0=最左，1=中间，2=最右）
         self.targets.sort(key=lambda t: t['cx'])
 
+        # 只输出连续检测达到 min_hits 帧的已确认目标（防闪烁）
+        confirmed = [t for t in self.targets if t['hits'] >= self.min_hits]
+
         # ⑦ 输出每个目标：圆心 + 半径 + 数字
         first_digit_img = None
-        for idx, t in enumerate(self.targets):
+        for idx, t in enumerate(confirmed):
             center = (int(round(t['cx'])), int(round(t['cy'])))
             radius = int(round(t['r']))
             self.get_logger().info(f'[{idx}] 内层圆: 圆心 {center}, 半径 {radius}',
