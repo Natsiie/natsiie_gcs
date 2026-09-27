@@ -223,6 +223,7 @@ class CircleDetectNode(Node):
 
         # ⑦ 输出每个目标：圆心 + 半径 + 数字
         first_digit_img = None
+        order_parts = []   # 收集各目标的 "idx:digit"，最后合并成一条发布
         for idx, t in enumerate(confirmed):
             center = (int(round(t['cx'])), int(round(t['cy'])))
             radius = int(round(t['r']))
@@ -254,9 +255,13 @@ class CircleDetectNode(Node):
                         if digit is not None and score >= self.min_score:
                             self.get_logger().info(f'[{idx}] 数字 {digit} (置信度 {score:.2f})',
                                                    throttle_duration_sec=0.5)
-                            out = String()
-                            out.data = f'{idx}:{digit}'
-                            self.pub_order.publish(out)
+                            order_parts.append(f'{idx}:{digit}')
+
+        # 发布合并的 /Order（如 "0:3/1:2/2:1"）
+        if order_parts:
+            out_order = String()
+            out_order.data = '/'.join(order_parts)
+            self.pub_order.publish(out_order)
 
         # ⑧ 统一显示
         if self.show_edges and edges is not None:
