@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-ROS2 节点：检测同心圆并锁定最内层圆，识别圆内单个印刷数字，发布到 /Order。
+ROS2 节点：检测多个同心圆环目标，锁定每个目标的最内层圆，识别圆内数字，发布到 /Order。
 
-流程：灰度 -> 高斯模糊 -> 形态学焊虚线 -> HoughCircles -> 分组
-      -> 最内层圆锁定(EMA) -> 裁剪圆内 ROI -> 数字二值化 -> 模板匹配 -> 发布 /Order
+流程：灰度 -> 高斯模糊 -> HoughCircles -> 分组(同心圆)
+      -> 多目标跟踪(按位置匹配 + 各自 EMA 锁定) -> 裁剪圆内 ROI -> 数字模板匹配 -> 发布 /Order
 
-模板采集：运行后把数字对准相机，在窗口上按 0~9 把当前数字存为对应模板。
+多目标：画面里同时有 N 个同心圆环时，各自独立锁定，不会在目标之间滑动。
 """
 import os
 import rclpy
@@ -25,13 +25,15 @@ class CircleDetectNode(Node):
         self.declare_parameter('image_topic', '/camera/image_raw')
         self.declare_parameter('param1', 80)         # HoughCircles 内部 Canny 高阈值
         self.declare_parameter('param2', 50)         # 圆心累加器阈值
-        self.declare_parameter('min_radius', 20)     # 最小半径
-        self.declare_parameter('max_radius', 60)     # 最大半径
+        self.declare_parameter('min_radius', 15)     # 最小半径
+        self.declare_parameter('max_radius', 40)     # 最大半径
         self.declare_parameter('min_dist', 20)       # 圆心最小间距
         self.declare_parameter('center_dist', 10)    # 同心圆分组阈值
-        self.declare_parameter('close_kernel', 15)   # 形态学核大小（焊虚线间隙，0=关闭）
+        self.declare_parameter('close_kernel', 0)    # 形态学核大小（焊虚线间隙，0=关闭）
         self.declare_parameter('morph_mode', 'open') # 'open'=深色线(默认)，'close'=浅色线
         self.declare_parameter('smooth_alpha', 0.3)  # 时间平滑系数：0~1，越小越"锁"
+        self.declare_parameter('match_dist', 20)     # 多目标匹配阈值（< 相邻目标间距）
+        self.declare_parameter('max_miss', 10)       # 目标失配多少帧后移除
         # 数字识别参数
         self.declare_parameter('crop_fraction', 0.75)  # 裁剪圆内中心区域的比例(0~1)
         self.declare_parameter('digit_size', 40)       # 数字归一化尺寸
@@ -51,6 +53,8 @@ class CircleDetectNode(Node):
         self.close_kernel = self.get_parameter('close_kernel').get_parameter_value().integer_value
         self.morph_mode = self.get_parameter('morph_mode').get_parameter_value().string_value
         self.smooth_alpha = self.get_parameter('smooth_alpha').get_parameter_value().double_value
+        self.match_dist = self.get_parameter('match_dist').get_parameter_value().integer_value
+        self.max_miss = self.get_parameter('max_miss').get_parameter_value().integer_value
         self.crop_fraction = self.get_parameter('crop_fraction').get_parameter_value().double_value
         self.digit_size = self.get_parameter('digit_size').get_parameter_value().integer_value
         self.min_score = self.get_parameter('min_score').get_parameter_value().double_value
@@ -59,10 +63,8 @@ class CircleDetectNode(Node):
         self.show = self.get_parameter('show').get_parameter_value().bool_value
         self.show_edges = self.get_parameter('show_edges').get_parameter_value().bool_value
 
-        # 平滑状态（None = 尚未初始化）
-        self.s_cx = None
-        self.s_cy = None
-        self.s_r = None
+        # 多目标跟踪状态：每个目标 {cx, cy, r, miss}
+        self.targets = []
 
         # 数字模板 {数字字符: 二值图}
         self.templates = {}
@@ -90,9 +92,7 @@ class CircleDetectNode(Node):
     def preprocess_digit(self, roi_bgr):
         """把圆内 ROI 转成归一化二值数字图。失败返回 None。"""
         gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-        # OTSU 二值化（反转：深色数字变白、背景变黑）
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        # 找最大连通域（数字本体）
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
@@ -118,6 +118,34 @@ class CircleDetectNode(Node):
                 best_d, best_s = d, score
         return best_d, best_s
 
+    def update_targets(self, detected):
+        """把本帧检测到的各组匹配到跟踪目标，各自 EMA 平滑。detected: [(cx,cy,r), ...]"""
+        a = self.smooth_alpha
+        matched = set()
+        for (cx, cy, r) in detected:
+            best_i, best_d = None, float('inf')
+            for i, t in enumerate(self.targets):
+                if i in matched:
+                    continue
+                d = np.hypot(cx - t['cx'], cy - t['cy'])
+                if d < best_d:
+                    best_d, best_i = d, i
+            if best_i is not None and best_d < self.match_dist:
+                t = self.targets[best_i]
+                t['cx'] = (1.0 - a) * t['cx'] + a * cx
+                t['cy'] = (1.0 - a) * t['cy'] + a * cy
+                t['r'] = (1.0 - a) * t['r'] + a * r
+                t['miss'] = 0
+                matched.add(best_i)
+            else:
+                self.targets.append({'cx': cx, 'cy': cy, 'r': r, 'miss': 0})
+                matched.add(len(self.targets) - 1)
+        # 失配的目标计数 +1，超过 max_miss 则移除
+        for i, t in enumerate(self.targets):
+            if i not in matched:
+                t['miss'] += 1
+        self.targets = [t for t in self.targets if t['miss'] <= self.max_miss]
+
     def image_cb(self, msg: Image):
         try:
             img = self.br.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -129,7 +157,7 @@ class CircleDetectNode(Node):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # ② 高斯模糊
         gray = cv2.GaussianBlur(gray, (9, 9), 2, 2)
-        # ②.5 形态学焊虚线
+        # ②.5 形态学（可选）
         if self.close_kernel > 0:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.close_kernel, self.close_kernel))
             op = cv2.MORPH_OPEN if self.morph_mode == 'open' else cv2.MORPH_CLOSE
@@ -144,56 +172,65 @@ class CircleDetectNode(Node):
             minRadius=self.min_radius, maxRadius=self.max_radius
         )
 
-        center = None
-        radius = None
-        digit_img = None
+        if circles is None:
+            self.get_logger().info('未检测到圆', throttle_duration_sec=1.0)
+            if self.show:
+                cv2.imshow('circle_detect', img)
+                cv2.waitKey(1)
+            return
 
-        if circles is not None:
-            circles = circles[0]  # (N, 3) 浮点
-            # ④ 分组（同心圆）
-            groups = []
-            for x, y, r in circles:
-                placed = False
-                for g in groups:
-                    if np.hypot(x - g['cx'], y - g['cy']) < self.center_dist:
-                        g['xs'].append(float(x))
-                        g['ys'].append(float(y))
-                        g['rs'].append(float(r))
-                        g['cx'] = float(np.mean(g['xs']))
-                        g['cy'] = float(np.mean(g['ys']))
-                        placed = True
-                        break
-                if not placed:
-                    groups.append({'xs': [float(x)], 'ys': [float(y)], 'rs': [float(r)],
-                                   'cx': float(x), 'cy': float(y)})
-            # ⑤ 选最大组，取平均圆心 + 最内层半径(最小半径)
-            g = max(groups, key=lambda gg: len(gg['xs']))
+        circles = circles[0]
+        # ④ 分组（同心圆归一组）
+        groups = []
+        for x, y, r in circles:
+            placed = False
+            for g in groups:
+                if np.hypot(x - g['cx'], y - g['cy']) < self.center_dist:
+                    g['xs'].append(float(x))
+                    g['ys'].append(float(y))
+                    g['rs'].append(float(r))
+                    g['cx'] = float(np.mean(g['xs']))
+                    g['cy'] = float(np.mean(g['ys']))
+                    placed = True
+                    break
+            if not placed:
+                groups.append({'xs': [float(x)], 'ys': [float(y)], 'rs': [float(r)],
+                               'cx': float(x), 'cy': float(y)})
+
+        # ⑤ 每组 → 平均圆心 + 最内层半径（最小半径）
+        detected = []
+        for g in groups:
             cx = float(np.mean(g['xs']))
             cy = float(np.mean(g['ys']))
             r = float(min(g['rs']))
-            n = len(g['xs'])
-            # ⑥ EMA 时间平滑
-            a = self.smooth_alpha
-            if self.s_cx is None:
-                self.s_cx, self.s_cy, self.s_r = cx, cy, r
-            else:
-                self.s_cx = (1.0 - a) * self.s_cx + a * cx
-                self.s_cy = (1.0 - a) * self.s_cy + a * cy
-                self.s_r = (1.0 - a) * self.s_r + a * r
-            center = (int(round(self.s_cx)), int(round(self.s_cy)))
-            radius = int(round(self.s_r))
-            self.get_logger().info(
-                f'内层圆锁定: 圆心 {center}, 半径 {radius} '
-                f'(原始 {cx:.1f},{cy:.1f},r={r:.1f}, {n}环)', throttle_duration_sec=1.0)
+            detected.append((cx, cy, r))
+
+        # ⑥ 多目标匹配 + 各自 EMA 锁定
+        self.update_targets(detected)
+
+        # 按 x 坐标排序，保证索引稳定（0=最左，1=中间，2=最右）
+        self.targets.sort(key=lambda t: t['cx'])
+
+        # ⑦ 输出每个目标：圆心 + 半径 + 数字
+        first_digit_img = None
+        for idx, t in enumerate(self.targets):
+            center = (int(round(t['cx'])), int(round(t['cy'])))
+            radius = int(round(t['r']))
+            self.get_logger().info(f'[{idx}] 内层圆: 圆心 {center}, 半径 {radius}',
+                                   throttle_duration_sec=1.0)
 
             if self.show:
-                for k in range(n):
-                    cv2.circle(img, (int(round(g['xs'][k])), int(round(g['ys'][k]))),
-                               int(round(g['rs'][k])), (255, 0, 0), 1)
                 cv2.circle(img, center, radius, (0, 255, 0), 2)
                 cv2.circle(img, center, 2, (0, 0, 255), 3)
+                cv2.putText(img, str(idx), (center[0] - 4, center[1] + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            # ⑦ 数字识别：裁剪圆内中心区域
+            # 发布每个圆（circle_detect）
+            out_c = String()
+            out_c.data = f'{center[0]:04}{center[1]:04}{radius:01}'
+            self.pub.publish(out_c)
+
+            # 数字识别
             if self.recognize:
                 half = int(radius * self.crop_fraction)
                 x1 = max(0, center[0] - half)
@@ -201,36 +238,35 @@ class CircleDetectNode(Node):
                 x2 = min(img.shape[1], center[0] + half)
                 y2 = min(img.shape[0], center[1] + half)
                 if x2 > x1 and y2 > y1:
-                    digit_img = self.preprocess_digit(img[y1:y2, x1:x2])
-        else:
-            self.get_logger().info('未检测到圆', throttle_duration_sec=1.0)
+                    d_img = self.preprocess_digit(img[y1:y2, x1:x2])
+                    if d_img is not None:
+                        if idx == 0:
+                            first_digit_img = d_img
+                        digit, score = self.recognize_digit(d_img)
+                        if digit is not None and score >= self.min_score:
+                            self.get_logger().info(f'[{idx}] 数字 {digit} (置信度 {score:.2f})',
+                                                   throttle_duration_sec=0.5)
+                            out = String()
+                            out.data = f'{idx}:{digit}'
+                            self.pub_order.publish(out)
 
         # ⑧ 统一显示
         if self.show_edges and edges is not None:
             cv2.imshow('edges (Canny)', edges)
         if self.show:
             cv2.imshow('circle_detect', img)
-        if digit_img is not None:
-            cv2.imshow('digit', digit_img)
+        if first_digit_img is not None:
+            cv2.imshow('digit', first_digit_img)
 
         key = cv2.waitKey(1) & 0xFF
 
-        # ⑨ 模板采集：按 0~9 把当前数字存为对应模板
-        if digit_img is not None and ord('0') <= key <= ord('9'):
+        # ⑨ 模板采集：按 0~9 把第一个目标的数字存为模板
+        if first_digit_img is not None and ord('0') <= key <= ord('9'):
             d = chr(key)
             path = os.path.join(self.templates_dir, f'digit_{d}.png')
-            cv2.imwrite(path, digit_img)
-            self.templates[d] = digit_img.copy()
+            cv2.imwrite(path, first_digit_img)
+            self.templates[d] = first_digit_img.copy()
             self.get_logger().info(f'已保存数字模板 {d} -> {path}')
-
-        # ⑩ 识别 + 发布 /Order
-        if digit_img is not None:
-            digit, score = self.recognize_digit(digit_img)
-            if digit is not None and score >= self.min_score:
-                self.get_logger().info(f'识别数字: {digit} (置信度 {score:.2f})', throttle_duration_sec=0.5)
-                out = String()
-                out.data = digit
-                self.pub_order.publish(out)
 
 
 def main(args=None):
