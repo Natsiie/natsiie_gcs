@@ -16,6 +16,8 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
+from identify_pack.vision_identify.color_detect import detect_color, build_circle_mask, COLOR_DISPLAY
+
 
 class CircleDetectNode(Node):
     def __init__(self):
@@ -78,6 +80,7 @@ class CircleDetectNode(Node):
         self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
         self.pub = self.create_publisher(String, 'circle_detect', 10)
         self.pub_order = self.create_publisher(String, 'Order', 10)
+        self.pub_color = self.create_publisher(String, 'Color', 10)
         self.get_logger().info(f'圆检测订阅 {image_topic}')
 
     def _load_templates(self):
@@ -224,9 +227,13 @@ class CircleDetectNode(Node):
                 groups.append({'xs': [float(x)], 'ys': [float(y)], 'rs': [float(r)],
                                'cx': float(x), 'cy': float(y)})
 
-        # ⑤ 每组 → 平均圆心 + 最内层半径（最小半径）
+        # ⑤ 分流：同心多环(>=2 个圆) = 数字圆环；单圆 = 色块
+        digit_groups = [g for g in groups if len(g['rs']) >= 2]
+        color_groups = [g for g in groups if len(g['rs']) == 1]
+
+        # 数字圆环：平均圆心 + 最内层半径（最小半径）
         detected = []
-        for g in groups:
+        for g in digit_groups:
             cx = float(np.mean(g['xs']))
             cy = float(np.mean(g['ys']))
             r = float(min(g['rs']))
@@ -285,6 +292,31 @@ class CircleDetectNode(Node):
             out_order = String()
             out_order.data = '/'.join(order_parts)
             self.pub_order.publish(out_order)
+
+        # ⑦.5 色块：颜色识别（单圆组）
+        hsv = cv2.cvtColor(img_clean, cv2.COLOR_BGR2HSV)
+        color_parts = []
+        for g in color_groups:
+            cx = float(np.mean(g['xs']))
+            cy = float(np.mean(g['ys']))
+            r = float(g['rs'][0])  # 单圆，半径就是它
+            center = (int(round(cx)), int(round(cy)))
+            radius = int(round(r))
+            cmask = build_circle_mask(gray.shape, center, radius)
+            color, area, _ = detect_color(hsv, cmask)
+            color_parts.append(color)
+            self.get_logger().info(f'色块({center}, r={radius}) -> {color} (面积 {area})',
+                                   throttle_duration_sec=1.0)
+            if self.show:
+                cv2.circle(img, center, radius, (255, 255, 0), 2)
+                cv2.putText(img, color, (center[0] - 20, center[1] - radius - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_DISPLAY.get(color, (255, 255, 255)), 2)
+
+        # 发布色块颜色到 /Color（用 / 连接）
+        if color_parts:
+            out_color = String()
+            out_color.data = '/'.join(color_parts)
+            self.pub_color.publish(out_color)
 
         # ⑧ 统一显示
         if self.show_edges and edges is not None:
