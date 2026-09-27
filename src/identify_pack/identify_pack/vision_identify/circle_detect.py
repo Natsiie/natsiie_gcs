@@ -218,6 +218,9 @@ class CircleDetectNode(Node):
         # 只输出连续检测达到 min_hits 帧的已确认目标（防闪烁）
         confirmed = [t for t in self.targets if t['hits'] >= self.min_hits]
 
+        # 用干净副本裁剪数字，避免画上去的圆/点污染识别
+        img_clean = img.copy()
+
         # ⑦ 输出每个目标：圆心 + 半径 + 数字
         first_digit_img = None
         for idx, t in enumerate(confirmed):
@@ -229,8 +232,6 @@ class CircleDetectNode(Node):
             if self.show:
                 cv2.circle(img, center, radius, (0, 255, 0), 2)
                 cv2.circle(img, center, 2, (0, 0, 255), 3)
-                cv2.putText(img, str(idx), (center[0] - 4, center[1] + 4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             # 发布每个圆（circle_detect）
             out_c = String()
@@ -245,7 +246,7 @@ class CircleDetectNode(Node):
                 x2 = min(img.shape[1], center[0] + half)
                 y2 = min(img.shape[0], center[1] + half)
                 if x2 > x1 and y2 > y1:
-                    d_img = self.preprocess_digit(img[y1:y2, x1:x2])
+                    d_img = self.preprocess_digit(img_clean[y1:y2, x1:x2])
                     if d_img is not None:
                         if idx == 0:
                             first_digit_img = d_img
