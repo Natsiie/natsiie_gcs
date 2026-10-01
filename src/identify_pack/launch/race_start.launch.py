@@ -1,4 +1,4 @@
-"""Launch file: 启动主/副两个相机、QR 解码、霍夫圆检测与串口桥接节点。
+"""Launch file: 启动主/副两个相机、QR 解码、圆/数字、色块、转盘检测与串口桥接节点。
 
 主相机（QR 解码）与副相机（霍夫圆/颜色识别）分开打开：
   - 主相机发布到 /camera/main/image_raw
@@ -53,27 +53,66 @@ def generate_launch_description():
             }],
         ),
 
-        # QR 解码节点：订阅主相机
-        Node(
-            package='identify_pack',
-            executable='qr_decode_node',
-            name='qr_decode_node',
-            output='screen',
-            parameters=[{
-                'image_topic': MAIN_TOPIC,
-                'min_consistent': ParameterValue(min_consistent, value_type=int),
-                'show': ParameterValue(show, value_type=bool),
-            }],
-        ),
+        # # QR 解码节点：订阅主相机
+        # Node(
+        #     package='identify_pack',
+        #     executable='qr_decode_node',
+        #     name='qr_decode_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': MAIN_TOPIC,
+        #         'min_consistent': ParameterValue(min_consistent, value_type=int),
+        #         'show': ParameterValue(show, value_type=bool),
+        #     }],
+        # ),
 
-        # 霍夫圆检测节点：订阅副相机
+        # # 霍夫圆检测节点：订阅副相机（只做圆+数字，发布 /circle_detect、/Order）
+        # Node(
+        #     package='identify_pack',
+        #     executable='circle_detect_node',
+        #     name='circle_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #     }],
+        # ),
+
+        # # 色块识别节点：订阅副相机（ROI 内主色锁定 + 六色 + 转盘运动判定，发布 /Color、/ColorMotion）
+        # Node(
+        #     package='identify_pack',
+        #     executable='color_detect_node',
+        #     name='color_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #         'min_blob_area': 300,
+        #         'min_blob_dimension': 12,
+        #         # 色块 ROI：优先读 roi_file（每行 x,y,w,h，可多个）；读不到则用单个 roi_* 参数
+        #         'roi_file': '/home/lulu/gcs/natsiie_gcs/src/identify_pack/identify_pack/scripts/ROI_Range.txt',
+        #         'roi_x': 0,
+        #         'roi_y': 0,
+        #         'roi_w': 0,
+        #         'roi_h': 0,
+        #         # ROI 内主色锁定：面积最大的颜色锁定物块，盖住被误切的小面积颜色（如蓝↔浅蓝）
+        #         'lock_dominant_color': True,
+        #         # 转盘转动/停稳判定：跨帧追踪色块质心算速度，先见转动再见停稳
+        #         'motion_detect': True,
+        #         'moving_speed_px_s': 30.0,
+        #         'required_moving_frames': 2,
+        #         'near_stop_speed_px_s': 25.0,
+        #         'required_low_speed_frames': 3,
+        #     }],
+        # ),
+
+        # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
         Node(
             package='identify_pack',
-            executable='circle_detect_node',
-            name='circle_detect_node',
+            executable='turntable_detect_node',
+            name='turntable_detect_node',
             output='screen',
             parameters=[{
                 'image_topic': SECONDARY_TOPIC,
+                'show': True,
             }],
         ),
 

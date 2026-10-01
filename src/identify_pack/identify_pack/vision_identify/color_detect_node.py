@@ -17,11 +17,11 @@ from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 
-from identify_pack.vision_identify.color_config import (
+from natsiie_gcs.src.identify_pack.identify_pack.scripts.color_config import (
     COLOR_DISPLAY, COLOR_NAMES, apply_dominant_color, build_default_color_config,
     find_color_blobs, load_color_config, load_roi_file, make_all_color_masks,
 )
-from identify_pack.vision_identify.motion import TurntableMotionTracker
+from natsiie_gcs.src.identify_pack.identify_pack.scripts.motion import TurntableMotionTracker
 
 
 class ColorDetectNode(Node):
