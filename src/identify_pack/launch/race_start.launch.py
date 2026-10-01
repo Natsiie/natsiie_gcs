@@ -128,6 +128,18 @@ def generate_launch_description():
         #     }],
         # ),
 
+        # # 叠放位检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
+        # Node(
+        #     package='identify_pack',
+        #     executable='stacked_ring_detect_node',
+        #     name='stacked_ring_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #         'show': True,
+        #     }],
+        # ),
+
         # # ROI 叠加节点：订阅副相机（调试用）
         # Node(
         #     package='identify_pack',
