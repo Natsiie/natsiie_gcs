@@ -1,0 +1,125 @@
+{
+  "format_version": 1,
+  "colors": [
+    {
+      "color_id": 1,
+      "name": "red",
+      "ranges": [
+        {
+          "lower": [
+            0,
+            81,
+            124
+          ],
+          "upper": [
+            6,
+            214,
+            213
+          ]
+        },
+        {
+          "lower": [
+            171,
+            81,
+            124
+          ],
+          "upper": [
+            179,
+            214,
+            213
+          ]
+        }
+      ]
+    },
+    {
+      "color_id": 2,
+      "name": "yellow",
+      "ranges": [
+        {
+          "lower": [
+            21,
+            126,
+            133
+          ],
+          "upper": [
+            33,
+            220,
+            255
+          ]
+        }
+      ]
+    },
+    {
+      "color_id": 3,
+      "name": "blue",
+      "ranges": [
+        {
+          "lower": [
+            102,
+            63,
+            80
+          ],
+          "upper": [
+            116,
+            203,
+            177
+          ]
+        }
+      ]
+    },
+    {
+      "color_id": 4,
+      "name": "green",
+      "ranges": [
+        {
+          "lower": [
+            56,
+            72,
+            99
+          ],
+          "upper": [
+            74,
+            170,
+            178
+          ]
+        }
+      ]
+    },
+    {
+      "color_id": 5,
+      "name": "black",
+      "ranges": [
+        {
+          "lower": [
+            0,
+            0,
+            0
+          ],
+          "upper": [
+            179,
+            81,
+            115
+          ]
+        }
+      ]
+    },
+    {
+      "color_id": 6,
+      "name": "light_blue",
+      "ranges": [
+        {
+          "lower": [
+            93,
+            29,
+            138
+          ],
+          "upper": [
+            108,
+            104,
+            247
+          ]
+        }
+      ]
+    }
+  ]
+}
