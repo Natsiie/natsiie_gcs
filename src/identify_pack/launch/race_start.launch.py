@@ -116,6 +116,18 @@ def generate_launch_description():
             }],
         ),
 
+        # # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
+        # Node(
+        #     package='identify_pack',
+        #     executable='ring_station_detect_node',
+        #     name='ring_station_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #         'show': True,
+        #     }],
+        # ),
+
         # # ROI 叠加节点：订阅副相机（调试用）
         # Node(
         #     package='identify_pack',
