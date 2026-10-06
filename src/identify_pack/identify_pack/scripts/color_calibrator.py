@@ -24,15 +24,14 @@ import cv2
 import numpy as np
 
 try:
-    from identify_pack.vision_identify.color_config import (
+    from identify_pack.scripts.color_config import (
         COLOR_DISPLAY, COLOR_NAMES, PRESET_RANGES, bounds_to_ranges,
         build_default_color_config, estimate_hsv_bounds, get_color_bounds,
         load_color_config, ranges_to_bounds, save_color_config,
         set_color_bounds,
     )
 except ImportError:  # 直接在源码目录运行
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    '..', 'vision_identify'))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from color_config import (  # type: ignore
         COLOR_DISPLAY, COLOR_NAMES, PRESET_RANGES, bounds_to_ranges,
         build_default_color_config, estimate_hsv_bounds, get_color_bounds,

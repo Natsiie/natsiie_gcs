@@ -1,0 +1,26 @@
+tf_transform:
+  ros__parameters:
+    base_frame: gimbal_base
+    gimbal_frame: gimbal_link
+    camera_frame: camera_optical_frame
+
+    # Actual measured yaw in sensor_msgs/JointState.position, radians.
+    # The receiving serial node must supply header.stamp using the ROS clock.
+    joint_states_topic: /gimbal/joint_states
+    yaw_joint_name: gimbal_yaw_joint
+    angle_sign: 1.0             # Set -1.0 for clockwise-positive hardware.
+    angle_offset_rad: 0.0      # yaw_tf = angle_sign * measured_yaw + offset
+    feedback_max_age_sec: 0.5
+    future_tolerance_sec: 0.05
+
+    # Fixed rotation-centre position relative to base, metres.
+    base_to_gimbal_translation_m: [0.0, 0.0, 0.0]
+
+    # Option A: absolute path to camera_extrinsics.json; takes precedence.
+    camera_extrinsics_file: ''
+
+    # Option B: fill in measured pose, then set configured=true.
+    # These zeros/identity are placeholders, not the camera mounting geometry.
+    camera_transform_configured: false
+    camera_translation_m: [0.0, 0.0, 0.0]
+    camera_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

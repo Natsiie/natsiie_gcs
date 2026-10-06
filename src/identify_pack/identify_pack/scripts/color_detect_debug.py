@@ -25,13 +25,13 @@ import cv2
 import numpy as np
 
 try:
-    from identify_pack.vision_identify.color_config import (
+    from identify_pack.scripts.color_config import (
         COLOR_DISPLAY, COLOR_NAMES, apply_dominant_color, find_color_blobs,
         load_color_config, make_all_color_masks,
     )
-    from identify_pack.vision_identify.roi import RoiSelector
-except ImportError:  # 直接在源码目录运行
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'vision_identify'))
+    from identify_pack.scripts.roi import RoiSelector
+except ImportError:  # 直接在源码目录运行（color_config.py / roi.py 与本文件同目录）
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from color_config import (  # type: ignore
         COLOR_DISPLAY, COLOR_NAMES, apply_dominant_color, find_color_blobs,
         load_color_config, make_all_color_masks,
