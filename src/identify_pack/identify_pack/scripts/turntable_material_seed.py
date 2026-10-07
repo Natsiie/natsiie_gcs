@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 try:
-    from identify_pack.vision_identify.color_config import make_all_color_masks
+    from identify_pack.scripts.color_config import make_all_color_masks
 except ImportError:  # 直接在源码目录运行
     from color_config import make_all_color_masks  # type: ignore
 

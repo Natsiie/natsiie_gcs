@@ -5,7 +5,7 @@
     | 0xFF | TYPE | LEN  |   PAYLOAD(UTF-8) |  CRC8  | 0xFE |
     +------+------+------+------------------+--------+------+
 
-- TYPE  : 消息类型（见 TOPIC_TYPES）；0x07 GimbalYaw 为下位机反馈角度
+- TYPE  : 消息类型（见 TOPIC_TYPES）；0x07 为反馈角度，0x08 为颜色目标
 - LEN   : payload 字节数（最大 255）
 - CRC8  : 对 TYPE+LEN+PAYLOAD 逐字节异或
 - 帧头/帧尾固定 0xFF / 0xFE
@@ -25,14 +25,16 @@ TOPIC_TYPES = {
     'stacked_ring': 0x05,
     'QR_Decode':    0x06,
     'GimbalYaw':    0x07,  # 下位机 -> 上位机，ASCII 角度，单位 deg
+    'ColorTarget':  0x08,  # 上位机 -> 下位机，color_id,x_mm,y_mm,z_mm，底座绝对坐标
 }
 
-# 只允许上位机向下位机发送的 ROS 话题；GimbalYaw 是反馈帧。
+# 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic != 'GimbalYaw'
+    if topic not in ('GimbalYaw', 'ColorTarget')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
+COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}
 

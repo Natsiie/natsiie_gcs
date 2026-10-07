@@ -18,13 +18,13 @@ from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 
-from natsiie_gcs.src.identify_pack.identify_pack.scripts.turntable_detector import (
+from identify_pack.scripts.turntable_detector import (
     TurntableDetector, draw_turntable_detection, load_turntable_detector_config,
 )
-from natsiie_gcs.src.identify_pack.identify_pack.scripts.turntable_material_seed import (
+from identify_pack.scripts.turntable_material_seed import (
     ThreeMaterialTurntableSeeder, load_three_material_seed_config,
 )
-from natsiie_gcs.src.identify_pack.identify_pack.scripts.color_config import load_color_config
+from identify_pack.scripts.color_config import load_color_config
 
 
 class TurntableDetectNode(Node):

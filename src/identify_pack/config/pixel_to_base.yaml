@@ -1,0 +1,23 @@
+pixel_to_base:
+  ros__parameters:
+    calibration_file: /home/lulu/gcs/camera_extrinsics_v2.json
+    image_topic: /camera/secondary/image_raw
+    base_frame: gimbal_base
+    camera_frame: camera_optical_frame
+    output_topic: /pixel_to_base/point
+    centers_topic: /color/centers_pixel
+    targets_topic: /color/targets_base
+    show: false
+    tf_wait_sec: 0.5
+    auto_project: true
+    min_auto_interval_sec: 0.2
+    target_max_age_sec: 1.0
+
+    # Initial check uses the measured calibration board Z from the JSON.
+    # All plane heights below are relative to gimbal_base, NOT camera distance.
+    # calibration mode assumes base/gimbal origins coincide vertically.
+    plane_mode: object
+    object_plane_configured: true
+    object_plane_z_mm: -12.5   # Relative to gimbal_base, as measured.
+    ring_plane_configured: false
+    ring_plane_z_mm: -72.5     # Fill actual ring plane height, then enable.

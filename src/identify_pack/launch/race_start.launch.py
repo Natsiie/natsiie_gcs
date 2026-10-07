@@ -104,17 +104,17 @@ def generate_launch_description():
         #     }],
         # ),
 
-        # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
-        Node(
-            package='identify_pack',
-            executable='turntable_detect_node',
-            name='turntable_detect_node',
-            output='screen',
-            parameters=[{
-                'image_topic': SECONDARY_TOPIC,
-                'show': True,
-            }],
-        ),
+        # # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
+        # Node(
+        #     package='identify_pack',
+        #     executable='turntable_detect_node',
+        #     name='turntable_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #         'show': True,
+        #     }],
+        # ),
 
         # # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         # Node(
@@ -152,10 +152,10 @@ def generate_launch_description():
         # ),
 
         # 串口桥接节点：串口参数由 serial_config.json 提供
-        Node(
-            package='identify_pack',
-            executable='qr_serial_bridge',
-            name='qr_serial_bridge',
-            output='screen',
-        ),
+        # Node(
+        #     package='identify_pack',
+        #     executable='qr_serial_bridge',
+        #     name='qr_serial_bridge',
+        #     output='screen',
+        # ),
     ])

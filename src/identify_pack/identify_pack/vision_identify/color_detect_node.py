@@ -4,24 +4,28 @@
 订阅相机图像话题，在 ROI 内做色块检测，发布：
   - /Color       色块位置，每段 ``color_id:x,y``（1~6 六色，多段用 / 连接）
   - /ColorMotion 转盘运动状态 ``state:speed``（如 ``READY:12.3``）
+  - /color/centers_pixel 带原图时间戳的像素 PointCloud（x=u, y=v），附颜色/面积/分辨率
 
 不含数字圆环识别（那是 circle_detect_node 的职责）。
 """
 import os
 import time
+import copy
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
+from geometry_msgs.msg import Point32
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 
-from natsiie_gcs.src.identify_pack.identify_pack.scripts.color_config import (
+from identify_pack.scripts.color_config import (
     COLOR_DISPLAY, COLOR_NAMES, apply_dominant_color, build_default_color_config,
     find_color_blobs, load_color_config, load_roi_file, make_all_color_masks,
 )
-from natsiie_gcs.src.identify_pack.identify_pack.scripts.motion import TurntableMotionTracker
+from identify_pack.scripts.motion import TurntableMotionTracker
 
 
 class ColorDetectNode(Node):
@@ -42,12 +46,14 @@ class ColorDetectNode(Node):
         self.declare_parameter('near_stop_speed_px_s', 25.0)
         self.declare_parameter('required_low_speed_frames', 3)
         self.declare_parameter('show', True)           # 是否弹窗显示
+        self.declare_parameter('centers_topic', '/color/centers_pixel')
+        self.declare_parameter('camera_frame', 'camera_optical_frame')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.color_config = self.get_parameter('color_config').get_parameter_value().string_value
         self.roi_file = self.get_parameter('roi_file').get_parameter_value().string_value
-        self.min_blob_area = self.get_parameter('min_blob_area').get_parameter_value().double_value
-        self.min_blob_dimension = self.get_parameter('min_blob_dimension').get_parameter_value().double_value
+        self.min_blob_area = float(self.get_parameter('min_blob_area').value)
+        self.min_blob_dimension = float(self.get_parameter('min_blob_dimension').value)
         self.lock_dominant = self.get_parameter('lock_dominant_color').get_parameter_value().bool_value
         self.motion_detect = self.get_parameter('motion_detect').get_parameter_value().bool_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
@@ -62,8 +68,11 @@ class ColorDetectNode(Node):
         )
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
+        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
         self.pub_color = self.create_publisher(String, 'Color', 10)
+        self.centers_topic = self.get_parameter('centers_topic').value
+        self.camera_frame = self.get_parameter('camera_frame').value
+        self.pub_centers = self.create_publisher(PointCloud, self.centers_topic, 10)
         self.pub_motion = self.create_publisher(String, 'ColorMotion', 10)
         self.get_logger().info(f'色块识别订阅 {image_topic}')
 
@@ -97,6 +106,13 @@ class ColorDetectNode(Node):
                                         os.path.basename(path))
                 if os.path.exists(fallback):
                     path = fallback
+                else:
+                    try:
+                        from ament_index_python.packages import get_package_share_directory
+                        path = os.path.join(get_package_share_directory('identify_pack'),
+                                            os.path.basename(path))
+                    except Exception:
+                        pass
         rois = load_roi_file(path)
         if rois:
             self.get_logger().info(f'从 {path} 读取 {len(rois)} 个色块 ROI')
@@ -119,6 +135,11 @@ class ColorDetectNode(Node):
 
         color_parts = []
         blob_pts = []
+        centers = PointCloud()
+        centers.header = copy.deepcopy(msg.header)
+        if not centers.header.frame_id:
+            centers.header.frame_id = self.camera_frame
+        channels = {name: [] for name in ('color_id', 'area_px2', 'image_width', 'image_height')}
         for (color_id, cx, cy, x, y, w, h, area) in find_color_blobs(
                 color_masks, min_area=self.min_blob_area,
                 min_dimension=self.min_blob_dimension, roi=self.color_roi):
@@ -133,6 +154,14 @@ class ColorDetectNode(Node):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, c, 2)
             color_parts.append(f'{color_id}:{int(cx)},{int(cy)}')
             blob_pts.append((color_id, cx, cy))
+            centers.points.append(Point32(x=float(cx), y=float(cy), z=0.0))
+            for key, value in zip(channels, (color_id, area, img.shape[1], img.shape[0])):
+                channels[key].append(float(value))
+
+        # Pixel coordinates, not a metric cloud; preserve the source image timestamp.
+        centers.channels = [ChannelFloat32(name=name, values=values)
+                            for name, values in channels.items()]
+        self.pub_centers.publish(centers)
 
         if color_parts:
             out_color = String()
@@ -168,7 +197,7 @@ def main(args=None):
     finally:
         cv2.destroyAllWindows()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

@@ -15,6 +15,7 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name), glob('identify_pack/serial/serial_config.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/color_config.json')),
+        (os.path.join('share', package_name), glob('identify_pack/scripts/ROI_Range.txt')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/turntable_detector.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/turntable_material_seed.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/ring_station_detector.json')),
@@ -28,6 +29,7 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
+            'pixel_to_base = identify_pack.tf_transform.pixel_to_base_node:main',
             'tf_transform = identify_pack.tf_transform.tf_transform_node:main',
             'camera_node = identify_pack.vision_identify.camera_node:main',
             'circle_detect_node = identify_pack.vision_identify.circle_detect_node:main',
