@@ -6,7 +6,7 @@ from unittest.mock import Mock
 from builtin_interfaces.msg import Time
 
 from identify_pack.serial.protocol import GIMBAL_YAW_TYPE, OUTGOING_TOPIC_TYPES, make_frame
-from identify_pack.serial.serial_bridge import SerialBridge
+from identify_pack.serial.serial_bridge_node import SerialBridgeNode
 
 
 class SerialFeedbackTests(unittest.TestCase):
@@ -19,13 +19,14 @@ class SerialFeedbackTests(unittest.TestCase):
         return SimpleNamespace(
             ser=port, rx_buffer=bytearray(), yaw_feedback_type=GIMBAL_YAW_TYPE,
             yaw_joint_name='gimbal_yaw_joint', pub_joint_state=Mock(),
+            joint_states_topic='/gimbal/joint_states',
             get_clock=lambda: clock, get_logger=lambda: logger,
         )
 
     def feed(self, bridge, data):
         bridge.ser.in_waiting = len(data)
         bridge.ser.read.return_value = data
-        SerialBridge._poll_feedback(bridge)
+        SerialBridgeNode._poll_feedback(bridge)
 
     def test_fragmented_angle_publishes_radians_and_timestamp(self):
         bridge = self.make_bridge()
@@ -55,6 +56,14 @@ class SerialFeedbackTests(unittest.TestCase):
 
     def test_yaw_feedback_is_not_an_outgoing_topic(self):
         self.assertNotIn('GimbalYaw', OUTGOING_TOPIC_TYPES)
+
+    def test_raw_text_is_logged_but_not_published_as_angle(self):
+        bridge = self.make_bridge()
+        self.feed(bridge, b'90.0\r\n')
+        bridge.pub_joint_state.publish.assert_not_called()
+        bridge.get_logger().debug.assert_called_once()
+        bridge.get_logger().warning.assert_called_once()
+        self.assertEqual(bridge.rx_buffer, b'')
 
 
 if __name__ == '__main__':

@@ -24,9 +24,9 @@ except Exception:
     serial = None
 
 
-class SerialBridge(Node):
+class SerialBridgeNode(Node):
     def __init__(self, serial_port: str, baud: int, timeout: float = 0.1):
-        super().__init__('serial_bridge')
+        super().__init__('serial_bridge_node')
         self.declare_parameter('joint_states_topic', '/gimbal/joint_states')
         self.declare_parameter('yaw_joint_name', 'gimbal_yaw_joint')
         self.declare_parameter('yaw_feedback_type', GIMBAL_YAW_TYPE)
@@ -66,16 +66,30 @@ class SerialBridge(Node):
         try:
             waiting = self.ser.in_waiting
             if waiting:
-                self.rx_buffer.extend(self.ser.read(waiting))
+                chunk = self.ser.read(waiting)
+                self.get_logger().debug(
+                    f'RX raw ({len(chunk)} B): hex={chunk.hex(" ")} '
+                    f'text={chunk.decode("utf-8", errors="replace")!r}')
+                self.rx_buffer.extend(chunk)
             frames, remainder = extract_frames(self.rx_buffer)
+            valid_bytes = sum(5 + len(payload.encode('utf-8')) for _, payload in frames)
+            discarded = len(self.rx_buffer) - len(remainder) - valid_bytes
+            if discarded > 0:
+                self.get_logger().warning(
+                    f'收到串口字节，但有 {discarded} 字节未通过帧解析；'
+                    '需要 FF TYPE LEN ASCII载荷 XOR FE，云台角度 TYPE=07。'
+                    '使用 --ros-args --log-level serial_bridge_node:=debug 查看原始 HEX。',
+                    throttle_duration_sec=2.0)
             self.rx_buffer = bytearray(remainder)
         except Exception as error:
             self.get_logger().error(f'串口读取失败: {error}', throttle_duration_sec=2.0)
             return
         for type_byte, payload in frames:
             if type_byte != self.yaw_feedback_type:
-                self.get_logger().debug(
-                    f'忽略反馈帧 type=0x{type_byte:02X} payload={payload!r}')
+                self.get_logger().warning(
+                    f'忽略反馈帧 type=0x{type_byte:02X} payload={payload!r}；'
+                    f'云台角度需要 type=0x{self.yaw_feedback_type:02X}',
+                    throttle_duration_sec=2.0)
                 continue
             try:
                 yaw_deg = float(payload.strip())
@@ -87,8 +101,9 @@ class SerialBridge(Node):
                 message.name = [self.yaw_joint_name]
                 message.position = [yaw_rad]
                 self.pub_joint_state.publish(message)
-                self.get_logger().debug(
-                    f'RX GimbalYaw: {yaw_deg:.3f} deg ({yaw_rad:.6f} rad)')
+                self.get_logger().info(
+                    f'RX GimbalYaw: {yaw_deg:.3f} deg ({yaw_rad:.6f} rad) '
+                    f'-> {self.joint_states_topic}', throttle_duration_sec=1.0)
             except (TypeError, ValueError, OverflowError) as error:
                 self.get_logger().warning(
                     f'忽略非法云台角度 payload={payload!r}: {error}',
@@ -137,7 +152,7 @@ def main(args=None):
     timeout = file_cfg.get('timeout', 0.1)
 
     rclpy.init(args=remaining)
-    node = SerialBridge(serial_port, baud, timeout)
+    node = SerialBridgeNode(serial_port, baud, timeout)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
@@ -146,7 +161,7 @@ def main(args=None):
         if node.ser and node.ser.is_open:
             node.ser.close()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

@@ -37,7 +37,7 @@ setup(
             'stacked_ring_detect_node = identify_pack.vision_identify.stacked_ring_detect_node:main',
             'qr_decode_node = identify_pack.vision_identify.qr_decode_node:main',
             'qr_serial_bridge = identify_pack.serial.qr_serial_bridge:main',
-            'serial_bridge = identify_pack.serial.serial_bridge:main',
+            'serial_bridge_node = identify_pack.serial.serial_bridge_node:main',
             'roi_overlay_node = identify_pack.scripts.roi_overlay_node:main',
             'color_calibrator = identify_pack.scripts.color_calibrator:main',
             'turntable_calibrator = identify_pack.scripts.turntable_calibrator:main',

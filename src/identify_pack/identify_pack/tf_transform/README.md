@@ -25,7 +25,7 @@ gimbal_base -- 实际 yaw，动态 --> gimbal_link -- 外参，静态 --> camera
 
 ## 角度输入接口
 
-`serial_bridge` 接收 `TYPE=0x07` 的反馈帧，载荷为 ASCII 角度（单位度），
+`serial_bridge_node` 接收 `TYPE=0x07` 的反馈帧，载荷为 ASCII 角度（单位度），
 转换为弧度后发布下面的消息。不要用目标指令角度代替反馈。
 
 反馈帧格式：`FF 07 LEN PAYLOAD XOR FE`，例如 `90.0` 的 payload 是 ASCII 字节。
@@ -37,7 +37,7 @@ gimbal_base -- 实际 yaw，动态 --> gimbal_link -- 外参，静态 --> camera
 在已加载 ROS 与工作区环境的终端运行：
 
 ```bash
-ros2 run identify_pack serial_bridge --serial /dev/ttyUSB0 --baud 115200
+ros2 run identify_pack serial_bridge_node --serial /dev/ttyUSB0 --baud 115200
 ros2 topic echo /gimbal/joint_states
 ```
 
