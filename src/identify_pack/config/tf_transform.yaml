@@ -6,6 +6,7 @@ tf_transform:
 
     # Actual measured yaw in sensor_msgs/JointState.position, radians.
     # The receiving serial node must supply header.stamp using the ROS clock.
+    # serial_bridge publishes this topic after converting feedback degrees to radians.
     joint_states_topic: /gimbal/joint_states
     yaw_joint_name: gimbal_yaw_joint
     angle_sign: 1.0             # Set -1.0 for clockwise-positive hardware.
@@ -17,7 +18,7 @@ tf_transform:
     base_to_gimbal_translation_m: [0.0, 0.0, 0.0]
 
     # Option A: absolute path to camera_extrinsics.json; takes precedence.
-    camera_extrinsics_file: ''
+    camera_extrinsics_file: /home/lulu/gcs/camera_extrinsics.json
 
     # Option B: fill in measured pose, then set configured=true.
     # These zeros/identity are placeholders, not the camera mounting geometry.

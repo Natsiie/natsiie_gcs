@@ -66,3 +66,24 @@ parent 是 `gimbal_link`，child 是 `camera_optical_frame`；只应有一个节
 `camera_geometry.pixel_to_plane` 已支持去畸变视线与指定 Z 平面求交；
 实际物料顶面高度与标记平面可以不同，但必须填写实际高度。
 此工具的结果尚未接入颜色识别话题或串口协议。
+
+## 独立检查点工具
+
+在云台实际零位，布置 5～10 个未参与外参拟合的已知 XY 标记，覆盖工作区。
+保持原始图像和标定时相同焦距；检查板平面高度可与标定板不同，但必须实测。
+在 `/home/lulu/gcs` 下运行：
+
+```bash
+python3 natsiie_gcs/src/identify_pack/identify_pack/scripts/validate_camera_extrinsics.py \
+  --extrinsics camera_extrinsics.json \
+  --device /dev/camera_upper \
+  --plane-z-mm -72.5 \
+  --output camera_extrinsics_check.json
+```
+
+上面的高度只是当前标定平面值，验证物块/圆环时替换成实际被识别平面的 Z。
+Space 冻结，左键点击后输入实测 `X Y`（mm）；程序输出预测坐标、带符号 dX/dY、
+XY 距离误差。U 撤销，S 完成保存报告，Q 取消。程序不会重新拟合或修改外参。
+可加 `--tolerance-mm` 指定实际机构允许的 XY 误差上限，超限时退出码为 2。
+`--points` 支持离线检查，格式与标定对应点列表相同；不得将拟合点当作独立验证点。
+这个工具只验证零位下的固定相机变换，动态 TF 接入后另需验证多个云台角度。

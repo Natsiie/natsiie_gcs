@@ -7,6 +7,7 @@ import numpy as np
 
 from identify_pack.scripts.camera_geometry import estimate_camera_transform, pixel_to_plane
 from identify_pack.scripts.calibrate_camera_extrinsics import build_result
+from identify_pack.scripts.validate_camera_extrinsics import evaluate_point
 
 
 class CameraGeometryTests(unittest.TestCase):
@@ -66,6 +67,32 @@ class CameraGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'collinear'):
             estimate_camera_transform(self.pixels, [[index, 0] for index in range(9)],
                                       0, self.matrix, self.distortion)
+
+    def test_independent_point_errors_in_millimetres(self):
+        point = np.array([0.08, 0.03, 0.02])
+        rotation = self.transform[:3, :3].T
+        rvec = cv2.Rodrigues(rotation)[0]
+        tvec = -rotation @ self.transform[:3, 3]
+        pixel = cv2.projectPoints(point.reshape(1, 3), rvec, tvec,
+                                  self.matrix, self.distortion)[0].reshape(2)
+        calibration = {
+            'camera_matrix': self.matrix.tolist(), 'dist_coeffs': self.distortion.tolist(),
+            'parent_from_camera_matrix': self.transform.tolist(), 'image_size': [640, 480],
+        }
+        result = evaluate_point({'pixel': pixel.tolist(), 'xy_mm': [77.0, 34.0]},
+                                calibration, 20.0)
+        np.testing.assert_allclose(result['predicted_xyz_mm'], [80, 30, 20], atol=1e-4)
+        self.assertAlmostEqual(result['dx_mm'], 3.0, places=4)
+        self.assertAlmostEqual(result['dy_mm'], -4.0, places=4)
+        self.assertAlmostEqual(result['xy_error_mm'], 5.0, places=4)
+
+    def test_validation_rejects_out_of_bounds_pixel(self):
+        calibration = {
+            'camera_matrix': self.matrix.tolist(), 'dist_coeffs': self.distortion.tolist(),
+            'parent_from_camera_matrix': self.transform.tolist(), 'image_size': [640, 480],
+        }
+        with self.assertRaisesRegex(ValueError, 'bounds'):
+            evaluate_point({'pixel': [640, 0], 'xy_mm': [0, 0]}, calibration, 40)
 
     def test_plane_behind_camera_rejected(self):
         with self.assertRaisesRegex(ValueError, 'behind'):

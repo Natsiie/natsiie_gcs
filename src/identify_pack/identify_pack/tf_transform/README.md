@@ -25,7 +25,26 @@ gimbal_base -- 实际 yaw，动态 --> gimbal_link -- 外参，静态 --> camera
 
 ## 角度输入接口
 
-串口接收节点将实际角度转换成下面的消息。不要用目标指令角度代替反馈。
+`serial_bridge` 接收 `TYPE=0x07` 的反馈帧，载荷为 ASCII 角度（单位度），
+转换为弧度后发布下面的消息。不要用目标指令角度代替反馈。
+
+反馈帧格式：`FF 07 LEN PAYLOAD XOR FE`，例如 `90.0` 的 payload 是 ASCII 字节。
+校验是 `TYPE + LEN + PAYLOAD` 的逐字节异或，与 `protocol.py` 一致。
+例如实际角度 90.0 度的完整反馈是 `FF 07 04 39 30 2E 30 14 FE`。
+串口桥每 10 ms 检查输入缓冲区，支持分片/连续帧和校验失败后的重同步。
+`GimbalYaw` 不会作为发送话题订阅。
+
+在已加载 ROS 与工作区环境的终端运行：
+
+```bash
+ros2 run identify_pack serial_bridge --serial /dev/ttyUSB0 --baud 115200
+ros2 topic echo /gimbal/joint_states
+```
+
+不要同时运行占用同一设备的串口测试脚本或旧串口桥。
+串口桥的 `joint_states_topic` 和 `yaw_joint_name` 参数必须与 TF 节点一致；
+正负方向及零位补偿由 TF 节点的 `angle_sign` 和 `angle_offset_rad` 处理。
+串口桥不发布没有接收到的默认角度，非法/非有限角度不会更新话题。
 
 ```python
 from sensor_msgs.msg import JointState

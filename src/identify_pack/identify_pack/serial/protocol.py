@@ -5,7 +5,7 @@
     | 0xFF | TYPE | LEN  |   PAYLOAD(UTF-8) |  CRC8  | 0xFE |
     +------+------+------+------------------+--------+------+
 
-- TYPE  : 消息类型（见 TOPIC_TYPES）
+- TYPE  : 消息类型（见 TOPIC_TYPES）；0x07 GimbalYaw 为下位机反馈角度
 - LEN   : payload 字节数（最大 255）
 - CRC8  : 对 TYPE+LEN+PAYLOAD 逐字节异或
 - 帧头/帧尾固定 0xFF / 0xFE
@@ -24,13 +24,23 @@ TOPIC_TYPES = {
     'ring_station': 0x04,
     'stacked_ring': 0x05,
     'QR_Decode':    0x06,
+    'GimbalYaw':    0x07,  # 下位机 -> 上位机，ASCII 角度，单位 deg
 }
+
+# 只允许上位机向下位机发送的 ROS 话题；GimbalYaw 是反馈帧。
+OUTGOING_TOPIC_TYPES = {
+    topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
+    if topic != 'GimbalYaw'
+}
+GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}
 
 
 def make_frame(type_byte: int, text: str) -> bytes:
     """把一段文本打包成一帧字节。"""
+    if not isinstance(type_byte, int) or not 0 <= type_byte <= 0xFF:
+        raise ValueError(f"type_byte 必须是 0..255 的整数: {type_byte!r}")
     payload = text.encode('utf-8')
     if len(payload) > MAX_PAYLOAD:
         raise ValueError(f'payload 过长: {len(payload)} > {MAX_PAYLOAD}')
@@ -39,6 +49,37 @@ def make_frame(type_byte: int, text: str) -> bytes:
     for b in body:
         crc ^= b
     return bytes([HEAD]) + body + bytes([crc, TAIL])
+
+
+def extract_frames(buffer: bytes):
+    """从串口字节流中提取完整合法帧，返回 ``(frames, remainder)``。
+
+    不完整帧会保留到下一次调用；坏帧会丢弃一个字节后重新寻找帧头，
+    这样校验失败不会卡住后续合法帧。
+    """
+    pending = bytearray(buffer)
+    frames = []
+    while pending:
+        start = pending.find(bytes([HEAD]))
+        if start < 0:
+            pending.clear()
+            break
+        if start:
+            del pending[:start]
+        if len(pending) < 3:
+            break
+        length = pending[2]
+        frame_size = 5 + length
+        if len(pending) < frame_size:
+            break
+        parsed = parse_frame(bytes(pending[:frame_size]))
+        if parsed is None:
+            del pending[0]
+            continue
+        type_byte, payload, _ = parsed
+        frames.append((type_byte, payload))
+        del pending[:frame_size]
+    return frames, bytes(pending)
 
 
 def parse_frame(buf: bytes):

@@ -67,7 +67,7 @@ def main():
         return 1
 
     print(f'已打开 {ser.port} @ {ser.baudrate}，超时 {timeout}s')
-    payload = bytes(range(0x05, 0x10))   # 05 06 07 08 09 0A 0B 0C
+    payload = bytes(range(0x05, 0x0D))   # 05 06 07 08 09 0A 0B 0C
     frame = make_frame(args.type, payload)
     print(f'payload: {payload.hex(" ")}，type=0x{args.type:02X}')
     print(f'帧: {frame.hex(" ")}（{len(frame)} 字节）')
