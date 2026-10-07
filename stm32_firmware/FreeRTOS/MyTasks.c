@@ -33,7 +33,7 @@ void Chassis_Tasks(void *p_arg)
   */
 static void Serial_Test_Task(void)
 {
-    Serial_SendGimbalYaw(Servo_GetAngle(SERVO_GIMBAL));
+    Serial_SendGimbalYaw(Servo_GetAngle(SERVO_GIMBAL) - 42.0f);
 }
 
 /**
