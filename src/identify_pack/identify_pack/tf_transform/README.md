@@ -142,7 +142,9 @@ ros2 topic echo /pixel_to_base/point
 
 ## 自动颜色坐标发送
 
-现在可用 `color_to_arm.launch.py` 一次启动副相机、颜色检测、TF、像素投影和串口桥。
+总入口为 `race_start.launch.py`，直接定义相机、颜色检测、TF、像素投影和统一串口桥。
+默认启动主、副相机，主相机读取二维码；主相机由 `start_main_camera` 控制。
+`color_to_arm.launch.py` 仅保留旧命令兼容，参数映射后调用总入口，节点定义统一维护在总入口。
 无需鼠标点击。先关闭已经占用相机、串口或重复发布同一 TF 的节点。
 
 ```bash
@@ -150,11 +152,13 @@ cd /home/lulu/gcs/natsiie_gcs
 source /opt/ros/humble/setup.bash
 colcon build --packages-select identify_pack
 source install/setup.bash
-ros2 launch identify_pack color_to_arm.launch.py
+ros2 launch identify_pack race_start.launch.py show:=true
 ```
 
-已有相机发布图像时，可使用 `start_camera:=false`；查看颜色检测窗口用 `show:=true`。
-设备与波特率可覆盖：`camera_device:=/dev/camera_upper serial_port:=/dev/ttyUSB0 baud:=115200`。
+总入口没有主相机时，使用 `start_main_camera:=false`；已有副相机发布图像时，
+使用 `start_secondary_camera:=false`。查看颜色检测窗口用 `show:=true`。
+总入口设备与波特率可覆盖：`secondary_camera_device:=/dev/camera_upper serial_port:=/dev/ttyUSB0 baud:=115200`。
+独立颜色启动文件对应参数是 `camera_device`、`start_camera`，不要同时启动两个入口。
 `pixel_params_file`、`tf_params_file` 可指定源码 YAML。配置修改后重新构建或指定源码参数文件。
 
 自动链路：
@@ -173,7 +177,8 @@ header 是原图的时间戳和 optical frame；channels 与 points 一一对应
 
 物块顶面已按实测填写 `object_plane_z_mm: -12.5`、`object_plane_configured: true`。
 自动颜色投影始终用 object 平面，GUI 的其他平面选择仅用于点击检查。
-同色多个色块取面积最大的一个；识别到不同颜色时分别发送。空检测不发送旧目标。
+总入口任务模式仅允许一个抓取 ROI，取其面积最大的色块，并在停稳后才识别颜色。
+独立非任务模式仍可投影多个颜色。空检测不发送旧目标。
 `/color/targets_base` 同样使用 PointCloud，points 为 `gimbal_base` XYZ，单位 m，
 channels 中的 `color_id` 保留每个目标颜色。串口桥将 XYZ 乘 1000，仅在此处换成 mm。
 
@@ -189,7 +194,8 @@ LEN 是文本字节长度；XOR 对 TYPE、LEN、PAYLOAD 逐字节异或，名�
 颜色编号：1红、2黄、3蓝、4绿、5黑、6浅蓝。
 XYZ 是固定底座原点下的绝对坐标，不是像素、增量或电机脉冲。
 投影间隔默认 0.2 秒；串口桥 `target_max_hz` 默认每种颜色最多 5 Hz。
-连续帧是目标坐标更新，不应让下位机每帧重新排队执行一遍完整抓取。
+任务模式每个抓取目标仅在成功写入串口后锁定一次，不连续发送，直到完成确认。
+`target_max_hz` 是非任务模式的频率上限。
 
 统一启动关闭旧 `/Color`、`/ColorMotion` 串口转发（`send_legacy_color: false`），
 保留 ROS 发布；其他旧检测话题的串口转发仍按原配置。
@@ -199,5 +205,68 @@ XYZ 是固定底座原点下的绝对坐标，不是像素、增量或电机脉�
 本次仅修改上位机。仓库中的下位机接收仍是固定 8 字节，无法解析上述变长坐标帧；
 下位机需要由其维护者支持 TYPE/LEN/XOR 和 0x08，才能接入运动函数。
 上位机发出的 Z 是视觉目标表面高度；下位机须按自身夹爪和升降原点设置抓取高度。
-当前没有到位/忙碌应答、抓取次序或任务锁定，多个颜色的选择和执行由下位机处理。
+下位机的抓取完成与批次结束串口反馈尚未接入，当前预留下面的 ROS 接口。
 尚未实测自动定位时，应先验证接收数值和单个目标的到点行为，再进行抓取。
+
+## 任务顺序与停稳门控
+
+总入口启用 `serial_bridge_node.task_mode: true`，订阅 `/QR_Decode`。
+任务码格式为 `颜色顺序1+环号顺序1+颜色顺序2+环号顺序2`，例如 `156+123+516+231`。
+第一批按 1红、5黑、6浅蓝抓取，放到粗加工/暂存的 1、2、3 环；
+第二批按 5黑、1红、6浅蓝抓取，放到粗加工的 2、3、1 环。
+首次合法任务码通过原有 `0x06` 帧转发；重复码不会重置进度。
+任务码写入失败时禁止发送目标，重复识别到同一码会重试任务码发送。
+不同任务码在本轮执行期间被拒绝，新任务需重启串口任务节点。
+
+执行流程：等待任务码 -> 先观察转动 -> 连续停稳 -> 读取单个 ROI 的主色 ->
+匹配当前目标颜色 -> 投影 -> 发送一次 `0x08` -> 等待本次抓取完成确认。
+颜色不符继续等待；任何非 READY 状态立即禁止新的颜色识别/发送，
+清空待投影数据。停稳前已经下发的运动不会因上位机停止发送而自动取消。
+发送成功仅表示串口写入完成，不代表下位机已接收或抓取成功。
+
+抓取 ROI 文件仍为 `ROI_Range.txt`，请用现有 ROI 工具改为且仅保留一行 `x,y,w,h`。
+缺失或包含多个框时，任务模式会报错并禁止输出目标，不回退到全画面抓取。
+重新圈定后重新构建，或通过 `roi_file:=/absolute/path/ROI_Range.txt` 直接指定新文件。
+
+运动检测不依赖物块颜色，用 OpenCV 光流持续检测图像运动。
+建议另存一个运动 ROI 文件，圈住有纹理的转盘可见区域，避免背景、夹爪和其他运动物体：
+
+```bash
+ros2 launch identify_pack race_start.launch.py show:=true \
+  roi_file:=/absolute/path/ROI_Range.txt \
+  motion_roi_file:=/absolute/path/Motion_ROI.txt
+```
+
+`motion_roi_file` 空时使用整幅图像。这不是独立测量的转盘转速，
+背景占比、纹理、遮挡、照明和云台转动都会影响判断，需要现场观察 `/ColorMotion` 验证。
+无足够特征或帧间隔超过 0.25 秒时禁止认定停稳，并重新等待转动过程。
+总入口阈值默认：`moving_speed_px_s:=15.0`、`near_stop_speed_px_s:=3.0`、
+`required_low_speed_frames:=5`；检测到超过停稳阈值的运动，即使尚未完成运动确认也停止输出。
+
+预留接口（均为 ROS 话题，本次没有修改下位机）：
+
+- `/arm/task_status`：`std_msgs/String` JSON，包含任务码、状态、当前 sequence/batch/color/ring 和完整计划。
+- `/arm/pick_done`：`std_msgs/UInt32`，data 是本轮已实际抓取完成的序号 1～6；错误/重复序号被忽略。
+- `/arm/next_batch`：`std_msgs/UInt32`，第一批三个抓取已确认、粗加工和暂存放置完成后发送 data=1。
+
+第 3 个抓取确认后等待 `/arm/next_batch`，第 6 个确认后为 DONE，停止发送。
+序号不写入 `0x08`，坐标载荷仍是 `color_id,x_mm,y_mm,z_mm`；
+环号通过完整 `0x06` 任务码提供，下位机按同一任务顺序选取对应环号。
+本次没有实现圆环到点或粗加工/暂存放置动作。
+
+联调查看状态：
+
+```bash
+ros2 topic echo /ColorMotion
+ros2 topic echo /arm/task_status --qos-durability transient_local
+```
+
+仅在实物动作完成后，用下面的接口模拟完成反馈（逐次将 data 改为实际序号）：
+
+```bash
+ros2 topic pub --once /arm/pick_done std_msgs/msg/UInt32 '{data: 1}'
+ros2 topic pub --once /arm/next_batch std_msgs/msg/UInt32 '{data: 1}'
+```
+
+没有主相机时可 `start_main_camera:=false`，通过 `/QR_Decode` 注入实际任务码做联调；
+未提供任务码或完成反馈时，状态机会保持等待，不自动跳过。

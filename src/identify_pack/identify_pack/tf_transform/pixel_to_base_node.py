@@ -154,11 +154,12 @@ class PixelToBaseNode(Node):
                 return
             if msg.header.frame_id != self.camera_frame:
                 raise ValueError(f'Unexpected camera frame {msg.header.frame_id!r}')
-            self.validate_centers(msg)
-            self.last_center_stamp = stamp_ns
             if not msg.points:
+                self.last_center_stamp = stamp_ns
                 self.pending_centers.clear()
                 return
+            self.validate_centers(msg)
+            self.last_center_stamp = stamp_ns
             self.pending_centers.append((msg, time.monotonic()))
             self.project_pending_centers()
         except ValueError as error:
@@ -231,6 +232,9 @@ class PixelToBaseNode(Node):
                                  base_from_camera, self.planes['object'] / 1000.0)
             out.points.append(Point32(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2])))
         out.channels = [ChannelFloat32(name='color_id', values=sorted(selected))]
+        ready = self._channel_values(msg, 'motion_ready')
+        if len(ready) == 1:
+            out.channels.append(ChannelFloat32(name='motion_ready', values=list(ready)))
         return out
 
     @staticmethod

@@ -54,6 +54,7 @@ class ColorToSerialTests(unittest.TestCase):
             target_frame='gimbal_base', target_max_age=1.0, target_max_hz=5.0,
             target_topic='/color/targets_base', target_type=COLOR_TARGET_TYPE,
             _last_target_send={}, _last_target_stamp={},
+            task_mode=False,
             get_clock=lambda: self.clock, get_logger=Mock(), ser=Mock(),
         )
         self.bridge.ser.is_open = True
@@ -80,6 +81,7 @@ class ColorToSerialTests(unittest.TestCase):
             br=CvBridge(), color_cfg=build_default_color_config(), color_roi=None,
             lock_dominant=True, min_blob_area=300., min_blob_dimension=12.,
             show=False, camera_frame='camera_optical_frame', motion_detect=False,
+            require_single_roi=False,
             pub_centers=Mock(), pub_color=Mock(), get_logger=Mock(),
         )
         image = np.full((480, 640, 3), 255, dtype=np.uint8)

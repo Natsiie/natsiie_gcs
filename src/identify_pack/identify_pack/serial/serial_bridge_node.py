@@ -12,7 +12,8 @@ import math
 import time
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt32
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from sensor_msgs.msg import PointCloud
 
@@ -20,6 +21,7 @@ from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, OUTGOING_TOPIC_TYPES, extract_frames, make_frame,
     COLOR_TARGET_TYPE,
 )
+from identify_pack.scripts.pick_task import PickTask
 
 try:
     import serial
@@ -42,6 +44,10 @@ class SerialBridgeNode(Node):
         self.declare_parameter('target_max_age_sec', 1.0)
         self.declare_parameter('target_frame', 'gimbal_base')
         self.declare_parameter('send_legacy_color', True)
+        self.declare_parameter('task_mode', False)
+        self.declare_parameter('wait_between_batches', True)
+        self.declare_parameter('centers_topic', '/color/centers_pixel')
+        self.declare_parameter('camera_frame', 'camera_optical_frame')
         self.target_topic = self.get_parameter('target_topic').value
         self.target_type = int(self.get_parameter('target_type').value)
         self.target_max_hz = float(self.get_parameter('target_max_hz').value)
@@ -61,6 +67,23 @@ class SerialBridgeNode(Node):
             raise ValueError('Target topic and frame cannot be empty')
         self._last_target_send = {}
         self._last_target_stamp = {}
+        self.task_mode = self.get_parameter('task_mode').value
+        self.camera_frame = self.get_parameter('camera_frame').value
+        self.task = PickTask(self.get_parameter('wait_between_batches').value)
+        self.motion_stamp_ns = 0
+        self.ready_since_ns = 0
+        self.motion_ready = False
+        self.motion_receive_time = -math.inf
+        self.task_code_sent = False
+        self.pub_task_status = self.create_publisher(
+            String, '/arm/task_status', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        if self.task_mode:
+            self.create_subscription(String, 'QR_Decode', self._on_task, 10)
+            self.create_subscription(UInt32, '/arm/pick_done', self._on_pick_done, 10)
+            self.create_subscription(UInt32, '/arm/next_batch', self._on_next_batch, 10)
+            self.create_subscription(PointCloud, self.get_parameter('centers_topic').value,
+                                     self._on_motion, 1)
+            self._publish_task_status()
         self.ser = None
         self.rx_buffer = bytearray()
         self.pub_joint_state = self.create_publisher(
@@ -77,6 +100,8 @@ class SerialBridgeNode(Node):
                 self.get_logger().error(f'打开串口失败: {e}')
 
         for topic, type_byte in OUTGOING_TOPIC_TYPES.items():
+            if topic == 'QR_Decode' and self.task_mode:
+                continue  # 任务模式中只转发首次通过校验的任务码。
             if (topic in ('Color', 'ColorMotion')
                     and not self.get_parameter('send_legacy_color').value):
                 continue
@@ -87,6 +112,56 @@ class SerialBridgeNode(Node):
                 10)
         self.create_subscription(PointCloud, self.target_topic,
                                  self._send_color_targets, 1)
+
+    def _publish_task_status(self):
+        pick = self.task.expected
+        status = {'task_code': self.task.code, 'state': self.task.state,
+                  'sequence': pick.sequence if pick else 0,
+                  'batch': pick.batch if pick else 0,
+                  'color': pick.color if pick else 0, 'ring': pick.ring if pick else 0,
+                  'plan': [{'sequence': p.sequence, 'batch': p.batch,
+                            'color': p.color, 'ring': p.ring} for p in self.task.picks]}
+        self.pub_task_status.publish(String(data=json.dumps(status)))
+        self.get_logger().info(f'抓取任务: {status}')
+
+    def _on_task(self, msg):
+        try:
+            code = msg.data.strip()
+            changed = self.task.load(code, self.get_clock().now().nanoseconds)
+            if not self.task_code_sent:
+                self.task_code_sent = self._send(
+                    OUTGOING_TOPIC_TYPES['QR_Decode'], 'QR_Decode', code)
+            if changed:
+                self._publish_task_status()
+        except ValueError as error:
+            self.get_logger().warning(f'任务码拒绝: {error}', throttle_duration_sec=2.0)
+
+    def _on_pick_done(self, msg):
+        if self.task.complete(msg.data, self.get_clock().now().nanoseconds):
+            self._publish_task_status()
+        else:
+            self.get_logger().warning(f'忽略抓取完成序号 {msg.data}：当前状态或序号不符')
+
+    def _on_next_batch(self, msg):
+        if self.task.next_batch(msg.data, self.get_clock().now().nanoseconds):
+            self._publish_task_status()
+        else:
+            self.get_logger().warning('忽略批次通知：需要第一批三个抓取确认后发送 data=1')
+
+    def _on_motion(self, msg):
+        stamp_ns = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+        if stamp_ns <= self.motion_stamp_ns:
+            return
+        age = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        values = [channel.values for channel in msg.channels if channel.name == 'motion_ready']
+        valid = (msg.header.frame_id == self.camera_frame and stamp_ns > 0
+                 and -0.05 <= age <= self.target_max_age
+                 and len(values) == 1 and len(values[0]) == 1 and values[0][0] == 1.0)
+        if valid and not self.motion_ready:
+            self.ready_since_ns = stamp_ns
+        self.motion_ready = valid
+        self.motion_stamp_ns = stamp_ns
+        self.motion_receive_time = time.monotonic()
 
     def _poll_feedback(self):
         """读取并解析下位机反馈；角度载荷为 ASCII 度数，例如 ``90.0``。"""
@@ -185,6 +260,16 @@ class SerialBridgeNode(Node):
             return
         now = time.monotonic()
         interval = 1.0 / self.target_max_hz
+        if self.task_mode:
+            if not self.task_code_sent:
+                return
+            motion_age = (self.get_clock().now().nanoseconds - self.motion_stamp_ns) / 1e9
+            ready = [c.values for c in message.channels if c.name == 'motion_ready']
+            if (not self.motion_ready or motion_age > self.target_max_age
+                    or now - self.motion_receive_time > self.target_max_age
+                    or stamp_ns < self.ready_since_ns
+                    or len(ready) != 1 or list(ready[0]) != [1.0]):
+                return
         for index, point in enumerate(message.points):
             values = (float(color_ids[index]), point.x * 1000.0,
                       point.y * 1000.0, point.z * 1000.0)
@@ -195,6 +280,8 @@ class SerialBridgeNode(Node):
                 self.get_logger().warning(f'忽略非法颜色编号 {values[0]}')
                 continue
             color_id = int(values[0])
+            if self.task_mode and not self.task.accepts(color_id, stamp_ns):
+                continue
             if stamp_ns <= self._last_target_stamp.get(color_id, 0):
                 continue
             if now - self._last_target_send.get(color_id, -math.inf) < interval:
@@ -203,6 +290,10 @@ class SerialBridgeNode(Node):
             if self._send(self.target_type, self.target_topic, payload):
                 self._last_target_send[color_id] = now
                 self._last_target_stamp[color_id] = stamp_ns
+                if self.task_mode:
+                    self.task.sent(stamp_ns)
+                    self._publish_task_status()
+                    break
 
 
 def main(args=None):

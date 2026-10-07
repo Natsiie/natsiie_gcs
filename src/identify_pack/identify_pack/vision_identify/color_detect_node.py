@@ -9,7 +9,6 @@
 不含数字圆环识别（那是 circle_detect_node 的职责）。
 """
 import os
-import time
 import copy
 
 import rclpy
@@ -25,7 +24,7 @@ from identify_pack.scripts.color_config import (
     COLOR_DISPLAY, COLOR_NAMES, apply_dominant_color, build_default_color_config,
     find_color_blobs, load_color_config, load_roi_file, make_all_color_masks,
 )
-from identify_pack.scripts.motion import TurntableMotionTracker
+from identify_pack.scripts.turntable_motion import OpticalFlowMotion
 
 
 class ColorDetectNode(Node):
@@ -41,6 +40,8 @@ class ColorDetectNode(Node):
         self.declare_parameter('min_blob_dimension', 12)  # 色块最小边长(px)
         self.declare_parameter('lock_dominant_color', True)  # ROI 内主色锁定
         self.declare_parameter('motion_detect', True)  # 转盘转动/停稳判定
+        self.declare_parameter('motion_roi_file', '')  # 运动区域独立于抓取 ROI，空为整幅图。
+        self.declare_parameter('require_single_roi', False)
         self.declare_parameter('moving_speed_px_s', 30.0)
         self.declare_parameter('required_moving_frames', 2)
         self.declare_parameter('near_stop_speed_px_s', 25.0)
@@ -57,10 +58,16 @@ class ColorDetectNode(Node):
         self.lock_dominant = self.get_parameter('lock_dominant_color').get_parameter_value().bool_value
         self.motion_detect = self.get_parameter('motion_detect').get_parameter_value().bool_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
+        self.require_single_roi = self.get_parameter('require_single_roi').value
 
         self.color_cfg = self._load_color_config()
         self.color_roi = self._resolve_roi()
-        self.motion = TurntableMotionTracker(
+        motion_path = self.get_parameter('motion_roi_file').value
+        motion_rois = load_roi_file(motion_path) if motion_path else None
+        if motion_path and not motion_rois:
+            raise ValueError(f'运动 ROI 文件无有效区域: {motion_path}')
+        self.motion = OpticalFlowMotion(
+            rois=motion_rois,
             moving_speed=self.get_parameter('moving_speed_px_s').get_parameter_value().double_value,
             required_moving_frames=self.get_parameter('required_moving_frames').get_parameter_value().integer_value,
             near_stop_speed=self.get_parameter('near_stop_speed_px_s').get_parameter_value().double_value,
@@ -72,9 +79,12 @@ class ColorDetectNode(Node):
         self.pub_color = self.create_publisher(String, 'Color', 10)
         self.centers_topic = self.get_parameter('centers_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
+        self.motion_text = ''
         self.pub_centers = self.create_publisher(PointCloud, self.centers_topic, 10)
         self.pub_motion = self.create_publisher(String, 'ColorMotion', 10)
         self.get_logger().info(f'色块识别订阅 {image_topic}')
+        if self.require_single_roi and (not self.color_roi or len(self.color_roi) != 1):
+            self.get_logger().error('任务抓取模式需要且仅允许一个 ROI；请重新圈定，当前禁止输出目标')
 
     def _load_color_config(self):
         """加载颜色配置；路径未指定时依次尝试安装目录、源码 scripts 目录。"""
@@ -127,6 +137,30 @@ class ColorDetectNode(Node):
             self.get_logger().error(f'cv_bridge error: {error}')
             return
 
+        # 运动检测先执行，不依赖抓取 ROI 中是否出现色块。
+        ready = not self.motion_detect
+        if self.motion_detect:
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+            motion = self.motion.update(img, stamp)
+            ready = motion['ready']
+            out_motion = String(data=f'{motion["state"]}:{motion["speed"]:.1f}')
+            self.pub_motion.publish(out_motion)
+            self.get_logger().info(
+                f'Motion={motion["state"]} speed={motion["speed"]:.1f}px/s',
+                throttle_duration_sec=1.0)
+            self.motion_text = out_motion.data
+        roi_valid = not self.require_single_roi or (self.color_roi and len(self.color_roi) == 1)
+        if not ready or not roi_valid:
+            empty = PointCloud()
+            empty.header = copy.deepcopy(msg.header)
+            if not empty.header.frame_id:
+                empty.header.frame_id = self.camera_frame
+            empty.channels = [ChannelFloat32(name='motion_ready', values=[0.0])]
+            self.pub_centers.publish(empty)
+            if self.show:
+                self.show_frame(img)
+            return
+
         color_masks = make_all_color_masks(img, self.color_cfg)
         if self.color_roi and self.lock_dominant:
             # ROI 内主色锁定：面积最大的颜色锁定物块，盖住被误切的小面积颜色。
@@ -134,15 +168,17 @@ class ColorDetectNode(Node):
                 color_masks, self.color_roi, min_area=self.min_blob_area)
 
         color_parts = []
-        blob_pts = []
         centers = PointCloud()
         centers.header = copy.deepcopy(msg.header)
         if not centers.header.frame_id:
             centers.header.frame_id = self.camera_frame
         channels = {name: [] for name in ('color_id', 'area_px2', 'image_width', 'image_height')}
-        for (color_id, cx, cy, x, y, w, h, area) in find_color_blobs(
+        blobs = find_color_blobs(
                 color_masks, min_area=self.min_blob_area,
-                min_dimension=self.min_blob_dimension, roi=self.color_roi):
+                min_dimension=self.min_blob_dimension, roi=self.color_roi)
+        if self.require_single_roi and blobs:
+            blobs = [max(blobs, key=lambda blob: blob[7])]
+        for (color_id, cx, cy, x, y, w, h, area) in blobs:
             name = COLOR_NAMES[color_id]
             self.get_logger().info(
                 f'色块 {name}(质心 {cx:.0f},{cy:.0f} 框 {x},{y},{w},{h} 面积 {area:.0f})',
@@ -153,7 +189,6 @@ class ColorDetectNode(Node):
                 cv2.putText(img, f'{color_id}:{name}', (x, max(14, y - 5)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, c, 2)
             color_parts.append(f'{color_id}:{int(cx)},{int(cy)}')
-            blob_pts.append((color_id, cx, cy))
             centers.points.append(Point32(x=float(cx), y=float(cy), z=0.0))
             for key, value in zip(channels, (color_id, area, img.shape[1], img.shape[0])):
                 channels[key].append(float(value))
@@ -161,6 +196,7 @@ class ColorDetectNode(Node):
         # Pixel coordinates, not a metric cloud; preserve the source image timestamp.
         centers.channels = [ChannelFloat32(name=name, values=values)
                             for name, values in channels.items()]
+        centers.channels.append(ChannelFloat32(name='motion_ready', values=[1.0]))
         self.pub_centers.publish(centers)
 
         if color_parts:
@@ -168,23 +204,24 @@ class ColorDetectNode(Node):
             out_color.data = '/'.join(color_parts)
             self.pub_color.publish(out_color)
 
-        if self.motion_detect:
-            motion = self.motion.update(blob_pts, time.monotonic())
-            out_motion = String()
-            out_motion.data = f'{motion["state"]}:{motion["speed"]:.1f}'
-            self.pub_motion.publish(out_motion)
-            self.get_logger().info(
-                f'Motion={motion["state"]} speed={motion["speed"]:.1f}px/s '
-                f'move={motion["moving_frames"]}/{motion["required_moving_frames"]} '
-                f'low={motion["low_speed_frames"]}/{motion["required_low_speed_frames"]}',
-                throttle_duration_sec=1.0)
-            if self.show:
-                cv2.putText(img, out_motion.data, (10, img.shape[0] - 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-
         if self.show:
-            cv2.imshow('color_detect', img)
-            cv2.waitKey(1)
+            self.show_frame(img)
+
+    def show_frame(self, img):
+        if self.motion_detect:
+            cv2.putText(img, self.motion_text, (10, img.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+        for index, (x, y, w, h) in enumerate(self.color_roi or [], start=1):
+            left, top = max(0, x), max(0, y)
+            right = min(img.shape[1] - 1, x + w - 1)
+            bottom = min(img.shape[0] - 1, y + h - 1)
+            if right < left or bottom < top:
+                continue
+            cv2.rectangle(img, (left, top), (right, bottom), (255, 255, 0), 2)
+            cv2.putText(img, f'ROI {index}', (left, max(16, top - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1, cv2.LINE_AA)
+        cv2.imshow('color_detect', img)
+        cv2.waitKey(1)
 
 
 def main(args=None):

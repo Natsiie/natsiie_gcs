@@ -7,6 +7,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
+from rclpy.qos import qos_profile_sensor_data
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
@@ -25,7 +26,7 @@ class QRDecodeNode(Node):
         self.min_consistent = self.get_parameter('min_consistent').get_parameter_value().integer_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
 
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
+        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
         self.pub = self.create_publisher(String, 'QR_Decode', 10)
         self.br = CvBridge()
 
@@ -59,7 +60,8 @@ class QRDecodeNode(Node):
                 self.last_data = current
                 self.consistent_count = 1
 
-            self.get_logger().info(f'Detected QR: {current} (count={self.consistent_count})')
+            self.get_logger().info(f'Detected QR: {current} (count={self.consistent_count})',
+                                   throttle_duration_sec=1.0)
 
             if self.consistent_count >= self.min_consistent:
                 msg = String()
@@ -69,6 +71,9 @@ class QRDecodeNode(Node):
                 # reset to avoid duplicate continual publishes
                 self.consistent_count = 0
                 self.last_data = None
+        else:
+            self.last_data = None
+            self.consistent_count = 0
 
         if self.show:
             # draw small overlay if detected
@@ -87,7 +92,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

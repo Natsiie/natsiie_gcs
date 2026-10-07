@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
-import itertools
 import math
+
+import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 
 class TurntableMotionTracker:
@@ -49,30 +51,20 @@ class TurntableMotionTracker:
         """把当前色块匹配到上一帧（颜色一致 + 最近），返回最大位移速度 px/s。"""
         if not prev or not current or len(prev) != len(current):
             return None
-        best_dists = None
-        best_total = math.inf
-        # 色块数量通常很少，穷举排列比引入依赖更简单可靠。
-        for order in itertools.permutations(range(len(current))):
-            dists = []
-            ok = True
-            for old_i, new_i in enumerate(order):
-                if prev[old_i][0] != current[new_i][0]:
-                    ok = False
-                    break
-                d = math.hypot(current[new_i][1] - prev[old_i][1],
-                               current[new_i][2] - prev[old_i][2])
-                if d > max_match_distance:
-                    ok = False
-                    break
-                dists.append(d)
-            if ok:
-                total = sum(dists)
-                if total < best_total:
-                    best_total = total
-                    best_dists = dists
-        if best_dists is None:
+        costs = np.full((len(prev), len(current)), np.inf)
+        for old_i, old in enumerate(prev):
+            for new_i, new in enumerate(current):
+                if old[0] != new[0]:
+                    continue
+                distance = math.hypot(new[1] - old[1], new[2] - old[2])
+                if distance <= max_match_distance:
+                    costs[old_i, new_i] = distance
+        # Solve the same minimum-total-distance assignment without n! permutations.
+        try:
+            rows, columns = linear_sum_assignment(costs)
+        except ValueError:
             return None
-        return max(best_dists) / interval_s
+        return float(costs[rows, columns].max()) / interval_s
 
     def update(self, blobs, timestamp: float) -> dict:
         """处理一帧色块，返回运动状态 dict。
