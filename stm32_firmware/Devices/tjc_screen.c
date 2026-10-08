@@ -104,6 +104,33 @@ void Screen_ShowTaskCode(const char *code_t0, const char *code_t2)
     TJC_SendCmd(buf);
 }
 
+/* 从二维码原始文本解析 4 组三位数 (自动忽略 '+'/空格等分隔符, 也兼容无分隔的 12 位数字),
+ * 拆成 t0 = 第1+2组 "aaa+bbb" / t2 = 第3+4组 "ccc+ddd" 显示。
+ * 例: "156+123+516+231" 或 "156123516231" -> t0="156+123" t2="516+231" */
+void Screen_ShowQRCode(const char *raw)
+{
+    uint16_t g[4] = {0};
+    uint8_t  gi = 0, d = 0;
+    char     t0[16], t2[16];
+
+    while (*raw && gi < 4)
+    {
+        if (*raw >= '0' && *raw <= '9')
+        {
+            g[gi] = g[gi] * 10 + (uint16_t)(*raw - '0');
+            if (++d == 3) { gi++; d = 0; }
+        }
+        raw++;
+    }
+
+    if (gi == 4)
+    {
+        sprintf(t0, "%03d+%03d", (int)g[0], (int)g[1]);
+        sprintf(t2, "%03d+%03d", (int)g[2], (int)g[3]);
+        Screen_ShowTaskCode(t0, t2);
+    }
+}
+
 void Screen_ShowCount(uint8_t ok, uint8_t err, uint8_t total)
 {
     char buf[64];

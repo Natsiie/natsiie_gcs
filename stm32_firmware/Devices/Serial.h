@@ -3,32 +3,87 @@
 #include <stdint.h>
 
 /* ============================================================
- *  上位机 <-> STM32 串口通信协议（复刻自 yyb_stm32 / SYSTEM/Serial.c）
+ *  上位机(natsiie_gcs/ROS) <-> 下位机(STM32F4) 串口协议
  *
- *  物理层 : USART1, PA9=TX, PA10=RX, 115200, 8N1, 无校验
- *  帧格式 : 0xFF 帧头 + 数据 + 0xFE 帧尾（包头包尾共 10 字节, 数据 8 字节）
- *    接收 : 0xFF + 8 字节数据 + 0xFE   （共 10 字节）
- *    发送 : 0xFF + 8 字节数据 + 0xFE   （共 10 字节）
- *  接收方式: RXNE 中断 + 三状态状态机，收满一帧置 Serial_RxFlag = 1
+ *  物理层: USART1, PA9=TX, PA10=RX, 115200, 8N1, 无校验
+ *  帧格式: 0xFF | TYPE | LEN | PAYLOAD(UTF-8) | CRC8 | 0xFE
+ *    - LEN  = payload 字节数 (0~255)
+ *    - CRC8 = TYPE ^ LEN ^ PAYLOAD 逐字节异或
+ *    - 类型号与上位机 identify_pack/serial/protocol.py 的 TOPIC_TYPES 一致
+ *  接收: RXNE 中断 + 帧结构状态机, 收满一帧置 Serial_RxFrameReady=1,
+ *        任务里调 Serial_ProcessFrame() 按 type 解析。
  * ============================================================ */
 
-#define SERIAL_RX_DATA_LEN  8   /* 接收数据长度（字节） */
-#define SERIAL_TX_DATA_LEN  8   /* 发送数据长度（字节） */
+#define SERIAL_HEAD  0xFF
+#define SERIAL_TAIL  0xFE
 
-/* natsiie GCS 帧类型 (与上位机 protocol.py 的 TOPIC_TYPES 保持一致) */
-#define SERIAL_TYPE_GIMBAL_YAW  0x07   /* 云台舵机角度反馈 (下位机 -> 上位机, ASCII 度) */
+/* 帧类型 (0x07 是下位机->上位机的反馈, 不接收) */
+#define SERIAL_TYPE_COLOR         0x01   /* 色块像素列表: id:cx,cy/id:cx,cy/... */
+#define SERIAL_TYPE_COLOR_MOTION  0x02   /* 转盘运动: state:speed(px/s) */
+#define SERIAL_TYPE_TURNTABLE     0x03   /* 转盘: cx,cy,radius,stable */
+#define SERIAL_TYPE_RING_STATION  0x04   /* 三圆环工位: err_x,err_y,ang,corr_x,corr_y,corr_yaw,within */
+#define SERIAL_TYPE_STACKED_RING  0x05   /* 叠放位: 同 0x04 */
+#define SERIAL_TYPE_QR_DECODE     0x06   /* QR 任务码字符串 */
+#define SERIAL_TYPE_GIMBAL_YAW    0x07   /* 云台角度反馈 (下位机->上位机) */
+#define SERIAL_TYPE_COLOR_TARGET  0x08   /* 颜色目标点: color_id,x_mm,y_mm,z_mm */
+#define SERIAL_TYPE_GRAB_CMD      0x09   /* 夹爪到位授权: payload "1"=授权下降抓取 */
 
-extern uint8_t Serial_TxPacket[SERIAL_TX_DATA_LEN]; /* 待发送的 8 字节数据 */
-extern uint8_t Serial_RxPacket[SERIAL_RX_DATA_LEN]; /* 收到的 8 字节数据   */
-extern uint8_t Serial_RxFlag;                       /* 收到完整一帧 = 1    */
+#define SERIAL_RX_PAYLOAD_MAX     64     /* 接收载荷缓冲上限 */
+
+/* 旧 TX 数据包 (Serial_SendPacket 用, 8 字节) */
+#define SERIAL_TX_DATA_LEN        8
+extern uint8_t Serial_TxPacket[SERIAL_TX_DATA_LEN];
+
+/* 接收原始帧 (ISR 填, 任务消费) */
+typedef struct {
+    uint8_t type;
+    uint8_t len;
+    uint8_t payload[SERIAL_RX_PAYLOAD_MAX + 1];   /* +1 存 '\0' */
+} Serial_RxFrame_t;
+
+/* 解析结果 (Serial_ProcessFrame 按 type 填充, 业务层读) */
+typedef struct {
+    uint8_t type;                       /* 最近一帧的 type */
+
+    /* 0x08 ColorTarget */
+    uint8_t target_color_id;
+    float   target_x_mm, target_y_mm, target_z_mm;
+
+    /* 0x09 GrabCmd */
+    uint8_t grab_cmd;
+
+    /* 0x02 ColorMotion */
+    uint8_t motion_state;
+    float   motion_speed;
+
+    /* 0x03 Turntable */
+    float   turntable_cx, turntable_cy, turntable_r;
+    uint8_t turntable_stable;
+
+    /* 0x04 / 0x05 圆环工位 */
+    float   ring_err_x, ring_err_y, ring_ang_err;
+    float   ring_corr_x, ring_corr_y, ring_corr_yaw;
+    uint8_t ring_within;
+
+    /* 0x01 Color 像素列表 (最多 6 段) */
+    uint8_t color_count;
+    uint8_t color_id[6];
+    int16_t color_cx[6], color_cy[6];
+
+    /* 0x06 QR 任务码字符串 */
+    char    str[SERIAL_RX_PAYLOAD_MAX + 1];
+} Serial_RxData_t;
+
+extern volatile uint8_t Serial_RxFrameReady;  /* 1 = 收到完整一帧待处理 */
+extern Serial_RxFrame_t  Serial_RxFrame;
+extern Serial_RxData_t   Serial_RxData;
 
 void     Serial_Init(void);                        /* 初始化 USART1            */
 void     Serial_SendByte(uint8_t byte);            /* 阻塞发送 1 字节          */
 void     Serial_SendArray(uint8_t *array, uint16_t len);
 void     Serial_SendString(char *str);
 void     Serial_SendPacket(void);                  /* 0xFF + 8 字节 + 0xFE     */
-void     Serial_SendGimbalYaw(float angle_deg);    /* 云台舵机角度 -> 上位机 (GCS 0x07 帧) */
-uint8_t  Serial_GetRxFlag(void);                   /* 读一次，读完自动清 0     */
-void     Serial_SetRxState(uint8_t state);         /* 复位接收状态机（可选）   */
+void     Serial_SendGimbalYaw(float angle_deg);    /* 云台角度 -> 上位机 (0x07) */
+void     Serial_ProcessFrame(void);                /* 任务里调用: 按 type 解析一帧 */
 
 #endif

@@ -11,6 +11,9 @@
 extern float motor5_pos;
 extern float motor6_pos;
 
+/* 上位机 0x09 GrabCmd 授权抓取 (Serial.c 收到 "1" 置 1, 分步模式下消费后清 0) */
+extern uint8_t grab_cmd;
+
 #define KIN_DEG2RAD (MATH_PI / 180.0f)
 #define KIN_RAD2DEG (180.0f / MATH_PI)
 
@@ -21,6 +24,7 @@ extern float motor6_pos;
 #define KIN_STEP_GIMBAL        3   /* 云台   -> 目标角 */
 #define KIN_STEP_REACH_EXTEND  4   /* 电机6 -> 目标 r */
 #define KIN_STEP_REACH_HOIST   5   /* 电机5 -> 抓取 z */
+#define KIN_STEP_WAIT_GRAB     6   /* 等 ok(GrabCmd 0x09) -> 电机5 降到抓取高度 */
 
 /* ================= 标定参数 (占位, 现场标定) ================= */
 float  kin_gimbal_theta_offset = 42.0f;      /* 现场标定: θ=0(+X) 时舵机值 = 42 */
@@ -30,20 +34,23 @@ float  kin_gimbal_gain         = 1.033333f;  /* 斜率(舵机值/θ) = (135-42)/
 float  kin_extend_mm_per_deg   = 0.174f;    /* 实测: 伸出140.76mm / 808.8度 */
 float  kin_extend_zero_deg     = 0.0f;      /* 电机6=0 时 r=104.48mm */
 float  kin_extend_r_min_mm     = 104.48f;   /* 电机6=0(最短)时径向距离 = √(104.47²+1.36²) */
-int8_t kin_extend_sign         = -1;        /* 伸出时 motor6_pos 读负值, 取 -1 才让 r 增大 */
+int8_t kin_extend_sign         = -1;        /* 伸出时 motor6_pos 读负值(0=最短→-808.8=最远), 取 -1 让 r 增大 */
+float  kin_extend_target_offset_mm = 30.0f; /* 视觉给的点在伸出方向偏近20mm, 逆解命令补上(只改命令, 不改正解/FK) */
 
 float  kin_hoist_mm_per_deg    = 1.0f;
 float  kin_hoist_zero_deg      = 0.0f;
 float  kin_hoist_z_min_mm      = 0.0f;
 int8_t kin_hoist_sign          = 1;
 
-float  kin_extend_r_max_mm     = 1000.0f;
+float  kin_extend_r_max_mm     = 245.0f;   /* 物理最长 r ≈ 245mm (808.8度 × 0.174 + 104.48) */
 float  kin_hoist_z_max_mm      = 1000.0f;
 
 /* 抓取高度(下位机定死) + 转云台前安全位姿 (现场标定) */
-float  kin_grab_z_mm           = 0.0f;    /* TODO 现场量: 抓取时夹爪距地面高度 */
-float  kin_safe_extend_mm      = 600.0f;  /* 转云台前: 电机6 安全位 */
-float  kin_safe_hoist_mm       = 600.0f;  /* 转云台前: 电机5 安全位 */
+float  kin_grab_z_mm           = 0.0f;    /* ok 后电机5 降到这个抓取高度 (测试用 0) */
+float  kin_safe_extend_mm      = 110.0f;  /* 转云台前: 电机6 安全位(缩回, 靠近最短104.48) */
+float  kin_safe_hoist_mm       = 300.0f;  /* 接近点上方时: 电机5 预抬高度 (测试用 300) */
+uint8_t kin_hoist_enable       = 1;       /* 1=走电机5升降轴; 0=跳过升降步 */
+uint8_t kin_handshake_enable   = 1;       /* 1=分步模式: 到点上方后等 ok(0x09) 再降到抓取高度; 0=全自动直接降 */
 
 float    kin_gimbal_step_deg   = 1.0f;
 float    kin_gimbal_tol_deg    = 0.5f;
@@ -64,20 +71,22 @@ uint8_t kin_done      = 0;
 uint8_t kin_reachable = 1;
 
 float kin_target_x = 0.0f, kin_target_y = 0.0f;
+float kin_last_tx  = 0.0f, kin_last_ty  = 0.0f;  /* 上次已执行的目标, 用于自动触发 */
 float kin_target_theta = 0.0f, kin_target_r = 0.0f, kin_target_z_mm = 0.0f;
 
 float kin_pose_x = 0.0f, kin_pose_y = 0.0f, kin_pose_z = 0.0f;
 float kin_pose_theta = 0.0f, kin_pose_r = 0.0f, kin_pose_z_mm = 0.0f;
 
-static uint8_t  kin_step = KIN_STEP_IDLE;   /* 当前步骤 */
-static float    kin_tgt_servo = 0.0f;       /* 目标舵机角 */
-static float    kin_tgt_m5_deg = 0.0f;      /* 目标电机5码值(度) */
-static float    kin_tgt_m6_deg = 0.0f;      /* 目标电机6码值(度) */
-static float    kin_safe_extend_deg = 0.0f; /* 安全位电机6码值 */
-static float    kin_safe_hoist_deg  = 0.0f; /* 安全位电机5码值 */
-static uint8_t  kin_phase = 0;              /* 0/1 交错: 发命令 / 读位置 (防 CAN 背靠背冲突) */
-static uint16_t kin_keepalive = 0;          /* 兜底重发计数 */
-static uint8_t  kin_need_send = 0;          /* 1=当前步需要发一次位置命令 */
+uint8_t  kin_step = KIN_STEP_IDLE;   /* 当前步骤 (Watch 可查, 看卡在哪一步) */
+float    kin_tgt_servo = 0.0f;       /* 目标舵机角 */
+float    kin_tgt_m5_deg = 0.0f;      /* 目标电机5码值(度) */
+float    kin_tgt_m6_deg = 0.0f;      /* 目标电机6码值(度) */
+float    kin_safe_extend_deg = 0.0f; /* 安全位电机6码值 */
+float    kin_safe_hoist_deg  = 0.0f; /* 安全位电机5码值 */
+uint8_t  kin_phase = 0;              /* 0/1 交错: 发命令 / 读位置 (防 CAN 背靠背冲突) */
+uint16_t kin_keepalive = 0;          /* 兜底重发计数 */
+uint8_t  kin_need_send = 0;          /* 1=当前步需要发一次位置命令 */
+uint32_t kin_motion_count = 0;       /* 每次 Kin_GotoXY +1: 确认重触发有没有进来 */
 
 /* ================= 单位换算 ================= */
 float Kin_ThetaToServo(float theta_deg)
@@ -141,10 +150,13 @@ uint8_t Kin_IK(float x, float y, float z, float *theta_deg, float *r_mm, float *
 /* 上层给 (x,y), z 用 kin_grab_z_mm; 启动安全运动顺序 */
 void Kin_GotoXY(float x, float y)
 {
-    float r  = sqrtf(x * x + y * y);
+    float r  = sqrtf(x * x + y * y) + kin_extend_target_offset_mm;  /* 视觉点在伸出方向少20mm, 补上再算 */
     float th = atan2f(y, x) * KIN_RAD2DEG;
 
     kin_reachable = 1;
+    kin_motion_count++;   /* 触发计数+1: Watch 看它确认重触发有没有进来 */
+    kin_last_tx = x;      /* 记录本次目标, 供自动触发比较 */
+    kin_last_ty = y;
     if (r < kin_extend_r_min_mm) { r = kin_extend_r_min_mm; kin_reachable = 0; }
     if (r > kin_extend_r_max_mm) { r = kin_extend_r_max_mm; kin_reachable = 0; }
 
@@ -187,6 +199,7 @@ void Kin_Update(void)
     if (kin_cmd == 1)      { kin_cmd = 0; Kin_GotoXY(kin_target_x, kin_target_y); }
     else if (kin_cmd == 2) { kin_cmd = 0; Kin_Stop(); }
 
+    /* 只由 kin_cmd=1 触发运动: 坐标(kin_target_x/y)变了不会自己动, 必须手动给 cmd */
     if (!kin_active) return;
 
     /* 云台步: 每拍斜坡到目标角 (PWM, 不占 CAN) */
@@ -204,6 +217,13 @@ void Kin_Update(void)
             kin_need_send = 1;
             kin_keepalive = 0;
         }
+        return;
+    }
+
+    /* 等 ok 步: 不动机器, 等上位机 GrabCmd(0x09) 授权 -> 电机5 降到抓取高度 */
+    if (kin_step == KIN_STEP_WAIT_GRAB)
+    {
+        if (grab_cmd) { grab_cmd = 0; kin_step = KIN_STEP_REACH_HOIST; kin_need_send = 1; kin_keepalive = 0; }
         return;
     }
 
@@ -246,7 +266,7 @@ void Kin_Update(void)
         case KIN_STEP_SAFE_EXTEND:
             Tower_ReadPos6();
             if (fabsf(Kin_ExtendDegToMm(motor6_pos) - kin_safe_extend_mm) <= kin_pos_tol_mm)
-            { kin_step = KIN_STEP_SAFE_HOIST; kin_need_send = 1; kin_keepalive = 0; }
+            { kin_step = kin_hoist_enable ? KIN_STEP_SAFE_HOIST : KIN_STEP_GIMBAL; kin_need_send = 1; kin_keepalive = 0; }
             break;
         case KIN_STEP_SAFE_HOIST:
             Tower_ReadPos5();
@@ -256,7 +276,15 @@ void Kin_Update(void)
         case KIN_STEP_REACH_EXTEND:
             Tower_ReadPos6();
             if (fabsf(Kin_ExtendDegToMm(motor6_pos) - kin_target_r) <= kin_pos_tol_mm)
-            { kin_step = KIN_STEP_REACH_HOIST; kin_need_send = 1; kin_keepalive = 0; }
+            {
+                /* 电机6 到位(点上方, 电机5 在安全/预抬高度): 分步模式等 ok, 否则直接降 */
+                if (kin_hoist_enable)
+                {
+                    kin_step = kin_handshake_enable ? KIN_STEP_WAIT_GRAB : KIN_STEP_REACH_HOIST;
+                    kin_need_send = 1; kin_keepalive = 0;
+                }
+                else { kin_active = 0; kin_done = 1; kin_step = KIN_STEP_IDLE; }
+            }
             break;
         case KIN_STEP_REACH_HOIST:
             Tower_ReadPos5();

@@ -38,6 +38,7 @@ extern float  kin_extend_mm_per_deg;     /* 每电机"度"对应多少 mm 水平
 extern float  kin_extend_zero_deg;       /* r=kin_extend_r_min_mm 时的电机码值(度) */
 extern float  kin_extend_r_min_mm;       /* 最短时夹爪中心到转轴的水平距离(mm) */
 extern int8_t kin_extend_sign;           /* +1: 电机码值增大->r增大; -1 反向 */
+extern float  kin_extend_target_offset_mm; /* 视觉点在伸出方向偏近的补偿(mm), 逆解命令加在 r 上 */
 
 /* 升降(电机5): 高度 z(mm) <-> 电机码值(度) */
 extern float  kin_hoist_mm_per_deg;
@@ -70,6 +71,13 @@ extern uint8_t kin_cmd;        /* Watch: 写 1=GotoXY(kin_target_x/y), 2=停止 
 extern uint8_t kin_active;     /* 只读: 1=运动中 */
 extern uint8_t kin_done;       /* 只读: 1=刚到位(一次, 用后清0) */
 extern uint8_t kin_reachable;  /* 只读: 上次逆解 r 是否越界(0=被截断) */
+extern uint8_t kin_hoist_enable;    /* 1=走电机5升降轴; 0=跳过升降步(只测云台+电机6) */
+extern uint8_t kin_handshake_enable;/* 1=分步模式: 到点上方后等 ok(0x09) 再降到抓取高度; 0=全自动直接降 */
+
+/* 调试用 (Watch 只读): 运动内部状态 */
+extern uint8_t  kin_step;         /* 当前步骤 0=空闲 1=缩回 2=升 3=云台 4=伸 5=降 6=等ok */
+extern uint32_t kin_motion_count; /* 触发次数, 确认重触发有没有进来 */
+extern float    kin_tgt_servo, kin_tgt_m6_deg, kin_tgt_m5_deg; /* 内部目标(舵机/电机6/电机5 码值度) */
 
 extern float kin_target_x, kin_target_y;                  /* 目标 (mm, 塔吊系) */
 extern float kin_target_theta, kin_target_r, kin_target_z_mm; /* 内部目标(执行器位姿) */

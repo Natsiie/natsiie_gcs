@@ -50,14 +50,16 @@ void SIGNALING_Tasks(void *p_arg)
 //        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
 //        Screen_SendTestLoop();  /* 连续发送: 每100ms发 "TJC_TX_OK N" (串口助手测TX用) */
 //        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
-        Gimbal_Test_Task();    /* 云台角度调试 (Watch 写 gimbal_test_angle) */
+//        Gimbal_Test_Task();    /* 云台角度调试 (Watch 写 gimbal_test_angle) */
         Platform_Test_Task();  /* 物料平台角度调试 (Watch 写 platform_test_angle) */
         Serial_Test_Task();    /* 串口1 发送云台舵机角度给上位机 (natsiie GCS) */
 //        App_Tower_Task();    /* 遥控直控塔吊 */
 //        Tower_Test_Task();   /* sw[grab_sw] 0->2 触发抓取+放置, 2/3次转平台 */
-        Motor56_Test_Task();   /* 电机5/6 测试 (Watch 写 motor5/6_test_pos/vel/mode/dir) */
-//        Kin_Update();        /* 正/逆解运动: Watch 写 kin_cmd=1(GotoXY, 用 kin_target_x/y) 触发; 启用时关 Gimbal_Test_Task */
-        Kin_ReadGripper();     /* 只读夹爪位姿: Watch 写 kin_read_trig=1 读一次, 结果 kin_pose_* */
+//        Motor56_Test_Task();   /* 电机5/6 测试 (Watch 写 motor5/6_test_pos/vel/mode/dir) */
+        /* 接收上位机帧并解析: 0x08 点位->存 kin_target_x/y; 0x09 GrabCmd"1"=ok授权->grab_cmd 下降抓取 */
+        if (Serial_RxFrameReady) { Serial_RxFrameReady = 0; Serial_ProcessFrame(); }
+        Kin_Update();        /* 正/逆解运动: Watch 写 kin_cmd=1(GotoXY, 用 kin_target_x/y) 触发; 到位点上方等 ok(0x09) 再降 */
+//        Kin_ReadGripper();     /* 只读夹爪位姿: Watch 写 kin_read_trig=1 读一次, 结果 kin_pose_* */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }

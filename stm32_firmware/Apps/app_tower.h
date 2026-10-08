@@ -4,6 +4,9 @@
 /**
   * @brief  塔吊 (2 步进升降/伸出) + 3 舵机 (夹爪/物料平台/云台)
   */
+/* 抓取/放置流程握手变量 (Serial.c 接收上位机 0x09 GrabCmd 时写) */
+extern uint8_t grab_cmd;    /* 上层写1: 装货阶段 电机5 从550降到447 下探抓取 */
+
 void App_Tower_Init(void);
 void Tower_ReadPos5(void);
 void Tower_ReadPos6(void);
