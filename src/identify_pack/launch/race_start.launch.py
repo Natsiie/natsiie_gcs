@@ -55,6 +55,8 @@ def generate_launch_description():
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
             share, 'config', 'pixel_to_base.yaml')),
+        # 夹爪到位检测：复用颜色识别同一 ROI，连续识别阈值 5s，默认关闭（调试后再开）。
+        DeclareLaunchArgument('start_gripper_arrival', default_value='false'),
 
         # 主相机节点：自己解码 QR，读到内容后发布 /QR_Decode 并关闭摄像头。
         Node(
@@ -106,6 +108,25 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
+            }],
+        ),
+
+        # 夹爪到位检测：粉色标记进入 roi_file（与颜色识别同一 ROI）连续满 min_confirm_sec 秒发布到位信号。
+        Node(
+            package='identify_pack',
+            executable='gripper_arrival',
+            name='gripper_arrival',
+            condition=IfCondition(LaunchConfiguration('start_gripper_arrival')),
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'color_config': LaunchConfiguration('color_config'),
+                'roi_file': LaunchConfiguration('roi_file'),
+                'min_blob_area': 300,
+                'min_blob_dimension': 12,
+                'min_confirm_sec': 5.0,
+                'publish_topic': '/arm/arrived',
+                'show': ParameterValue(show, value_type=bool),
             }],
         ),
 

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""六色 HSV 阈值配置与掩膜工具（纯库，无 ROS / 无 GUI）。
+"""七色 HSV 阈值配置与掩膜工具（纯库，无 ROS / 无 GUI）。
+
+六种抓取色（1~6）+ 第 7 号粉色标记（舵机外壳，仅用于夹爪到位检测，不参与抓取）。
 
 把颜色识别从硬编码阈值迁移为 JSON 配置驱动：
   - ``load_color_config`` 读取并校验配置；``save_color_config`` 原子写回。
-  - ``make_all_color_masks`` 一次 BGR→HSV 生成六色掩膜。
+  - ``make_all_color_masks`` 一次 BGR→HSV 生成七色掩膜。
   - ``estimate_hsv_bounds`` 根据采样 ROI 稳健估计 HSV 上下限。
   - ``classify_circle`` 在圆盘内按颜色支持率判色（含「空」）。
 
-颜色编号沿用创源启明方案：1红 2黄 3蓝 4绿 5黑 6浅蓝。
+颜色编号沿用创源启明方案：1红 2黄 3蓝 4绿 5黑 6浅蓝 7粉。
 红色 Hue 环绕（179→0）在 ``bounds_to_ranges`` 中自动拆成两段；
 黑色 Hue 无意义，估计时使用全 Hue 并约束 S/V。
 """
@@ -37,8 +39,14 @@ COLOR_NAMES = {
     4: "green",
     5: "black",
     6: "light_blue",
+    7: "pink",
 }
 NAME_TO_ID = {name: color_id for color_id, name in COLOR_NAMES.items()}
+
+# 所有已知颜色编号 / 抓取目标色 / 标记色（粉色舵机外壳，不参与抓取）。
+COLOR_IDS = tuple(sorted(COLOR_NAMES))
+PICKUP_COLOR_IDS = (1, 2, 3, 4, 5, 6)
+MARKER_COLOR_IDS = tuple(c for c in COLOR_IDS if c not in PICKUP_COLOR_IDS)
 
 COLOR_DISPLAY = {
     "red": (0, 0, 255),
@@ -47,6 +55,7 @@ COLOR_DISPLAY = {
     "blue": (255, 0, 0),
     "light_blue": (255, 255, 0),
     "black": (128, 128, 128),
+    "pink": (203, 192, 255),
 }
 
 # 滑条 / 估计输出的六元组顺序。
@@ -61,6 +70,7 @@ PRESET_RANGES = {
     4: [{"lower": [38, 40, 40], "upper": [85, 255, 255]}],
     5: [{"lower": [0, 0, 0], "upper": [179, 255, 50]}],
     6: [{"lower": [85, 40, 150], "upper": [135, 255, 255]}],
+    7: [{"lower": [150, 40, 120], "upper": [179, 200, 255]}],
 }
 
 
@@ -157,10 +167,10 @@ def validate_color_config(document: dict) -> dict:
         _require(int(document["format_version"]) == 1,
                  "不支持的颜色配置版本")
         colors = document["colors"]
-        _require(isinstance(colors, list) and len(colors) == 6,
-                 "颜色配置必须正好包含 6 种颜色")
+        _require(isinstance(colors, list) and len(colors) == len(COLOR_NAMES),
+                 f"颜色配置必须正好包含 {len(COLOR_NAMES)} 种颜色")
         ids = {int(item["color_id"]) for item in colors}
-        _require(ids == set(COLOR_NAMES), "六色编号不完整或重复")
+        _require(ids == set(COLOR_NAMES), "颜色编号不完整或重复")
         limits = (179, 255, 255)
         for item in colors:
             color_id = int(item["color_id"])

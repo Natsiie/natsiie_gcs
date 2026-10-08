@@ -12,16 +12,17 @@ import math
 import time
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, UInt32
+from std_msgs.msg import Bool, String, UInt32
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from sensor_msgs.msg import PointCloud
 
 from identify_pack.serial.protocol import (
-    GIMBAL_YAW_TYPE, OUTGOING_TOPIC_TYPES, extract_frames, make_frame,
-    COLOR_TARGET_TYPE,
+    GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
+    make_frame, COLOR_TARGET_TYPE,
 )
 from identify_pack.scripts.pick_task import PickTask
+from identify_pack.scripts.color_config import PICKUP_COLOR_IDS
 
 try:
     import serial
@@ -48,6 +49,7 @@ class SerialBridgeNode(Node):
         self.declare_parameter('wait_between_batches', True)
         self.declare_parameter('centers_topic', '/color/centers_pixel')
         self.declare_parameter('camera_frame', 'camera_optical_frame')
+        self.declare_parameter('arrived_topic', '/arm/arrived')
         self.target_topic = self.get_parameter('target_topic').value
         self.target_type = int(self.get_parameter('target_type').value)
         self.target_max_hz = float(self.get_parameter('target_max_hz').value)
@@ -112,6 +114,9 @@ class SerialBridgeNode(Node):
                 10)
         self.create_subscription(PointCloud, self.target_topic,
                                  self._send_color_targets, 1)
+        arrived_topic = self.get_parameter('arrived_topic').value
+        if arrived_topic:
+            self.create_subscription(Bool, arrived_topic, self._on_arrived, 10)
 
     def _publish_task_status(self):
         pick = self.task.expected
@@ -233,6 +238,13 @@ class SerialBridgeNode(Node):
             self.get_logger().info(f'(无串口) {topic}(0x{type_byte:02X}): {text!r}')
         return False
 
+    def _on_arrived(self, msg):
+        """收到夹爪到位信号 -> 下发下降抓取授权帧（GrabCmd，payload "1"）。"""
+        if not msg.data:
+            return
+        self.get_logger().info('收到夹爪到位信号，下发下降抓取授权')
+        self._send(GRAB_CMD_TYPE, 'GrabCmd', '1')
+
     def _send_color_targets(self, message: PointCloud):
         """Send base-frame target coordinates in millimetres.
 
@@ -276,7 +288,7 @@ class SerialBridgeNode(Node):
             if not all(math.isfinite(value) for value in values):
                 self.get_logger().warning('忽略非有限目标坐标')
                 continue
-            if values[0] not in (1, 2, 3, 4, 5, 6):
+            if values[0] not in PICKUP_COLOR_IDS:
                 self.get_logger().warning(f'忽略非法颜色编号 {values[0]}')
                 continue
             color_id = int(values[0])

@@ -22,6 +22,7 @@ from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from identify_pack.scripts.camera_geometry import pixel_to_plane
+from identify_pack.scripts.color_config import COLOR_IDS, PICKUP_COLOR_IDS
 from identify_pack.tf_transform.transforms import normalize_quaternion
 
 
@@ -176,7 +177,7 @@ class PixelToBaseNode(Node):
             color = channels['color_id'][i]
             if (not all(math.isfinite(v) for v in
                         (point.x, point.y, point.z, color, channels['area_px2'][i]))
-                    or color not in (1, 2, 3, 4, 5, 6)
+                    or color not in COLOR_IDS
                     or channels['area_px2'][i] <= 0):
                 raise ValueError('Invalid color or centroid')
             if (channels['image_width'][i], channels['image_height'][i]) != self.image_size:
@@ -221,6 +222,8 @@ class PixelToBaseNode(Node):
         areas = self._channel_values(msg, 'area_px2')
         selected = {}
         for i, color in enumerate(colors):
+            if color not in PICKUP_COLOR_IDS:
+                continue  # 跳过标记色（如粉色舵机外壳），不投影为抓取目标。
             if color not in selected or areas[i] > areas[selected[color]]:
                 selected[color] = i
         out = PointCloud()

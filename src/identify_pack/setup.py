@@ -34,6 +34,7 @@ setup(
             'camera_node = identify_pack.vision_identify.camera_node:main',
             'circle_detect_node = identify_pack.vision_identify.circle_detect_node:main',
             'color_detect_node = identify_pack.vision_identify.color_detect_node:main',
+            'gripper_arrival = identify_pack.vision_identify.gripper_arrival_node:main',
             'turntable_detect_node = identify_pack.vision_identify.turntable_detect_node:main',
             'ring_station_detect_node = identify_pack.vision_identify.ring_station_detect_node:main',
             'stacked_ring_detect_node = identify_pack.vision_identify.stacked_ring_detect_node:main',

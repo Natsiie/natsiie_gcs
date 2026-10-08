@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""六色 HSV 标定工具（GUI）。
+"""七色 HSV 标定工具（GUI）。
 
-数字键 1~6 选择颜色，随后在物料内部按住鼠标左键拖出采样区域；同一颜色
+数字键 1~7 选择颜色，随后在物料内部按住鼠标左键拖出采样区域；同一颜色
 可累积多个区域，工具用 ``estimate_hsv_bounds`` 自动统计稳健的 HSV 上下限。
 下方六条 trackbar（H/S/V 低/高）可继续人工微调，按 ``S`` 保存 JSON。
 
@@ -9,7 +9,7 @@
 
     python3 color_calibrator.py --device /dev/camera_upper --config color_config.json
 
-按键：1-6 选色；U 撤销；C 清空当前色；R 恢复预设；S 保存；Q/Esc 退出。
+按键：1-7 选色；U 撤销；C 清空当前色；R 恢复预设；S 保存；Q/Esc 退出。
 未匹配区域被压暗到 25% 亮度，直接看出漏选与串色。
 """
 
@@ -167,7 +167,7 @@ def main() -> int:
         "drag_start": None,
         "drag_current": None,
         "rects": defaultdict(list),
-        "status": "1-6 选色，拖框采样，S 保存",
+        "status": "1-7 选色，拖框采样，S 保存",
     }
 
     def _sync() -> None:
@@ -205,7 +205,7 @@ def main() -> int:
 
     cv2.setMouseCallback(WINDOW, on_mouse)
     _sync()
-    print("1-6 选色；拖框采样；U 撤销；C 清空；R 预设；S 保存；Q/Esc 退出")
+    print("1-7 选色；拖框采样；U 撤销；C 清空；R 预设；S 保存；Q/Esc 退出")
 
     while True:
         # 读取当前颜色阈值，供拖框采样时冻结画面使用。
@@ -255,8 +255,9 @@ def main() -> int:
             if session.dirty:
                 print("未保存的 HSV 修改已放弃")
             break
-        if ord("1") <= key <= ord("6"):
-            session.selected = key - ord("0")
+        digit = key - ord("0")
+        if digit in COLOR_IDS:
+            session.selected = digit
             _sync()
             state["status"] = f"已选择 {session.selected} {COLOR_NAMES[session.selected]}"
         elif key in (ord("u"), ord("U")):

@@ -21,8 +21,9 @@ from cv_bridge import CvBridge
 import cv2
 
 from identify_pack.scripts.color_config import (
-    COLOR_DISPLAY, COLOR_NAMES, apply_dominant_color, build_default_color_config,
-    find_color_blobs, load_color_config, load_roi_file, make_all_color_masks,
+    COLOR_DISPLAY, COLOR_NAMES, PICKUP_COLOR_IDS, apply_dominant_color,
+    build_default_color_config, find_color_blobs, load_color_config,
+    load_roi_file, make_all_color_masks,
 )
 from identify_pack.scripts.turntable_motion import OpticalFlowMotion
 
@@ -162,6 +163,11 @@ class ColorDetectNode(Node):
             return
 
         color_masks = make_all_color_masks(img, self.color_cfg)
+        # 隔离标记色（粉色舵机外壳）：只处理抓取色 1~6，不参与主色锁定与
+        # 抓取目标检测，否则粉色进入 ROI 会被判为主色、盖掉物块（到位检测由
+        # gripper_arrival 节点单独负责，不经过这里）。
+        color_masks = {cid: mask for cid, mask in color_masks.items()
+                       if cid in PICKUP_COLOR_IDS}
         if self.color_roi and self.lock_dominant:
             # ROI 内主色锁定：面积最大的颜色锁定物块，盖住被误切的小面积颜色。
             color_masks = apply_dominant_color(

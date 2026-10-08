@@ -4,8 +4,9 @@ import unittest
 from unittest.mock import Mock
 
 from builtin_interfaces.msg import Time
+from std_msgs.msg import Bool
 
-from identify_pack.serial.protocol import GIMBAL_YAW_TYPE, OUTGOING_TOPIC_TYPES, make_frame
+from identify_pack.serial.protocol import GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, make_frame
 from identify_pack.serial.serial_bridge_node import SerialBridgeNode
 
 
@@ -64,6 +65,17 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.get_logger().debug.assert_called_once()
         bridge.get_logger().warning.assert_called_once()
         self.assertEqual(bridge.rx_buffer, b'')
+
+
+    def test_arrived_sends_grab_command_and_is_not_outgoing(self):
+        self.assertNotIn('GrabCmd', OUTGOING_TOPIC_TYPES)
+        bridge = self.make_bridge()
+        bridge._send = SerialBridgeNode._send.__get__(bridge)
+        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
+        bridge.ser.write.reset_mock()
+        SerialBridgeNode._on_arrived(bridge, Bool(data=False))
+        bridge.ser.write.assert_not_called()
 
 
 if __name__ == '__main__':

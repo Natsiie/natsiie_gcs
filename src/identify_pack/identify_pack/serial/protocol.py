@@ -26,15 +26,17 @@ TOPIC_TYPES = {
     'QR_Decode':    0x06,
     'GimbalYaw':    0x07,  # 下位机 -> 上位机，ASCII 角度，单位 deg
     'ColorTarget':  0x08,  # 上位机 -> 下位机，color_id,x_mm,y_mm,z_mm，底座绝对坐标
+    'GrabCmd':      0x09,  # 上位机 -> 下位机，夹爪到位授权下降抓取，payload "1"
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
+GRAB_CMD_TYPE = TOPIC_TYPES['GrabCmd']
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}
 
