@@ -51,12 +51,18 @@ def generate_launch_description():
         DeclareLaunchArgument('moving_speed_px_s', default_value='15.0'),
         DeclareLaunchArgument('near_stop_speed_px_s', default_value='3.0'),
         DeclareLaunchArgument('required_low_speed_frames', default_value='5'),
+        # 转盘运动检测开关；调试识别时可设为 false 跳过「先动后停」的门控。
+        DeclareLaunchArgument('motion_detect', default_value='true'),
         DeclareLaunchArgument('tf_params_file', default_value=os.path.join(
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
             share, 'config', 'pixel_to_base.yaml')),
         # 夹爪到位检测：复用颜色识别同一 ROI，连续识别阈值 5s，默认关闭（调试后再开）。
-        DeclareLaunchArgument('start_gripper_arrival', default_value='false'),
+        DeclareLaunchArgument('start_gripper_arrival', default_value='true'),
+        # 到位信号话题：gripper_arrival 发布 / serial_bridge 订阅，两处共用同一参数。
+        DeclareLaunchArgument('arrived_topic', default_value='/arm/arrived'),
+        # 到位连续识别阈值（秒），调试时可调小加快测试。
+        DeclareLaunchArgument('arrive_confirm_sec', default_value='5.0'),
 
         # 主相机节点：自己解码 QR，读到内容后发布 /QR_Decode 并关闭摄像头。
         Node(
@@ -98,6 +104,8 @@ def generate_launch_description():
                 'roi_file': LaunchConfiguration('roi_file'),
                 'color_config': LaunchConfiguration('color_config'),
                 'motion_roi_file': LaunchConfiguration('motion_roi_file'),
+                'motion_detect': ParameterValue(
+                    LaunchConfiguration('motion_detect'), value_type=bool),
                 'require_single_roi': True,
                 'moving_speed_px_s': ParameterValue(
                     LaunchConfiguration('moving_speed_px_s'), value_type=float),
@@ -124,8 +132,9 @@ def generate_launch_description():
                 'roi_file': LaunchConfiguration('roi_file'),
                 'min_blob_area': 300,
                 'min_blob_dimension': 12,
-                'min_confirm_sec': 5.0,
-                'publish_topic': '/arm/arrived',
+                'min_confirm_sec': ParameterValue(
+                    LaunchConfiguration('arrive_confirm_sec'), value_type=float),
+                'publish_topic': LaunchConfiguration('arrived_topic'),
                 'show': ParameterValue(show, value_type=bool),
             }],
         ),
@@ -186,6 +195,7 @@ def generate_launch_description():
                 'wait_between_batches': True,
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
+                'arrived_topic': LaunchConfiguration('arrived_topic'),
             }],
         ),
 

@@ -234,6 +234,11 @@ class PixelToBaseNode(Node):
             xyz = pixel_to_plane((point.x, point.y), self.matrix, self.distortion,
                                  base_from_camera, self.planes['object'] / 1000.0)
             out.points.append(Point32(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2])))
+            # 调试：打印每种物块的基座毫米坐标。
+            self.get_logger().info(
+                f'物块 颜色{int(color)} -> ({xyz[0] * 1000.0:.1f}, '
+                f'{xyz[1] * 1000.0:.1f}, {xyz[2] * 1000.0:.1f}) mm',
+                throttle_duration_sec=1.0)
         out.channels = [ChannelFloat32(name='color_id', values=sorted(selected))]
         ready = self._channel_values(msg, 'motion_ready')
         if len(ready) == 1:
