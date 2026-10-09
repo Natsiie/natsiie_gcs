@@ -36,10 +36,16 @@ def generate_launch_description():
         DeclareLaunchArgument('secondary_image_topic', default_value=SECONDARY_TOPIC),
         DeclareLaunchArgument('min_consistent', default_value=min_consistent),
         DeclareLaunchArgument('show', default_value=show),
-        # QR 任务码由主相机读取；需要只调颜色时可改为 false。
-        DeclareLaunchArgument('start_main_camera', default_value='true'),
+        # QR 任务码由主相机读取；当前无 /dev/camera_front 设备，默认关闭（需要时再开 true）。
+        DeclareLaunchArgument('start_main_camera', default_value='false'),
         # 副相机用于颜色识别，默认打开；如果已经由其他终端启动，可改为 false。
         DeclareLaunchArgument('start_secondary_camera', default_value='true'),
+        # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
+        DeclareLaunchArgument('secondary_frozen_frame_timeout_sec', default_value='5.0'),
+        DeclareLaunchArgument('secondary_camera_fps', default_value='25'),
+        DeclareLaunchArgument('secondary_camera_fourcc', default_value='YUYV'),
+        # 副相机画面翻转：-1=上下颠倒(180°), 1=左右镜像, 0=不翻转。
+        DeclareLaunchArgument('secondary_camera_flip_code', default_value='-1'),
         # 统一串口桥使用的设备和波特率。
         DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
         DeclareLaunchArgument('baud', default_value='115200'),
@@ -53,6 +59,8 @@ def generate_launch_description():
         DeclareLaunchArgument('required_low_speed_frames', default_value='5'),
         # 转盘运动检测开关；调试识别时可设为 false 跳过「先动后停」的门控。
         DeclareLaunchArgument('motion_detect', default_value='true'),
+        # 任务模式：true=按二维码顺序+抓取确认每个颜色只发一次；false=连续发送坐标（调试通信链路用）。
+        DeclareLaunchArgument('task_mode', default_value='true'),
         DeclareLaunchArgument('tf_params_file', default_value=os.path.join(
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
@@ -63,6 +71,9 @@ def generate_launch_description():
         DeclareLaunchArgument('arrived_topic', default_value='/arm/arrived'),
         # 到位连续识别阈值（秒），调试时可调小加快测试。
         DeclareLaunchArgument('arrive_confirm_sec', default_value='5.0'),
+        # 到位检测独立 ROI 文件（与抓取 ROI 分开，粉色舵机外壳出现区域）。
+        DeclareLaunchArgument('arrival_roi_file', default_value=os.path.join(
+            share, 'Arrival_ROI.txt')),
 
         # 主相机节点：自己解码 QR，读到内容后发布 /QR_Decode 并关闭摄像头。
         Node(
@@ -71,6 +82,8 @@ def generate_launch_description():
             name='camera_main',
             condition=IfCondition(LaunchConfiguration('start_main_camera')),
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
             parameters=[{
                 'device': main_camera_device,
                 'image_topic': MAIN_TOPIC,
@@ -87,9 +100,17 @@ def generate_launch_description():
             name='camera_secondary',
             condition=IfCondition(LaunchConfiguration('start_secondary_camera')),
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
             parameters=[{
                 'device': secondary_camera_device,
                 'image_topic': secondary_image_topic,
+                'fps': ParameterValue(LaunchConfiguration('secondary_camera_fps'), value_type=int),
+                'fourcc': LaunchConfiguration('secondary_camera_fourcc'),
+                'flip_code': ParameterValue(
+                    LaunchConfiguration('secondary_camera_flip_code'), value_type=int),
+                'frozen_frame_timeout_sec': ParameterValue(
+                    LaunchConfiguration('secondary_frozen_frame_timeout_sec'), value_type=float),
             }],
         ),
 
@@ -119,7 +140,7 @@ def generate_launch_description():
             }],
         ),
 
-        # 夹爪到位检测：粉色标记进入 roi_file（与颜色识别同一 ROI）连续满 min_confirm_sec 秒发布到位信号。
+        # 夹爪到位检测：粉色标记进入 arrival_roi_file（独立 ROI）连续满 min_confirm_sec 秒发布到位信号。
         Node(
             package='identify_pack',
             executable='gripper_arrival',
@@ -129,7 +150,7 @@ def generate_launch_description():
             parameters=[{
                 'image_topic': secondary_image_topic,
                 'color_config': LaunchConfiguration('color_config'),
-                'roi_file': LaunchConfiguration('roi_file'),
+                'arrival_roi_file': LaunchConfiguration('arrival_roi_file'),
                 'min_blob_area': 300,
                 'min_blob_dimension': 12,
                 'min_confirm_sec': ParameterValue(
@@ -191,7 +212,8 @@ def generate_launch_description():
                 'target_topic': '/color/targets_base',
                 'send_legacy_color': False,  # 不再向串口转发旧的像素字符串。
                 'target_max_hz': 5.0,       # 每种颜色最多发送 5 帧/秒。
-                'task_mode': True,          # 按二维码顺序和抓取完成确认发送目标。
+                'task_mode': ParameterValue(
+                    LaunchConfiguration('task_mode'), value_type=bool),
                 'wait_between_batches': True,
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
@@ -224,17 +246,19 @@ def generate_launch_description():
         #     }],
         # ),
 
-        # # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        # Node(
-        #     package='identify_pack',
-        #     executable='ring_station_detect_node',
-        #     name='ring_station_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': SECONDARY_TOPIC,
-        #         'show': True,
-        #     }],
-        # ),
+        # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
+        Node(
+            package='identify_pack',
+            executable='ring_station_detect_node',
+            name='ring_station_detect_node',
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'show': ParameterValue(show, value_type=bool),
+                'camera_frame': 'camera_optical_frame',
+                'centers_topic': '/ring_station/centers_pixel',
+            }],
+        ),
 
         # # 叠放位检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         # Node(

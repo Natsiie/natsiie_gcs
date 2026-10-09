@@ -67,7 +67,7 @@
 ## 3. 夹爪到位检测
 
 - **纯逻辑** `scripts/arrival.py`：`GripperArrivalDetector`，粉色**连续可见**满 `min_confirm_sec` 秒判定到位；中途消失即清零重计；到位后锁存，`reset()` 复用。
-- **节点** `vision_identify/gripper_arrival_node.py`：订阅副相机，在 `roi_file`（与颜色识别**同一个 ROI**，当前 `244,170,172,153`）内找粉色，满阈值发 `std_msgs/Bool(true)` 到 `/arm/arrived`（transient-local 锁存）。
+- **节点** `vision_identify/gripper_arrival_node.py`：订阅副相机，在 `arrival_roi_file`（**独立于抓取 ROI**，`Arrival_ROI.txt`）内找粉色，满阈值发 `std_msgs/Bool(true)` 到 `/arm/arrived`（transient-local 锁存）。
 
 ---
 
@@ -114,6 +114,9 @@
 7. **launch 参数化**：`motion_detect`、`task_mode`、`start_gripper_arrival`、`arrived_topic`、`arrive_confirm_sec` 都提成 launch 参数。
 8. **下位机 RX 重写**（你做的）：变长解析 + 0x06/0x08/0x09 分发 + grab_cmd 接通（**待 Keil 编译烧录**）。
 9. **最新 TF 兜底**：解决云台角度反馈慢导致的投影超时。
+10. **到位检测独立 ROI**：`gripper_arrival` 改用 `Arrival_ROI.txt`，与抓取 `ROI_Range.txt` 分开。
+11. **副相机 MJPG 卡死修复**：`fourcc` 默认改回空（YUYV）。
+12. **camera_node 加看门狗**：采集独立线程 + 最新帧队列 + 读帧超时自动重连。
 
 ---
 
@@ -123,6 +126,7 @@
 2. **`Motion=ACQUIRING` 卡住识别**：运动检测要求「先观察到转动、再观察到停稳」才 READY。转盘静止时永远不 READY，颜色识别被挡。调试设 `motion_detect:=false` 跳过。
 3. **TF 超时**：`pixel_to_base` 严格按图像时刻查 TF，云台角度反馈（0x07）慢/断 → 动态 TF 过期 → 查不到 → `颜色目标过期或 TF 等待超时，跳过`。已加最新 TF 兜底，但根因是下位机 0x07 要持续发。
 4. **下位机 RX 帧格式**（已修）：原来固定 8 字节，和 ROS 变长帧不匹配；重写后变长解析，注意用 Keil 烧录才生效。
+5. **副相机 MJPG 卡死**（已修）：`fourcc='MJPG'` 时部分 USB 相机跑十几秒后 `read()` 阻塞卡死（日志里没有「读取帧失败」就是证据——read 是卡住、不是返回 False）。已改默认 `fourcc=''`（YUYV），并给 `camera_node` 加采集线程 + 最新帧队列 + 看门狗自动重连。定位方法：单跑 `color_detect_debug.py`（不设 MJPG）不卡，就说明是 MJPG 的锅。
 
 ---
 
@@ -196,3 +200,20 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - 新增串口 `0x0A` 放置目标、`0x0B` 放置完成反馈，统一串口桥已接通。STM32 `Serial_TakePlaceCommand` / `Serial_CompletePlaceCommand` 提供目标读取、去重及完成回报接口，尚需接入实际放料与撤离动作；没有烧录或实机运动测试。
 - 配置 `src/identify_pack/config/place_task.yaml` 默认禁用；入口 `ros2 launch identify_pack place_task.launch.py`。完整接口和启用要求见 `src/identify_pack/PLACEMENT.md`。
 - 全套 72 个测试通过，ROS 包构建通过。安装后节点启动检查受沙箱 DDS 网络限制，提权验证未执行（自动审批服务模型配置返回 404）。
+
+## 12. 上相机重复帧看门狗（2026-10-09）
+
+- 原看门狗只检测无帧超时：即使上相机重复返回同一张图，话题有频率也不会重连。
+- `race_start.launch.py` 对 `camera_secondary`（默认 `/dev/camera_upper`）启用 `secondary_frozen_frame_timeout_sec:=5.0`：连续 5 秒整帧像素完全相同触发重连。设为 `0` 可关闭；主相机仍只检查无帧超时。
+- 使用整帧严格相等判断，单个像素变化也会清零计时。不能检测带微小变化的冻结画面，也不能判断下游显示窗口是否卡住；完全静态的合成图像可能误触发。
+- 重连日志包含设备路径和话题；旧采集线程固定使用原 capture，重连后旧代帧丢弃，避免旧画面刷新看门狗。
+- 修改后重新 `colcon build --packages-select identify_pack` 并 `source install/setup.bash`，停止旧启动进程后再运行。
+
+## 13. 相机采集与重启阻塞修复（2026-10-09）
+
+- 最近上相机日志只有打开成功，没有看门狗或重启记录；这不足以证明 USB 驱动故障。代码确认原看门狗与图像发布共用 ROS 执行线程，发布阻塞时看门狗无法执行，跨线程 `read/release` 也不能可靠恢复。
+- 改为 `spawn` 独立采集进程，独占 OpenCV capture；共享内存只保存最新帧。独立监控线程检测无帧/重复帧并限时终止、重建采集进程，不在读帧线程外调用 `release()`。子进程退出时由操作系统关闭设备。
+- 发布使用 BEST_EFFORT / KEEP_LAST(1)，图像订阅同步采用传感器 QoS。发布或 QR 回调超过 5 秒时退出节点，沿用 launch 的 respawn 恢复；QR 正常停止采集不会误重启。
+- 每 5 秒日志打印采集 fps、发布 fps、帧龄、重复帧数；采集进程打印实际协商格式/分辨率/帧率。可用 `secondary_camera_fps`、`secondary_camera_fourcc` 调节上相机请求设置，默认保留 25/YUYV。
+- 硬件设备/USB 内核日志检查受沙箱隔离，自动审批服务返回模型配置 404，实际设备检查未执行；模拟永久阻塞取帧、限时回收重启、旧帧隔离以及独立监控恢复已覆盖，仍需现场验证驱动与图像显示。
+- 验证：86 个测试通过，`colcon build --packages-select identify_pack` 成功；未执行机器人启动或串口控制。

@@ -15,6 +15,7 @@ import os
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, PointCloud
 from std_msgs.msg import String
 from cv_bridge import CvBridge
@@ -45,7 +46,7 @@ class RingStationDetectNode(Node):
         self.detector = self._build_detector()
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
+        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
         self.pub = self.create_publisher(String, 'ring_station', 10)
         self.pub_centers = self.create_publisher(
             PointCloud, self.get_parameter('centers_topic').value, 10)

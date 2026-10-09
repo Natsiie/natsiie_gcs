@@ -17,6 +17,7 @@ import os
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from cv_bridge import CvBridge
@@ -82,7 +83,7 @@ class CircleDetectNode(Node):
         self._load_templates()
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
+        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
         self.pub = self.create_publisher(String, 'circle_detect', 10)
         self.pub_order = self.create_publisher(String, 'Order', 10)
         self.get_logger().info(f'圆检测订阅 {image_topic}')

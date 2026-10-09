@@ -16,6 +16,7 @@ setup(
         (os.path.join('share', package_name), glob('identify_pack/serial/serial_config.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/color_config.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/ROI_Range.txt')),
+        (os.path.join('share', package_name), glob('identify_pack/scripts/Arrival_ROI.txt')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/turntable_detector.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/turntable_material_seed.json')),
         (os.path.join('share', package_name), glob('identify_pack/scripts/ring_station_detector.json')),
