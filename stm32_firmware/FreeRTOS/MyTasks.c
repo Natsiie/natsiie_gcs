@@ -21,7 +21,7 @@ void Chassis_Tasks(void *p_arg)
 
     while (1)
     {
-//        App_Chassis_Task();
+        App_Chassis_Task();   /* 底盘: 遥控直控 + 定位 + 里程计 + 视觉纠偏 + 电压 */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }
@@ -51,7 +51,7 @@ void SIGNALING_Tasks(void *p_arg)
 //        Screen_SendTestLoop();  /* 连续发送: 每100ms发 "TJC_TX_OK N" (串口助手测TX用) */
 //        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
 //        Gimbal_Test_Task();    /* 云台角度调试 (Watch 写 gimbal_test_angle) */
-        Platform_Test_Task();  /* 物料平台角度调试 (Watch 写 platform_test_angle) */
+//        Platform_Test_Task();  /* 物料平台角度调试 (Watch 写 platform_test_angle) */
         Serial_Test_Task();    /* 串口1 发送云台舵机角度给上位机 (natsiie GCS) */
 //        App_Tower_Task();    /* 遥控直控塔吊 */
 //        Tower_Test_Task();   /* sw[grab_sw] 0->2 触发抓取+放置, 2/3次转平台 */

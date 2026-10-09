@@ -19,6 +19,8 @@ uint8_t Serial_TxPacket[SERIAL_TX_DATA_LEN];   /* 待发送数据包 (8 字节) 
 volatile uint8_t Serial_RxFrameReady = 0;
 Serial_RxFrame_t  Serial_RxFrame;
 Serial_RxData_t   Serial_RxData;
+volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 组 xy) 新帧标志 */
+volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘微调(corr) 新帧标志 */
 
 /* RX 状态机: 0=等帧头 1=收TYPE 2=收LEN 3=收载荷 4=收CRC 5=收帧尾 */
 static uint8_t s_rx_state = 0;
@@ -377,7 +379,37 @@ void Serial_ProcessFrame(void)
             Serial_RxData.ring_corr_y   = cy;
             Serial_RxData.ring_corr_yaw = cyaw;
             Serial_RxData.ring_within   = (uint8_t)w;
+
+            /* 通知业务层: corr=底盘微调(底盘); err 是偏移坐标, 由上层按需使用 */
+            Serial_ChassisTrimReady = 1;
         }
+        break;
+    }
+
+    case SERIAL_TYPE_UNLOAD_COORD:   /* 0x0C: 三组 x,y (3 个卸货落点, 塔吊系绝对 mm) */
+    {
+        float v[6];
+        uint8_t k = 0, i;
+
+        /* 容忍分隔符 (, ; / 和空白), 顺序读 6 个数 -> 3 组 (x,y) */
+        while (k < 6)
+        {
+            while (*p == ',' || *p == ';' || *p == '/' ||
+                   *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+            if (!Serial_ParseFloatTok(&p, &v[k])) break;
+            k++;
+        }
+
+        Serial_RxData.unload_count = k / 2;
+        if (Serial_RxData.unload_count > 3) Serial_RxData.unload_count = 3;
+        for (i = 0; i < Serial_RxData.unload_count; i++)
+        {
+            Serial_RxData.unload_x[i] = v[i * 2];
+            Serial_RxData.unload_y[i] = v[i * 2 + 1];
+        }
+
+        if (Serial_RxData.unload_count > 0)
+            Serial_UnloadCoordReady = 1;
         break;
     }
 
@@ -434,12 +466,6 @@ void USART1_IRQHandler(void)
 {
     uint8_t d;
 
-    if (USART_GetFlagStatus(USART1, USART_FLAG_ORE) == SET)
-    {
-        volatile uint32_t tmp = USART1->SR; (void)tmp;
-        tmp = USART1->DR; (void)tmp;
-    }
-
     if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET)
     {
         d = USART_ReceiveData(USART1);
@@ -490,5 +516,12 @@ void USART1_IRQHandler(void)
         }
 
         USART_ClearITPendingBit(USART1, USART_IT_RXNE);
+    }
+
+    /* 最后清 ORE(溢出): 必须在 RXNE 之后清, 否则会把待读字节丢掉 (读 SR 再读 DR 才清 ORE) */
+    if (USART_GetFlagStatus(USART1, USART_FLAG_ORE) == SET)
+    {
+        volatile uint32_t tmp = USART1->SR; (void)tmp;
+        tmp = USART1->DR; (void)tmp;
     }
 }

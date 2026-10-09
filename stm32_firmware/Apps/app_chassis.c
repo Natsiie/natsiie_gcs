@@ -58,6 +58,19 @@ float   chassis_pos_max_speed = 60.0f;    /* 定位最大轮速 (RPM) */
 float   chassis_pos_deadzone_mm = 15.0f;  /* 到点死区 (mm) */
 float   chassis_pos_fwd_mm = 1200.0f;     /* btn1 前进距离 (mm) */
 
+/* 视觉底盘纠偏 (0x04/0x05): 偏了多少(err) / 要矫正多少(corr) / 是否矫正成功(within) */
+uint8_t chassis_trim_enable = 1;         /* 1=启用视觉底盘纠偏 (测试时 Watch 写 0 关掉) */
+float   chassis_trim_gain_x   = 1.0f;    /* 要矫正多少: corr_x 增益, 可负/调大小, 现场标定 */
+float   chassis_trim_gain_y   = 1.0f;    /* 要矫正多少: corr_y 增益 */
+float   chassis_trim_gain_yaw = 1.0f;    /* 要矫正多少: corr_yaw 增益 */
+float   chassis_trim_err_x   = 0.0f;     /* 偏了多少: 视觉 err_x (mm, 工位平面, 只读) */
+float   chassis_trim_err_y   = 0.0f;     /* 偏了多少: 视觉 err_y (mm) */
+float   chassis_trim_err_yaw = 0.0f;     /* 偏了多少: 视觉 dyaw (deg) */
+float   chassis_trim_corr_x   = 0.0f;    /* 要矫正多少: corr_x * 增益 (mm, 车体系, 只读) */
+float   chassis_trim_corr_y   = 0.0f;    /* 要矫正多少: corr_y * 增益 (mm) */
+float   chassis_trim_corr_yaw = 0.0f;    /* 要矫正多少: corr_yaw * 增益 (deg) */
+uint8_t chassis_trim_within   = 0;       /* 是否矫正成功: 视觉 within (1=已到位, 只读) */
+
 /* 同步发送 4 轮速度: 先暂存 4 条速度命令到 MMCL 缓冲区, 再 X_V2_Multi_Motor_Cmd(0)
    广播地址 0 一次性发出, 4 个电机同时收到同一条多机命令 -> 同步动作 */
 static void Chassis_SendWheels(float w_bl, float w_br, float w_fl, float w_fr)
@@ -186,6 +199,43 @@ void App_Chassis_Init(void)
 }
 
 /**
+  * @brief  视觉底盘纠偏: 收到 0x04/0x05 帧后, 先更新可观测状态
+  *         (偏了多少 err / 要矫正多少 corr / 是否矫正成功 within),
+  *         未到位(within=0)时以当前里程计位姿为基准, 把 corr 旋转到世界系
+  *         叠加成新目标并再定位。corr 是"当前还差多少"(绝对误差), 每次以
+  *         当前位置重算目标, 收敛后 corr≈0、within=1 不再动。
+  */
+void Chassis_ApplyVisionTrim(void)
+{
+    /* 可观测: 偏了多少 / 要矫正多少(含增益) / 是否矫正成功 */
+    chassis_trim_err_x   = Serial_RxData.ring_err_x;
+    chassis_trim_err_y   = Serial_RxData.ring_err_y;
+    chassis_trim_err_yaw = Serial_RxData.ring_ang_err;
+    chassis_trim_corr_x   = chassis_trim_gain_x   * Serial_RxData.ring_corr_x;
+    chassis_trim_corr_y   = chassis_trim_gain_y   * Serial_RxData.ring_corr_y;
+    chassis_trim_corr_yaw = chassis_trim_gain_yaw * Serial_RxData.ring_corr_yaw;
+    chassis_trim_within   = Serial_RxData.ring_within;
+
+    if (chassis_trim_within) return;   /* 已在容差内(矫正成功), 不再纠偏 */
+
+    {
+        float yaw = Imu_GetYaw();
+        float th  = chassis_odom_yaw_invert * yaw * (MATH_PI / 180.0f);
+        float c = cosf(th), s = sinf(th);
+
+        /* 视觉 corr 坐标系与里程计车体系差 90°: corr_x+ = 里程计 y+(左), corr_y+ = 里程计 x-(后)。
+         * 先换成里程计车体分量(前/左), 再旋转到世界系 (与里程计车体->世界同一旋转)。 */
+        float bx = -chassis_trim_corr_y;   /* 车体前进分量 (corr_y+ -> x-) */
+        float by =  chassis_trim_corr_x;   /* 车体左移分量 (corr_x+ -> y+) */
+
+        chassis_pos_target_x_mm = chassis_odom_x_mm + (bx * c - by * s);
+        chassis_pos_target_y_mm = chassis_odom_y_mm + (bx * s + by * c);
+        chassis_yaw_target      = yaw + chassis_trim_corr_yaw;
+        chassis_pos_active = 1;   /* 再定位到修正后目标 */
+    }
+}
+
+/**
   * @brief  底盘单项测试: 按 chassis_test_mode 跑 前进/后退/左右平移 + 顺逆时针旋转
   *         平移(1~4)时用陀螺仪偏航 PID 锁车头走直线
   */
@@ -310,6 +360,13 @@ void App_Chassis_Task(void)
 
     /* 全程导航状态机 (优先于手动 btn0/btn1 定位) */
     Nav_Update();
+
+    /* 视觉底盘纠偏: 收到 0x04/0x05 帧 -> 更新偏了多少/要矫正多少/是否成功, 未到位则纠偏 */
+    if (chassis_trim_enable && Serial_ChassisTrimReady)
+    {
+        Serial_ChassisTrimReady = 0;
+        Chassis_ApplyVisionTrim();
+    }
 
     /* 按钮边沿: 手动定位 btn0 回原点(0,0) / btn1 沿当前车头往前; 导航中忽略避免抢目标 */
     if (!nav_active)

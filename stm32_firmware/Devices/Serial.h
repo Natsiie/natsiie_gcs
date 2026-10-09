@@ -29,6 +29,7 @@
 #define SERIAL_TYPE_GRAB_CMD      0x09   /* 夹爪到位授权: payload "1"=授权下降抓取 */
 #define SERIAL_TYPE_PLACE_COMMAND 0x0A
 #define SERIAL_TYPE_PLACE_RESULT  0x0B
+#define SERIAL_TYPE_UNLOAD_COORD  0x0C   /* 卸货坐标: 3 组 x,y (3 个落点, 塔吊系绝对 mm) */
 
 #define SERIAL_RX_PAYLOAD_MAX     128    /* Includes UUID and placement XYZ. */
 
@@ -70,10 +71,14 @@ typedef struct {
     float   turntable_cx, turntable_cy, turntable_r;
     uint8_t turntable_stable;
 
-    /* 0x04 / 0x05 圆环工位 */
+    /* 0x04 / 0x05 圆环工位 (偏移坐标) */
     float   ring_err_x, ring_err_y, ring_ang_err;
     float   ring_corr_x, ring_corr_y, ring_corr_yaw;
     uint8_t ring_within;
+
+    /* 0x0C 卸货坐标 (3 个落点, 塔吊系绝对 mm) */
+    float   unload_x[3], unload_y[3];
+    uint8_t unload_count;
 
     /* 0x01 Color 像素列表 (最多 6 段) */
     uint8_t color_count;
@@ -87,6 +92,11 @@ typedef struct {
 extern volatile uint8_t Serial_RxFrameReady;  /* 1 = 收到完整一帧待处理 */
 extern Serial_RxFrame_t  Serial_RxFrame;
 extern Serial_RxData_t   Serial_RxData;
+
+/* 0x0C 卸货坐标(3 组 xy) 帧已解析 -> 塔吊卸货落点; 0x04/0x05 偏移坐标 corr -> 底盘微调。
+ * 每收到对应帧置 1, 由业务层消费后清 0 (Kin 清 UnloadCoord, 底盘清 ChassisTrim)。 */
+extern volatile uint8_t Serial_UnloadCoordReady;  /* 1 = 新卸货坐标(0x0C 3 组 xy) 待消费 */
+extern volatile uint8_t Serial_ChassisTrimReady;  /* 1 = 新底盘微调(0x04/0x05 corr) 待消费 */
 
 void     Serial_Init(void);                        /* 初始化 USART1            */
 void     Serial_SendByte(uint8_t byte);            /* 阻塞发送 1 字节          */
