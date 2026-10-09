@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ROS2 节点：夹爪到位判定（粉色舵机外壳进入 ROI 连续满阈值秒 -> 到位）。
 
-订阅副相机图像，在 ``roi_file``（与颜色识别共用同一 ROI）内检测粉色（第 7 号颜色），
+订阅副相机图像，在 ``arrival_roi_file``（独立于抓取 ROI）内检测粉色（第 7 号颜色），
 连续识别满 ``min_confirm_sec`` 秒后发布到位信号（``std_msgs/Bool`` 到
 ``publish_topic``，默认 /arm/arrived）。只发信号，不控制下位机。
 """
@@ -32,7 +32,7 @@ class GripperArrivalNode(Node):
         super().__init__('gripper_arrival')
         self.declare_parameter('image_topic', '/camera/secondary/image_raw')
         self.declare_parameter('color_config', '')
-        self.declare_parameter('roi_file', 'ROI_Range.txt')
+        self.declare_parameter('arrival_roi_file', 'Arrival_ROI.txt')
         self.declare_parameter('min_blob_area', 300)
         self.declare_parameter('min_blob_dimension', 12)
         self.declare_parameter('min_confirm_sec', 5.0)
@@ -82,8 +82,8 @@ class GripperArrivalNode(Node):
             raise
 
     def _resolve_roi(self):
-        """读取 roi_file 里的 ROI（与颜色识别共用同一文件）；失败返回 None（全画面）。"""
-        path = self.get_parameter('roi_file').value.strip()
+        """读取 arrival_roi_file 里的 ROI（独立于抓取 ROI）；失败返回 None（全画面）。"""
+        path = self.get_parameter('arrival_roi_file').value.strip()
         if not path:
             return None
         if not os.path.isabs(path) and not os.path.exists(path):

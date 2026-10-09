@@ -10,14 +10,18 @@ from __future__ import annotations
 
 
 class GripperArrivalDetector:
-    """连续观察粉色标记是否在 ROI 内，达到时长阈值判定到位。"""
+    """连续观察粉色标记是否在 ROI 内，达到时长阈值判定到位。
+
+    触发后自动重新武装：粉色离开 ROI 后，下一次进入重新计满阈值即再次触发，
+    避免同一段粉色反复触发（重复计时）。
+    """
 
     def __init__(self, min_confirm_sec: float = 5.0):
         self.min_confirm_ns = int(min_confirm_sec * 1_000_000_000)
         self.reset()
 
     def reset(self) -> None:
-        """清空连续计时与到位锁存（下一次抓取复用）。"""
+        """清空连续计时与到位状态（下一次抓取复用）。"""
         self.present_since_ns = None
         self.arrived = False
 
@@ -25,9 +29,14 @@ class GripperArrivalDetector:
         """每帧喂入「粉色是否在 ROI 内」，返回是否触发到位（上升沿）。
 
         ``now_ns`` 为单调递增的纳秒时间戳（如 ``time.monotonic_ns()``）。
-        只在首次跨过 ``min_confirm_sec`` 阈值的那一帧返回 True，之后锁存。
+        连续满 ``min_confirm_sec`` 秒触发一次；触发后等粉色消失（present=False）
+        重新武装，下一次进入再重新计时，不会同一段粉色反复触发。
         """
         if self.arrived:
+            if not present:
+                # 粉色已离开：重新武装，等待下一次进入
+                self.arrived = False
+                self.present_since_ns = None
             return False
         if not present:
             self.present_since_ns = None

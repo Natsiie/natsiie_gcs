@@ -46,6 +46,19 @@ class ArrivalTests(unittest.TestCase):
         d.update(True, 20 * NS)
         self.assertTrue(d.update(True, 25 * NS))
 
+    def test_rearms_after_pink_leaves(self):
+        d = GripperArrivalDetector(min_confirm_sec=5.0)
+        d.update(True, 0 * NS)
+        self.assertTrue(d.update(True, 5 * NS))   # 第一次触发
+        self.assertTrue(d.arrived)
+        self.assertFalse(d.update(True, 6 * NS))  # 粉色还没走，不重复触发
+        self.assertFalse(d.update(False, 7 * NS))  # 粉色离开 -> 重新武装
+        self.assertFalse(d.arrived)
+        self.assertIsNone(d.present_since_ns)
+        d.update(True, 10 * NS)                    # 下一次进入
+        self.assertFalse(d.update(True, 14 * NS))  # 4s 不触发
+        self.assertTrue(d.update(True, 15 * NS))   # 满 5s 再次触发
+
 
 if __name__ == '__main__':
     unittest.main()
