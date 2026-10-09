@@ -19,7 +19,7 @@ from sensor_msgs.msg import PointCloud
 
 from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
-    make_frame, COLOR_TARGET_TYPE,
+    make_frame, COLOR_TARGET_TYPE, RING_TARGET_TYPE,
     PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, parse_place_result, place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
@@ -51,6 +51,8 @@ class SerialBridgeNode(Node):
         self.declare_parameter('centers_topic', '/color/centers_pixel')
         self.declare_parameter('camera_frame', 'camera_optical_frame')
         self.declare_parameter('arrived_topic', '/arm/arrived')
+        self.declare_parameter('ring_target_topic', '/ring_station/targets_base')
+        self.declare_parameter('ring_target_type', RING_TARGET_TYPE)
         self.target_topic = self.get_parameter('target_topic').value
         self.target_type = int(self.get_parameter('target_type').value)
         self.target_max_hz = float(self.get_parameter('target_max_hz').value)
@@ -117,6 +119,12 @@ class SerialBridgeNode(Node):
                 10)
         self.create_subscription(PointCloud, self.target_topic,
                                  self._send_color_targets, 1)
+        self.ring_target_topic = self.get_parameter('ring_target_topic').value
+        self.ring_target_type = int(self.get_parameter('ring_target_type').value)
+        if self.ring_target_type != RING_TARGET_TYPE:
+            raise ValueError(f'ring_target_type must be 0x{RING_TARGET_TYPE:02X}')
+        self.create_subscription(PointCloud, self.ring_target_topic,
+                                 self._send_ring_targets, 1)
         arrived_topic = self.get_parameter('arrived_topic').value
         if arrived_topic:
             self.create_subscription(Bool, arrived_topic, self._on_arrived, 10)
@@ -247,6 +255,32 @@ class SerialBridgeNode(Node):
         else:
             self.get_logger().info(f'(无串口) {topic}(0x{type_byte:02X}): {text!r}')
         return False
+
+    def _send_ring_targets(self, message: PointCloud):
+        """发送三圆环圆心（gimbal_base 毫米）给下位机，payload 为 x1,y1,z1,x2,y2,z2,x3,y3,z3。"""
+        if message.header.frame_id != self.target_frame:
+            self.get_logger().warning(
+                f'忽略圆环目标：frame_id={message.header.frame_id!r}，需要 {self.target_frame}',
+                throttle_duration_sec=2.0)
+            return
+        stamp_ns = message.header.stamp.sec * 10**9 + message.header.stamp.nanosec
+        age = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        if stamp_ns <= 0 or age < -0.05 or age > self.target_max_age:
+            self.get_logger().warning('忽略圆环目标：图像时间戳缺失、过期或超前',
+                                      throttle_duration_sec=2.0)
+            return
+        if len(message.points) != 3:
+            self.get_logger().warning('忽略圆环目标：圆心数不是 3 个')
+            return
+        values = []
+        for point in message.points:
+            xyz = (point.x * 1000.0, point.y * 1000.0, point.z * 1000.0)
+            if not all(math.isfinite(v) for v in xyz):
+                self.get_logger().warning('忽略圆环目标：坐标非有限')
+                return
+            values.extend(xyz)
+        payload = ','.join(f'{v:.1f}' for v in values)
+        self._send(self.ring_target_type, 'RingTarget', payload)
 
     def _on_place_command(self, msg):
         try:

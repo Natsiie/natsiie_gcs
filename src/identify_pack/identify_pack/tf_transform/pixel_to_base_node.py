@@ -72,6 +72,8 @@ class PixelToBaseNode(Node):
             'object_plane_z_mm': 0.0,
             'ring_plane_configured': False,
             'ring_plane_z_mm': 0.0,
+            'ring_centers_topic': '/ring_station/centers_pixel',
+            'ring_targets_topic': '/ring_station/targets_base',
             'tf_wait_sec': 0.5,
             'show': True,
         }
@@ -123,9 +125,17 @@ class PixelToBaseNode(Node):
         self.center_subscription = self.create_subscription(
             PointCloud, self.param('centers_topic'), self.on_color_centers,
             qos_profile_sensor_data)
+        self.ring_target_publisher = self.create_publisher(
+            PointCloud, self.param('ring_targets_topic'), 10)
+        self.ring_center_subscription = self.create_subscription(
+            PointCloud, self.param('ring_centers_topic'), self.on_ring_centers,
+            qos_profile_sensor_data)
         self.last_auto_publish = -math.inf
         self.pending_centers = deque(maxlen=10)
         self.last_center_stamp = 0
+        self.pending_rings = deque(maxlen=10)
+        self.last_ring_stamp = 0
+        self.last_ring_publish = -math.inf
         self.latest = None
         self.displayed = None
         self.frozen = None
@@ -258,6 +268,106 @@ class PixelToBaseNode(Node):
         ready = self._channel_values(msg, 'motion_ready')
         if len(ready) == 1:
             out.channels.append(ChannelFloat32(name='motion_ready', values=list(ready)))
+        return out
+
+    def on_ring_centers(self, msg):
+        """把三圆环圆心从图像时刻投影到 ring 平面，输出 gimbal_base 毫米坐标。"""
+        if not self.param('auto_project'):
+            return
+        if 'ring' not in self.planes:
+            return
+        try:
+            stamp_ns = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+            if stamp_ns <= 0:
+                raise ValueError('Missing image timestamp')
+            if stamp_ns <= self.last_ring_stamp:
+                return
+            if msg.header.frame_id != self.camera_frame:
+                raise ValueError(f'Unexpected camera frame {msg.header.frame_id!r}')
+            if not msg.points:
+                self.last_ring_stamp = stamp_ns
+                self.pending_rings.clear()
+                return
+            self.validate_ring_centers(msg)
+            self.last_ring_stamp = stamp_ns
+            self.pending_rings.append((msg, time.monotonic()))
+            self.project_pending_rings()
+        except ValueError as error:
+            self.get_logger().warning(f'拒绝圆环圆心: {error}', throttle_duration_sec=2.0)
+
+    def validate_ring_centers(self, msg):
+        ring_ids = self._channel_values(msg, 'ring_id')
+        if len(msg.points) != 3 or len(ring_ids) != 3:
+            raise ValueError('圆环圆心必须正好 3 个')
+        widths = self._channel_values(msg, 'image_width')
+        heights = self._channel_values(msg, 'image_height')
+        if widths and heights:
+            if any((w, h) != self.image_size for w, h in zip(widths, heights)):
+                raise ValueError('圆环图像分辨率与标定不符')
+        for point in msg.points:
+            if not all(math.isfinite(v) for v in (point.x, point.y, point.z)):
+                raise ValueError('Invalid ring centroid')
+            if not (0 <= point.x < self.image_size[0] and 0 <= point.y < self.image_size[1]):
+                raise ValueError('Ring centroid outside image bounds')
+
+    def project_pending_rings(self):
+        while self.pending_rings:
+            msg, received_at = self.pending_rings[0]
+            stamp = Time.from_msg(msg.header.stamp, clock_type=self.get_clock().clock_type)
+            age = (self.get_clock().now().nanoseconds - stamp.nanoseconds) / 1e9
+            now = time.monotonic()
+            if age < -0.05 or age > self.target_max_age or now - received_at > self.tf_wait:
+                self.pending_rings.popleft()
+                self.get_logger().warning('圆环圆心过期或 TF 等待超时，跳过',
+                                          throttle_duration_sec=2.0)
+                continue
+            if now - self.last_ring_publish < self.auto_interval:
+                self.pending_rings.popleft()
+                continue
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.base_frame, self.camera_frame, stamp)
+            except TransformException:
+                try:
+                    latest = self.tf_buffer.lookup_transform(
+                        self.base_frame, self.camera_frame, Time())
+                except TransformException:
+                    return
+                latest_ns = (latest.header.stamp.sec * 10**9
+                             + latest.header.stamp.nanosec)
+                if latest_ns > stamp.nanoseconds:
+                    return
+                transform = latest
+                self.get_logger().warning(
+                    '图像时刻 TF 不可用，使用最新 TF 兜底（云台转动时坐标可能略偏）',
+                    throttle_duration_sec=2.0)
+            try:
+                out = self.project_ring_centers(msg, transform_matrix(transform))
+            except (ValueError, cv2.error) as error:
+                self.pending_rings.popleft()
+                self.get_logger().warning(f'圆环投影失败: {error}', throttle_duration_sec=2.0)
+                continue
+            self.pending_rings.popleft()
+            self.ring_target_publisher.publish(out)
+            self.last_ring_publish = now
+            self.get_logger().info(
+                f'投影 3 个圆环圆心 -> {self.base_frame} (m)',
+                throttle_duration_sec=1.0)
+
+    def project_ring_centers(self, msg, base_from_camera):
+        ring_ids = self._channel_values(msg, 'ring_id')
+        out = PointCloud()
+        out.header.stamp = copy.deepcopy(msg.header.stamp)
+        out.header.frame_id = self.base_frame
+        for point in msg.points:
+            xyz = pixel_to_plane((point.x, point.y), self.matrix, self.distortion,
+                                 base_from_camera, self.planes['ring'] / 1000.0)
+            out.points.append(Point32(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2])))
+            self.get_logger().info(
+                f'圆环圆心 -> ({xyz[0] * 1000.0:.1f}, {xyz[1] * 1000.0:.1f}, '
+                f'{xyz[2] * 1000.0:.1f}) mm',
+                throttle_duration_sec=1.0)
+        out.channels = [ChannelFloat32(name='ring_id', values=[float(v) for v in ring_ids])]
         return out
 
     @staticmethod

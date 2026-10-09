@@ -19,5 +19,5 @@ pixel_to_base:
     plane_mode: object
     object_plane_configured: true
     object_plane_z_mm: -12.5   # Relative to gimbal_base, as measured.
-    ring_plane_configured: false
-    ring_plane_z_mm: -72.5     # Fill actual ring plane height, then enable.
+    ring_plane_configured: true
+    ring_plane_z_mm: -72.5     # 圆环平面高度（相对 gimbal_base），现场量准后确认

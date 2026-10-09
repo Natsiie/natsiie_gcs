@@ -32,18 +32,20 @@ TOPIC_TYPES = {
     'GrabCmd':      0x09,  # 上位机 -> 下位机，夹爪到位授权下降抓取，payload "1"
     'PlaceCommand': 0x0A,  # task_id,command_id,stage,batch,sequence,color,ring,layer,x,y,z
     'PlaceResult':  0x0B,  # 下位机 -> 上位机，task_id,command_id,success
+    'RingTarget':   0x0C,  # 上位机 -> 下位机，三圆环圆心 gimbal_base 毫米，x1,y1,z1,x2,y2,z2,x3,y3,z3
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
 GRAB_CMD_TYPE = TOPIC_TYPES['GrabCmd']
 PLACE_COMMAND_TYPE = TOPIC_TYPES['PlaceCommand']
 PLACE_RESULT_TYPE = TOPIC_TYPES['PlaceResult']
+RING_TARGET_TYPE = TOPIC_TYPES['RingTarget']
 
 
 def validate_place_identity(task_id, command_id):
