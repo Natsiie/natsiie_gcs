@@ -45,7 +45,7 @@ def generate_launch_description():
         DeclareLaunchArgument('secondary_camera_fps', default_value='25'),
         DeclareLaunchArgument('secondary_camera_fourcc', default_value='YUYV'),
         # 副相机画面翻转：-1=上下颠倒(180°), 1=左右镜像, 0=不翻转。
-        DeclareLaunchArgument('secondary_camera_flip_code', default_value='-1'),
+        DeclareLaunchArgument('secondary_camera_flip_code', default_value='0'),
         # 统一串口桥使用的设备和波特率。
         DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
         DeclareLaunchArgument('baud', default_value='115200'),
@@ -263,19 +263,19 @@ def generate_launch_description():
             }],
         ),
 
-        # # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        # Node(
-        #     package='identify_pack',
-        #     executable='stacked_ring_detect_node',
-        #     name='stacked_ring_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': secondary_image_topic,
-        #         'show': ParameterValue(show, value_type=bool),
-        #         'camera_frame': 'camera_optical_frame',
-        #         'centers_topic': '/stacked_ring/centers_pixel',
-        #     }],
-        # ),
+        # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
+        Node(
+            package='identify_pack',
+            executable='stacked_ring_detect_node',
+            name='stacked_ring_detect_node',
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'show': ParameterValue(show, value_type=bool),
+                'camera_frame': 'camera_optical_frame',
+                'centers_topic': '/stacked_ring/centers_pixel',
+            }],
+        ),
 
         # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
         # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。
