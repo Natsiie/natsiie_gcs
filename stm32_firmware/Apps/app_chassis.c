@@ -70,6 +70,8 @@ float   chassis_trim_corr_x   = 0.0f;    /* 要矫正多少: corr_x * 增益 (mm
 float   chassis_trim_corr_y   = 0.0f;    /* 要矫正多少: corr_y * 增益 (mm) */
 float   chassis_trim_corr_yaw = 0.0f;    /* 要矫正多少: corr_yaw * 增益 (deg) */
 uint8_t chassis_trim_within   = 0;       /* 是否矫正成功: 视觉 within (1=已到位, 只读) */
+float   chassis_dock_corr_x = 0.0f;      /* 自动停靠时快照的视觉 corr_x (mm), 供塔吊卸货落点补偿 */
+float   chassis_dock_corr_y = 0.0f;      /* 自动停靠时快照的视觉 corr_y (mm), 供塔吊卸货落点补偿 */
 
 /* 同步发送 4 轮速度: 先暂存 4 条速度命令到 MMCL 缓冲区, 再 X_V2_Multi_Motor_Cmd(0)
    广播地址 0 一次性发出, 4 个电机同时收到同一条多机命令 -> 同步动作 */
@@ -418,6 +420,8 @@ void App_Chassis_Task(void)
         if (fabsf(ef) < chassis_pos_deadzone_mm && fabsf(el) < chassis_pos_deadzone_mm)
         {
             chassis_pos_active = 0;
+            chassis_dock_corr_x = Serial_RxData.ring_corr_x;   /* 自动停靠: 快照视觉 corr, 给塔吊卸货补进落点 */
+            chassis_dock_corr_y = Serial_RxData.ring_corr_y;
             vx = 0.0f;
             vy = 0.0f;
         }

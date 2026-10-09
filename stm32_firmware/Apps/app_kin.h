@@ -42,10 +42,11 @@
  *          23) 夹爪自动闭合 -> 延时
  *          24) 电机5 -> kin_place_hoist_up_deg(600 清障) 25) 电机6 -> kin_place_extend_deg(600)
  *          26) 云台   -> kin_home_gimbal_deg(42 回前)
- *          27) 电机5 -> kin_home_hoist_deg(50 降默认低) 28) 电机6 -> kin_home_extend_deg(0 收回)
- *          29) 等 0x0C 卸货坐标(一次给 3 组 xy, 快照到 kin_unload_x/y[3], 首轮等新帧)
- *          30) 云台   -> 落点θ  31) 电机6 -> 落点r (m5 保持50)
- *          32) 等放开(手动 kin_release_cmd) -> 松夹爪 33) 延时 -> 平台转下一档(C->B->A)
+ *          27) (跳过: 电机5 保持600 高位, 不再先降50) 28) 电机6 -> kin_home_extend_deg(0 收回)
+ *          29) 等 0x0C 卸货坐标就绪(坐标后台持续更新, 回去夹东西时已锁定, 直接用)
+ *          30) 云台   -> 落点θ  31) 电机6 -> 落点r (m5 保持600 高位)
+ *          32) 电机5 -> kin_home_hoist_deg(50 到落点上方后再降)
+ *          33) 等放开(手动 kin_release_cmd) -> 松夹爪 34) 延时 -> 平台转下一档(C->B->A)
  *          -> 还有落点则回 18) 抓下一个环, 依次放满 3 个 -> 完成待命
   *
   *         注意: 云台是普通 PWM 舵机, 无位置回读; 当前角从 Servo_GetAngle(SERVO_GIMBAL)
@@ -66,6 +67,8 @@ extern float  kin_extend_zero_deg;       /* r=kin_extend_r_min_mm 时的电机�
 extern float  kin_extend_r_min_mm;       /* 最短时夹爪中心到转轴的水平距离(mm) */
 extern int8_t kin_extend_sign;           /* +1: 电机码值增大->r增大; -1 反向 */
 extern float  kin_extend_target_offset_mm; /* 视觉点在伸出方向偏近的补偿(mm), 逆解命令加在 r 上 */
+extern float  kin_unload_x_offset_mm;     /* 卸货落点: 视觉坐标 x 偏移(mm) */
+extern float  kin_unload_y_offset_mm;     /* 卸货落点: 视觉坐标 y 偏移(mm) */
 
 /* 升降(电机5): 高度 z(mm) <-> 电机码值(度) */
 extern float  kin_hoist_mm_per_deg;
@@ -115,7 +118,8 @@ extern float kin_unload_grab_hoist_deg;/* 卸货: 平台抓取时电机5高度 (
 extern float   kin_unload_x[3];        /* 3 个落点 X (塔吊系绝对 mm) */
 extern float   kin_unload_y[3];        /* 3 个落点 Y */
 extern uint8_t kin_unload_idx;         /* 当前放第几个 (0/1/2) */
-extern uint8_t kin_unload_have;        /* 1=已拿到 3 个落点, 后续轮不再等新帧 */
+extern uint8_t kin_unload_have;        /* 1=已收到过 0x0C 坐标(至少一次), 可去放 */
+extern uint8_t kin_unload_lock;        /* 1=坐标已锁定(回去夹东西时停止更新), 整轮放完清零恢复更新 */
 extern float kin_gripper_close_angle;  /* 抓取闭合角 */
 extern float kin_gripper_open_angle;   /* 放置张开角 */
 extern uint16_t kin_gripper_delay_10ms;/* 夹爪动作后等待(10ms 单位) */
@@ -127,7 +131,7 @@ extern uint8_t kin_release_cmd;   /* 手动松开夹爪(卸货用) */
 extern uint8_t kin_platform_sel;  /* 物料平台槽位 0/1/2 -> A/B/C, 每次放置完成后旋转一次 */
 
 /* 调试用 (Watch 只读): 运动内部状态 */
-extern uint8_t  kin_step;         /* 当前步骤 0=空闲 1=下探447 2=旧停靠(废弃) 3=云台 4=伸6 5=升5(550预降) 6=等授权 7=等夹爪 8~13=放置 14~17=回默认 18~33=卸货 */
+extern uint8_t  kin_step;         /* 当前步骤 0=空闲 1=下探447 2=旧停靠(废弃) 3=云台 4=伸6 5=升5(550预降) 6=等授权 7=等夹爪 8~13=放置 14~17=回默认 18~34=卸货 */
 extern uint32_t kin_motion_count; /* 触发次数, 确认重触发有没有进来 */
 extern float    kin_tgt_servo, kin_tgt_m6_deg, kin_tgt_m5_deg; /* 内部目标(舵机/电机6/电机5 码值度) */
 
@@ -150,7 +154,7 @@ float Kin_HoistDegToMm(float deg);
 
 void Kin_GotoXY(float x, float y);   /* 上层给 (x,y), z 用 kin_grab_z_mm; 按安全顺序走 */
 void Kin_UnloadStart(void);          /* 卸货启动: 平台抓取(220/447/500, 自动夹取)->50默认(42/50/0)->等视觉 */
-void Kin_UnloadDrop(void);           /* 卸货放置: 用 kin_target_x/y 解 θ/r(m5保持50), 到位等放开(kin_release_cmd) */
+void Kin_UnloadDrop(void);           /* 卸货放置: 用 kin_target_x/y 解 θ/r(m5保持600高位), 到落点后降50, 到位等放开(kin_release_cmd) */
 void Kin_Stop(void);
 void Kin_Update(void);      /* 10ms, 由塔吊任务调用 */
 void Kin_ReportPose(void);  /* 读当前电机位置 + 云台角 -> 算当前夹爪 (x,y,z) */

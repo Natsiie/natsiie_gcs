@@ -14,6 +14,10 @@ extern float motor6_pos;
 /* 上位机 0x09 GrabCmd 授权抓取 (Serial.c 收到 "1" 置 1, 分步模式下消费后清 0) */
 extern uint8_t grab_cmd;
 
+/* 底盘自动停靠时快照的视觉 corr (app_chassis.c 维护, mm), 卸货落点按此补偿 */
+extern float chassis_dock_corr_x;
+extern float chassis_dock_corr_y;
+
 #define KIN_DEG2RAD (MATH_PI / 180.0f)
 #define KIN_RAD2DEG (180.0f / MATH_PI)
 
@@ -46,13 +50,14 @@ extern uint8_t grab_cmd;
 #define KIN_STEP_UNLOAD_RETURN_HOIST_UP 24  /* 电机5 -> 600 (lift 清障 先升) */
 #define KIN_STEP_UNLOAD_RETURN_EXTEND   25  /* 电机6 -> 600 (后) */
 #define KIN_STEP_UNLOAD_RETURN_GIMBAL   26  /* 云台   -> 42 (回前) */
-#define KIN_STEP_UNLOAD_RETURN_HOIST    27  /* 电机5 -> 50 (降默认低) */
+#define KIN_STEP_UNLOAD_RETURN_HOIST    27  /* (废弃) 电机5 -> 50, 已改为落点后再降 */
 #define KIN_STEP_UNLOAD_RETURN_RETRACT  28  /* 电机6 -> 0 (收回默认) */
 #define KIN_STEP_UNLOAD_WAIT_VISION     29  /* 等视觉坐标(kin_cmd=1) */
 #define KIN_STEP_UNLOAD_DROP_GIMBAL     30  /* 云台   -> 视觉θ */
-#define KIN_STEP_UNLOAD_DROP_EXTEND     31  /* 电机6 -> 视觉r */
-#define KIN_STEP_UNLOAD_WAIT_RELEASE    32  /* 等放开(手动 kin_release_cmd) -> 松夹爪 */
-#define KIN_STEP_UNLOAD_RELEASE         33  /* 松夹爪 + 延时 -> 转平台 -> 完成 */
+#define KIN_STEP_UNLOAD_DROP_EXTEND     31  /* 电机6 -> 视觉r (m5 保持600高位) */
+#define KIN_STEP_UNLOAD_DROP_HOIST      32  /* 电机5 -> 50 (到落点上方后再降) */
+#define KIN_STEP_UNLOAD_WAIT_RELEASE    33  /* 等放开(手动 kin_release_cmd) -> 松夹爪 */
+#define KIN_STEP_UNLOAD_RELEASE         34  /* 松夹爪 + 延时 -> 转平台 -> 完成 */
 
 /* ================= 标定参数 (占位, 现场标定) ================= */
 float  kin_gimbal_theta_offset = 42.0f;      /* 现场标定: θ=0(+X) 时舵机值 = 42 */
@@ -64,6 +69,8 @@ float  kin_extend_zero_deg     = 0.0f;      /* 电机6=0 时 r=104.48mm */
 float  kin_extend_r_min_mm     = 104.48f;   /* 电机6=0(最短)时径向距离 = √(104.47²+1.36²) */
 int8_t kin_extend_sign         = -1;        /* 伸出时 motor6_pos 读负值(0=最短→-808.8=最远), 取 -1 让 r 增大 */
 float  kin_extend_target_offset_mm = 30.0f; /* 视觉给的点在伸出方向偏近20mm, 逆解命令补上(只改命令, 不改正解/FK) */
+float  kin_unload_x_offset_mm    = 10.0f; /* 卸货落点: 视觉坐标 x,y 各 +20mm(三个落点都加) */
+float  kin_unload_y_offset_mm    = 40.0f;
 
 float  kin_hoist_mm_per_deg    = 1.0f;
 float  kin_hoist_zero_deg      = 0.0f;
@@ -94,7 +101,8 @@ float kin_unload_grab_hoist_deg = 447.0f; /* 卸货: 平台抓取时电机5高�
 float   kin_unload_x[3] = {0.0f, 0.0f, 0.0f};
 float   kin_unload_y[3] = {0.0f, 0.0f, 0.0f};
 uint8_t kin_unload_idx  = 0;   /* 当前放第几个 (0/1/2) */
-uint8_t kin_unload_have = 0;   /* 1=已拿到 3 个落点, 后续轮不再等新帧 */
+uint8_t kin_unload_have = 0;   /* 1=已收到过 0x0C 坐标(至少一次), 可去放 */
+uint8_t kin_unload_lock = 0;   /* 1=坐标已锁定(回去夹东西时停止更新), 整轮放完清零恢复更新 */
 
 /* 夹爪角度 (Watch 可调) */
 float kin_gripper_close_angle = GRIPPER_CLOSE_ANGLE;  /* 抓取闭合 */
@@ -218,6 +226,8 @@ void Kin_GotoXY(float x, float y)
     kin_target_z_mm  = kin_grab_z_mm;
 
     kin_tgt_servo       = Kin_ThetaToServo(th);
+    if (kin_tgt_servo < 0.0f)   { kin_tgt_servo = 0.0f;   kin_reachable = 0; }
+    if (kin_tgt_servo > 360.0f) { kin_tgt_servo = 360.0f; kin_reachable = 0; }
     kin_tgt_m6_deg      = Kin_ExtendMmToDeg(r);
     kin_tgt_m5_deg      = kin_grab_approach_deg;
 
@@ -229,13 +239,13 @@ void Kin_GotoXY(float x, float y)
     kin_active    = 1;
 }
 
-/* 卸货启动 (kin_cmd=3): 平台抓取(220/447/500) -> 50默认(42/50/0) -> 等 0x0C 落点 -> 依次放 3 个 -> 等放开 */
+/* 卸货启动 (kin_cmd=3): 平台抓取(220/447/500) -> 600高位(42/600/0) -> 等 0x0C 落点 -> 依次放 3 个 -> 到落点后降50 -> 等放开 */
 void Kin_UnloadStart(void)
 {
     kin_reachable  = 1;
     kin_motion_count++;   /* 触发计数: 确认重触发有没有进来 */
     kin_unload_idx  = 0;
-    kin_unload_have = 0;
+    kin_unload_lock = 1;   /* 回去夹东西: 锁定坐标, 停止更新, 整轮都用这份数据 */
     kin_step       = KIN_STEP_UNLOAD_GRAB_HOIST_UP;   /* 先600清障 -> 云台220 -> m6 500 -> m5 447 -> 自动夹取 */
     kin_phase      = 0;
     kin_keepalive  = 0;
@@ -244,11 +254,11 @@ void Kin_UnloadStart(void)
     kin_active     = 1;
 }
 
-/* 卸货放置: 用 0x0C 第 kin_unload_idx 个落点(塔吊系绝对 x,y) -> θ/r, m5 保持默认低50, 到位等放开 */
+/* 卸货放置: 用 0x0C 第 kin_unload_idx 个落点(塔吊系绝对 x,y 各+20mm偏移) -> 云台θ + m6 r (m5 保持600高位), 到位后 m5 降50, 等放开 */
 void Kin_UnloadDrop(void)
 {
-    float x  = kin_unload_x[kin_unload_idx];
-    float y  = kin_unload_y[kin_unload_idx];
+    float x  = kin_unload_x[kin_unload_idx] + kin_unload_x_offset_mm + chassis_dock_corr_x;   /* 落点 x +偏移 +底盘停靠 corr_x */
+    float y  = kin_unload_y[kin_unload_idx] - kin_unload_y_offset_mm + chassis_dock_corr_y;   /* 落点 y +偏移 +底盘停靠 corr_y */
     float r  = sqrtf(x * x + y * y) + kin_extend_target_offset_mm;  /* 视觉点在伸出方向偏近, 补上再算 */
     float th = atan2f(y, x) * KIN_RAD2DEG;
 
@@ -262,7 +272,11 @@ void Kin_UnloadDrop(void)
     kin_tgt_servo    = Kin_ThetaToServo(th);
     kin_tgt_m6_deg   = Kin_ExtendMmToDeg(r);
 
-    kin_step      = KIN_STEP_UNLOAD_DROP_GIMBAL;   /* 云台 -> 落点θ, 再电机6 -> 落点r */
+    /* 舵机量程 [0,360], 目标越界会让云台斜坡卡在边界永远到不了 -> 截断并置 reachable=0 提示 */
+    if (kin_tgt_servo < 0.0f)    { kin_tgt_servo = 0.0f;   kin_reachable = 0; }
+    if (kin_tgt_servo > 360.0f)  { kin_tgt_servo = 360.0f; kin_reachable = 0; }
+
+    kin_step      = KIN_STEP_UNLOAD_DROP_GIMBAL;   /* 云台 -> 落点θ, 电机6 -> 落点r, 再电机5 -> 50 */
     kin_phase     = 0;
     kin_keepalive = 0;
     kin_need_send = 1;
@@ -273,6 +287,7 @@ void Kin_Stop(void)
     kin_active = 0;
     kin_done   = 0;
     kin_step   = KIN_STEP_IDLE;
+    kin_unload_lock = 0;   /* 手动停止也解除锁定, 恢复坐标更新 */
     X_V2_Stop_Now(MOTOR_HOIST,  false);
     X_V2_Stop_Now(MOTOR_EXTEND, false);
 }
@@ -296,6 +311,25 @@ void Kin_Update(void)
     else if (kin_cmd == 2) { kin_cmd = 0; Kin_Stop(); }
     else if (kin_cmd == 3) { kin_cmd = 0; Kin_UnloadStart(); }   /* 卸货: 平台抓取 -> 50默认 */
 
+    /* 0x0C 卸货坐标: 未锁定时持续用最新帧更新; 回去夹东西后锁定不再更新
+     * (若还没拿到过坐标, 仍接受第一帧, 避免夹完却无坐标可用卡死) */
+    if (Serial_UnloadCoordReady)
+    {
+        Serial_UnloadCoordReady = 0;
+        if (!kin_unload_lock || !kin_unload_have)
+        {
+            uint8_t i, n;
+            n = Serial_RxData.unload_count;
+            if (n > 3) n = 3;
+            for (i = 0; i < n; i++)
+            {
+                kin_unload_x[i] = Serial_RxData.unload_x[i];
+                kin_unload_y[i] = Serial_RxData.unload_y[i];
+            }
+            kin_unload_have = 1;
+        }
+    }
+
     /* 只由 kin_cmd=1 触发运动: 坐标(kin_target_x/y)变了不会自己动, 必须手动给 cmd */
     if (!kin_active) return;
 
@@ -311,7 +345,7 @@ void Kin_Update(void)
         case KIN_STEP_PLACE_GIMBAL:        tgt = kin_place_gimbal_deg;next = KIN_STEP_PLACE_EXTEND2;        break;
         case KIN_STEP_RETURN_GIMBAL:       tgt = kin_home_gimbal_deg; next = KIN_STEP_RETURN_EXTEND_RETRACT; break;
         case KIN_STEP_UNLOAD_GRAB_GIMBAL:  tgt = kin_place_gimbal_deg;next = KIN_STEP_UNLOAD_GRAB_EXTEND2;  break;
-        case KIN_STEP_UNLOAD_RETURN_GIMBAL:tgt = kin_home_gimbal_deg; next = KIN_STEP_UNLOAD_RETURN_HOIST; break;
+        case KIN_STEP_UNLOAD_RETURN_GIMBAL:tgt = kin_home_gimbal_deg; next = KIN_STEP_UNLOAD_RETURN_RETRACT; break;
         default /* UNLOAD_DROP_GIMBAL */: tgt = kin_tgt_servo;       next = KIN_STEP_UNLOAD_DROP_EXTEND;   break;
         }
         {
@@ -370,22 +404,9 @@ void Kin_Update(void)
         return;
     }
 
-    /* 卸货: 停在50默认等 0x0C 卸货坐标 (首轮等新帧并快照 3 落点; 后续轮坐标已存直接放) */
+    /* 卸货: 停在50默认等坐标就绪(坐标在后台持续更新, 回去夹东西时已锁定) -> 直接去放 */
     if (kin_step == KIN_STEP_UNLOAD_WAIT_VISION)
     {
-        if (Serial_UnloadCoordReady)
-        {
-            uint8_t i, n;
-            Serial_UnloadCoordReady = 0;
-            n = Serial_RxData.unload_count;
-            if (n > 3) n = 3;
-            for (i = 0; i < n; i++)
-            {
-                kin_unload_x[i] = Serial_RxData.unload_x[i];
-                kin_unload_y[i] = Serial_RxData.unload_y[i];
-            }
-            kin_unload_have = 1;
-        }
         if (kin_unload_have)
             Kin_UnloadDrop();
         return;
@@ -426,6 +447,7 @@ void Kin_Update(void)
             else
             {
                 kin_active = 0; kin_done = 1; kin_step = KIN_STEP_IDLE;
+                kin_unload_lock = 0;   /* 整轮放完: 恢复坐标更新, 等下次回去夹东西再锁定 */
             }
         }
         return;
@@ -538,6 +560,10 @@ void Kin_Update(void)
                 X_V2_Traj_Pos_Control(MOTOR_EXTEND, kin_extend_cmd_dir, kin_extend_acc, kin_extend_dec,
                                       kin_extend_vel, kin_tgt_m6_deg, 1, 0);   /* 视觉 r */
                 break;
+            case KIN_STEP_UNLOAD_DROP_HOIST:
+                X_V2_Traj_Pos_Control(MOTOR_HOIST, kin_hoist_cmd_dir, kin_hoist_acc, kin_hoist_dec,
+                                      kin_hoist_vel, kin_home_hoist_deg, 1, 0);   /* 50 降到落点高 */
+                break;
             default: break;
             }
         }
@@ -648,7 +674,12 @@ void Kin_Update(void)
         case KIN_STEP_UNLOAD_DROP_EXTEND:
             Tower_ReadPos6();
             if (fabsf(Kin_ExtendDegToMm(motor6_pos) - kin_target_r) <= kin_pos_tol_mm)
-            { kin_step = KIN_STEP_UNLOAD_WAIT_RELEASE; }   /* m6 到视觉r -> 等放开 */
+            { kin_step = KIN_STEP_UNLOAD_DROP_HOIST; kin_need_send = 1; kin_keepalive = 0; }   /* m6 到视觉r -> 降50 */
+            break;
+        case KIN_STEP_UNLOAD_DROP_HOIST:
+            Tower_ReadPos5();
+            if (fabsf(fabsf(motor5_pos) - kin_home_hoist_deg) <= kin_pos_tol_mm)
+            { kin_step = KIN_STEP_UNLOAD_WAIT_RELEASE; }   /* m5 到50 -> 等放开 */
             break;
         default: break;
         }

@@ -22,5 +22,7 @@ extern float   chassis_trim_corr_x;    /* 要矫正多少: corr_x*增益 (mm, �
 extern float   chassis_trim_corr_y;    /* 要矫正多少: corr_y*增益 (mm, 只读) */
 extern float   chassis_trim_corr_yaw;  /* 要矫正多少: corr_yaw*增益 (deg, 只读) */
 extern uint8_t chassis_trim_within;    /* 是否矫正成功: 视觉 within (1=到位, 只读) */
+extern float   chassis_dock_corr_x;    /* 自动停靠时快照的视觉 corr_x (mm), 供塔吊卸货落点补偿 */
+extern float   chassis_dock_corr_y;    /* 自动停靠时快照的视觉 corr_y (mm), 供塔吊卸货落点补偿 */
 
 #endif
