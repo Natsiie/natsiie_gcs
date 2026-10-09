@@ -24,6 +24,13 @@ import sys
 import cv2
 import numpy as np
 
+try:
+    from .camera_capture import TimedCamera
+    from .camera_diagnostics import require_display
+except ImportError:
+    from camera_capture import TimedCamera
+    from camera_diagnostics import require_display
+
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
@@ -40,29 +47,15 @@ class RingStationCalibrationError(RuntimeError):
     """标定工具无法打开摄像头或画面无效。"""
 
 
-def open_camera(device, width, height, fps):
-    camera = cv2.VideoCapture(device, cv2.CAP_V4L2)
-    if not camera.isOpened():
-        try:
-            camera = cv2.VideoCapture(int(device))
-        except Exception:
-            pass
-    if not camera.isOpened():
-        camera.release()
-        raise RingStationCalibrationError(f'无法打开摄像头：{device}')
-    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    camera.set(cv2.CAP_PROP_FPS, float(fps))
-    camera.set(cv2.CAP_PROP_BUFFERSIZE, 4)
-    for _ in range(10):
-        ok, frame = camera.read()
-        if ok and frame is not None:
-            if frame.shape[:2] != (height, width):
-                camera.release()
-                raise RingStationCalibrationError(
-                    f'摄像头输出 {frame.shape[1]}x{frame.shape[0]}，需要 {width}x{height}')
+def open_camera(device, width, height, fps, fourcc='MJPG', timeout=5.0):
+    camera = TimedCamera(device, width, height, fps, fourcc, timeout)
+    ok, frame = camera.read()
+    if ok and frame is not None:
+        if frame.shape[:2] == (height, width):
             return camera
+        camera.release()
+        raise RingStationCalibrationError(
+            f'摄像头输出 {frame.shape[1]}x{frame.shape[0]}，需要 {width}x{height}')
     camera.release()
     raise RingStationCalibrationError('摄像头已打开，但无法读取画面')
 
@@ -118,8 +111,10 @@ def parse_args():
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--fps', type=float, default=25.0)
+    parser.add_argument('--fourcc', default='MJPG')
+    parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
-    parser.add_argument('--flip-code', type=int, default=-1,
+    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=-1,
                         help='画面翻转：-1=上下颠倒(180°)，1=左右镜像，0=不翻转（与 launch 一致）')
     return parser.parse_args()
 
@@ -132,7 +127,9 @@ def run(args):
         raise RingStationCalibrationError(f'无法读取配置 {config_path}：{error}') from error
     config = load_ring_station_config(config_path)
     detector = RingStationDetector(config)
-    camera = open_camera(args.device, args.width, args.height, args.fps)
+    require_display()
+    camera = open_camera(args.device, args.width, args.height, args.fps,
+                         args.fourcc, args.timeout)
 
     window = 'Ring Station Zero Calibration'
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
@@ -232,7 +229,7 @@ def main():
     args = parse_args()
     try:
         run(args)
-    except (RingStationCalibrationError, RingStationDetectionError, cv2.error) as error:
+    except (RuntimeError, ValueError, cv2.error) as error:
         print(f'错误：{error}')
         return 1
     return 0

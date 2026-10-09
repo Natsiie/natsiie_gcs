@@ -95,3 +95,32 @@ class CaptureProcess:
         self.process.close()
         self.process = None
         return True
+
+
+class TimedCamera:
+    """VideoCapture-style reads with a deadline, including driver open/read hangs."""
+
+    def __init__(self, device, width, height, fps, fourcc='MJPG', timeout=5.0):
+        if (width <= 0 or height <= 0 or fps <= 0 or timeout <= 0
+                or (fourcc and len(fourcc) != 4)):
+            raise ValueError('Invalid camera dimensions, fps, format or timeout')
+        if isinstance(device, str) and device.isdecimal():
+            device = int(device)
+        self.capture = CaptureProcess(device, width, height, fps, fourcc)
+        self.timeout = timeout
+        self.capture.start()
+
+    def read(self):
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if self.capture.process is None or not self.capture.process.is_alive():
+                return False, None
+            result = self.capture.latest()
+            if result is not None:
+                return True, result[0]
+            time.sleep(0.005)
+        return False, None
+
+    def release(self):
+        if not self.capture.stop():
+            raise RuntimeError('Camera worker could not be stopped')

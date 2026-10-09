@@ -46,6 +46,8 @@ setup(
             'roi_overlay_node = identify_pack.scripts.roi_overlay_node:main',
             'color_calibrator = identify_pack.scripts.color_calibrator:main',
             'turntable_calibrator = identify_pack.scripts.turntable_calibrator:main',
+            'ring_station_calibrator = identify_pack.scripts.ring_station_calibrator:main',
+            'camera_diagnostics = identify_pack.scripts.camera_diagnostics:main',
         ],
     },
 )

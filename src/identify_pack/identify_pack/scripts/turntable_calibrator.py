@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 try:
-    from identify_pack.vision_identify.turntable_detector import (
+    from identify_pack.scripts.turntable_detector import (
         build_default_turntable_detector_document, DebugCircleCandidate,
         draw_turntable_detection, load_turntable_detector_document,
         save_turntable_detector_config, TurntableDebugResult,
@@ -29,8 +29,7 @@ try:
         turntable_config_from_document,
     )
 except ImportError:  # 直接在源码目录运行
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    '..', 'vision_identify'))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from turntable_detector import (  # type: ignore
         build_default_turntable_detector_document, DebugCircleCandidate,
         draw_turntable_detection, load_turntable_detector_document,
@@ -38,6 +37,13 @@ except ImportError:  # 直接在源码目录运行
         TurntableDetectionError, TurntableDetector,
         turntable_config_from_document,
     )
+
+try:
+    from .camera_capture import TimedCamera
+    from .camera_diagnostics import require_display
+except ImportError:
+    from camera_capture import TimedCamera
+    from camera_diagnostics import require_display
 
 DEFAULT_CONFIG = os.path.join(os.path.dirname(__file__), 'turntable_detector.json')
 FRAME_WIDTH = 640
@@ -301,23 +307,15 @@ def render_panel(panel, result, debug, message, fps, frozen, show_points):
     return output
 
 
-def open_camera(device, fps):
-    camera = cv2.VideoCapture(device, cv2.CAP_V4L2)
-    if not camera.isOpened():
-        camera.release()
-        raise TurntableSettingsError(f'无法打开摄像头：{device}')
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-    camera.set(cv2.CAP_PROP_FPS, float(fps))
-    camera.set(cv2.CAP_PROP_BUFFERSIZE, 4)
-    for _ in range(10):
-        ok, frame = camera.read()
-        if ok and frame is not None:
-            if frame.shape[:2] != (FRAME_HEIGHT, FRAME_WIDTH):
-                camera.release()
-                raise TurntableSettingsError(
-                    f'摄像头输出{frame.shape[1]}x{frame.shape[0]}，需要{FRAME_WIDTH}x{FRAME_HEIGHT}')
+def open_camera(device, fps, fourcc='MJPG', timeout=5.0):
+    camera = TimedCamera(device, FRAME_WIDTH, FRAME_HEIGHT, fps, fourcc, timeout)
+    ok, frame = camera.read()
+    if ok and frame is not None:
+        if frame.shape[:2] == (FRAME_HEIGHT, FRAME_WIDTH):
             return camera
+        camera.release()
+        raise TurntableSettingsError(
+            f'摄像头输出{frame.shape[1]}x{frame.shape[0]}，需要{FRAME_WIDTH}x{FRAME_HEIGHT}')
     camera.release()
     raise TurntableSettingsError('摄像头已打开，但无法读取画面')
 
@@ -326,6 +324,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='可视化设置转盘外圆识别参数')
     parser.add_argument('--device', default='/dev/video0')
     parser.add_argument('--fps', type=float, default=30.0)
+    parser.add_argument('--fourcc', default='MJPG')
+    parser.add_argument('--timeout', type=float, default=5.0)
+    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=-1)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
     return parser.parse_args()
 
@@ -334,7 +335,8 @@ def run(args):
     document = load_turntable_detector_document(args.config)
     panel = ParameterPanel(document)
     detector = TurntableDetector(turntable_config_from_document(document))
-    camera = open_camera(args.device, args.fps)
+    require_display()
+    camera = open_camera(args.device, args.fps, args.fourcc, args.timeout)
     window_name = 'Turntable Parameter Settings'
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, CANVAS_WIDTH, FRAME_HEIGHT)
@@ -354,7 +356,7 @@ def run(args):
                 ok, raw = camera.read()
                 if not ok or raw is None:
                     raise TurntableSettingsError('设置过程中摄像头读取失败')
-                latest_frame = raw.copy()
+                latest_frame = cv2.flip(raw, args.flip_code) if args.flip_code else raw.copy()
                 if frozen:
                     frozen_frame = latest_frame.copy()
             source = frozen_frame if frozen and frozen_frame is not None else latest_frame
@@ -423,7 +425,7 @@ def main():
     args = parse_args()
     try:
         run(args)
-    except (TurntableSettingsError, TurntableDetectionError, cv2.error) as error:
+    except (RuntimeError, ValueError, cv2.error) as error:
         print(f'错误：{error}')
         return 1
     return 0

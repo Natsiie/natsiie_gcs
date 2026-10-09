@@ -754,21 +754,20 @@ def draw_ring_station_detection(frame, result: RingStationDetection):
             cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA,
         )
     cv2.polylines(frame, [np.asarray(points, np.int32)], False, (255, 0, 255), 2)
-    cv2.rectangle(frame, (10, 65), (820, 145), (0, 0, 0), -1)
-    cv2.putText(
-        frame,
+    lines = (
         f"Ring: {'STABLE' if result.stable else 'WAITING'}  "
         f"dX={result.error_x_mm:+.2f}mm dY={result.error_y_mm:+.2f}mm "
         f"dYaw={result.angle_error_deg:+.2f}deg",
-        (20, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.66,
-        (80, 255, 80) if result.within_tolerance else (255, 255, 255),
-        2, cv2.LINE_AA,
-    )
-    cv2.putText(
-        frame,
         f"Confidence={result.confidence:.3f} residual={result.affine_residual:.3f} "
         f"perspective={result.perspective_ratio:.3f} {result.processing_ms:.1f}ms",
-        (20, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.60,
-        (255, 255, 255), 2, cv2.LINE_AA,
     )
+    cv2.rectangle(frame, (10, 65), (frame.shape[1] - 10, 145), (0, 0, 0), -1)
+    for index, text in enumerate(lines):
+        scale = (0.66, 0.60)[index]
+        text_width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)[0][0]
+        scale *= min(1.0, max(1, frame.shape[1] - 45) / max(1, text_width))
+        color = ((80, 255, 80) if index == 0 and result.within_tolerance
+                 else (255, 255, 255))
+        cv2.putText(frame, text, (20, 98 + index * 34), cv2.FONT_HERSHEY_SIMPLEX,
+                    scale, color, 2, cv2.LINE_AA)
     return frame
