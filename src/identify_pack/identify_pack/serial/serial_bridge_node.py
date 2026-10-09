@@ -257,7 +257,7 @@ class SerialBridgeNode(Node):
         return False
 
     def _send_ring_targets(self, message: PointCloud):
-        """发送三圆环圆心（gimbal_base 毫米）给下位机，payload 为 x1,y1,z1,x2,y2,z2,x3,y3,z3。"""
+        """发送三圆环圆心（gimbal_base 毫米）给下位机，payload 为 x1,y1,x2,y2,x3,y3（不含 Z）。"""
         if message.header.frame_id != self.target_frame:
             self.get_logger().warning(
                 f'忽略圆环目标：frame_id={message.header.frame_id!r}，需要 {self.target_frame}',
@@ -274,11 +274,11 @@ class SerialBridgeNode(Node):
             return
         values = []
         for point in message.points:
-            xyz = (point.x * 1000.0, point.y * 1000.0, point.z * 1000.0)
-            if not all(math.isfinite(v) for v in xyz):
+            xy = (point.x * 1000.0, point.y * 1000.0)
+            if not all(math.isfinite(v) for v in xy):
                 self.get_logger().warning('忽略圆环目标：坐标非有限')
                 return
-            values.extend(xyz)
+            values.extend(xy)
         payload = ','.join(f'{v:.1f}' for v in values)
         self._send(self.ring_target_type, 'RingTarget', payload)
 
