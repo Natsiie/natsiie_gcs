@@ -65,6 +65,9 @@ def generate_launch_description():
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
             share, 'config', 'pixel_to_base.yaml')),
+        # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
+        DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
+            share, 'config', 'place_task.yaml')),
         # 夹爪到位检测：复用颜色识别同一 ROI，连续识别阈值 5s，默认关闭（调试后再开）。
         DeclareLaunchArgument('start_gripper_arrival', default_value='true'),
         # 到位信号话题：gripper_arrival 发布 / serial_bridge 订阅，两处共用同一参数。
@@ -260,17 +263,29 @@ def generate_launch_description():
             }],
         ),
 
-        # # 叠放位检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        # Node(
-        #     package='identify_pack',
-        #     executable='stacked_ring_detect_node',
-        #     name='stacked_ring_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': SECONDARY_TOPIC,
-        #         'show': True,
-        #     }],
-        # ),
+        # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
+        Node(
+            package='identify_pack',
+            executable='stacked_ring_detect_node',
+            name='stacked_ring_detect_node',
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'show': ParameterValue(show, value_type=bool),
+                'camera_frame': 'camera_optical_frame',
+                'centers_topic': '/stacked_ring/centers_pixel',
+            }],
+        ),
+
+        # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
+        # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。
+        Node(
+            package='identify_pack',
+            executable='place_task',
+            name='place_task',
+            output='screen',
+            parameters=[LaunchConfiguration('place_task_params_file')],
+        ),
 
         # # ROI 叠加节点：订阅副相机（调试用）
         # Node(
