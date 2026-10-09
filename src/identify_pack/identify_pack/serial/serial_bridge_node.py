@@ -20,6 +20,7 @@ from sensor_msgs.msg import PointCloud
 from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
     make_frame, COLOR_TARGET_TYPE,
+    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, parse_place_result, place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
 from identify_pack.scripts.color_config import PICKUP_COLOR_IDS
@@ -90,6 +91,8 @@ class SerialBridgeNode(Node):
         self.rx_buffer = bytearray()
         self.pub_joint_state = self.create_publisher(
             JointState, self.joint_states_topic, 10)
+        self.pub_place_result = self.create_publisher(String, '/arm/place_result', 10)
+        self.create_subscription(String, '/arm/place_command', self._on_place_command, 10)
         if serial is None:
             self.get_logger().error('pyserial 未安装，无法发送串口')
         else:
@@ -194,6 +197,13 @@ class SerialBridgeNode(Node):
             self.get_logger().error(f'串口读取失败: {error}', throttle_duration_sec=2.0)
             return
         for type_byte, payload in frames:
+            if type_byte == PLACE_RESULT_TYPE:
+                try:
+                    result = parse_place_result(payload)
+                    self.pub_place_result.publish(String(data=json.dumps(result)))
+                except ValueError as error:
+                    self.get_logger().warning(f'Invalid placement feedback: {error}')
+                continue
             if type_byte != self.yaw_feedback_type:
                 self.get_logger().warning(
                     f'忽略反馈帧 type=0x{type_byte:02X} payload={payload!r}；'
@@ -237,6 +247,17 @@ class SerialBridgeNode(Node):
         else:
             self.get_logger().info(f'(无串口) {topic}(0x{type_byte:02X}): {text!r}')
         return False
+
+    def _on_place_command(self, msg):
+        try:
+            command = json.loads(msg.data)
+            payload = place_command_payload(command, self.target_frame)
+            if not self._send(PLACE_COMMAND_TYPE, 'PlaceCommand', payload):
+                self.pub_place_result.publish(String(data=json.dumps({
+                    'task_id': command['task_id'], 'command_id': command['command_id'],
+                    'success': False})))
+        except (ValueError, KeyError, TypeError) as error:
+            self.get_logger().warning(f'Invalid placement command: {error}')
 
     def _on_arrived(self, msg):
         """收到夹爪到位信号 -> 下发下降抓取授权帧（GrabCmd，payload "1"）。"""

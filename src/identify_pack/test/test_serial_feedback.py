@@ -1,12 +1,16 @@
 import math
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
 from builtin_interfaces.msg import Time
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
-from identify_pack.serial.protocol import GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, make_frame
+from identify_pack.serial.protocol import (
+    GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, make_frame,
+    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, parse_frame,
+)
 from identify_pack.serial.serial_bridge_node import SerialBridgeNode
 
 
@@ -22,6 +26,7 @@ class SerialFeedbackTests(unittest.TestCase):
             yaw_joint_name='gimbal_yaw_joint', pub_joint_state=Mock(),
             joint_states_topic='/gimbal/joint_states',
             get_clock=lambda: clock, get_logger=lambda: logger,
+            target_frame='gimbal_base', pub_place_result=Mock(),
         )
 
     def feed(self, bridge, data):
@@ -76,6 +81,34 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.ser.write.reset_mock()
         SerialBridgeNode._on_arrived(bridge, Bool(data=False))
         bridge.ser.write.assert_not_called()
+
+    def test_placement_feedback_and_invalid_results(self):
+        bridge = self.make_bridge()
+        task_id = 'a' * 32
+        self.feed(bridge, make_frame(PLACE_RESULT_TYPE, f'{task_id},7,1'))
+        self.assertEqual(json.loads(bridge.pub_place_result.publish.call_args.args[0].data),
+                         dict(task_id=task_id, command_id=7, success=True))
+        bridge.pub_place_result.publish.reset_mock()
+        self.feed(bridge, make_frame(PLACE_RESULT_TYPE, f'{task_id},7,2'))
+        bridge.pub_place_result.publish.assert_not_called()
+        self.assertNotIn('PlaceResult', OUTGOING_TOPIC_TYPES)
+        self.assertNotIn('PlaceCommand', OUTGOING_TOPIC_TYPES)
+
+    def test_placement_transport_failure_does_not_claim_completion(self):
+        bridge = self.make_bridge()
+        bridge._send = SerialBridgeNode._send.__get__(bridge)
+        command = dict(task_id='a' * 32, command_id=1, stage='stacked_ring',
+                       batch=2, sequence=4, color=5, ring=2, layer=2,
+                       frame_id='gimbal_base', x_mm=100., y_mm=50., z_mm=-12.5)
+        bridge.ser.write.side_effect = lambda frame: len(frame)
+        SerialBridgeNode._on_place_command(bridge, String(data=json.dumps(command)))
+        frame = bridge.ser.write.call_args.args[0]
+        self.assertEqual(parse_frame(frame)[:2],
+                         (PLACE_COMMAND_TYPE, 'a' * 32 + ',1,2,2,4,5,2,2,100.00,50.00,-12.50'))
+        bridge.pub_place_result.publish.assert_not_called()
+        bridge.ser.write.side_effect = IOError('disconnected')
+        SerialBridgeNode._on_place_command(bridge, String(data=json.dumps(command)))
+        self.assertFalse(json.loads(bridge.pub_place_result.publish.call_args.args[0].data)['success'])
 
 
 if __name__ == '__main__':

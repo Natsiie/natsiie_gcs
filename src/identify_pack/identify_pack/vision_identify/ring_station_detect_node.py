@@ -15,14 +15,15 @@ import os
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, PointCloud
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 
-from natsiie_gcs.src.identify_pack.identify_pack.scripts.ring_station_detector import (
+from identify_pack.scripts.ring_station_detector import (
     RingStationDetector, draw_ring_station_detection, load_ring_station_config,
 )
+from identify_pack.vision_identify.ring_centers import ring_centers_message
 
 
 class RingStationDetectNode(Node):
@@ -34,6 +35,8 @@ class RingStationDetectNode(Node):
         self.declare_parameter('image_topic', '/camera/image_raw')
         self.declare_parameter('ring_station_config', '')  # ring_station_detector.json 路径（空=自动定位）
         self.declare_parameter('show', True)
+        self.declare_parameter('camera_frame', 'camera_optical_frame')
+        self.declare_parameter('centers_topic', '/ring_station/centers_pixel')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.ring_station_config = self.get_parameter('ring_station_config').get_parameter_value().string_value
@@ -44,6 +47,8 @@ class RingStationDetectNode(Node):
         self.br = CvBridge()
         self.sub = self.create_subscription(Image, image_topic, self.image_cb, 10)
         self.pub = self.create_publisher(String, 'ring_station', 10)
+        self.pub_centers = self.create_publisher(
+            PointCloud, self.get_parameter('centers_topic').value, 10)
         self.get_logger().info(f'三圆环工位检测订阅 {image_topic}')
 
     def _resolve_config(self, param_value, filename):
@@ -72,6 +77,8 @@ class RingStationDetectNode(Node):
             return
 
         result = self.detector.detect(img)
+        self.pub_centers.publish(ring_centers_message(
+            msg.header, result, img.shape[1::-1], self.get_parameter('camera_frame').value))
         if result.detected:
             out = String()
             out.data = (

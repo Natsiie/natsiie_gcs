@@ -3,6 +3,9 @@
 #include "app_kin.h"
 #include "app_tower.h"
 #include "tjc_screen.h"
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 /* ============================================================
  *  上位机(natsiie_gcs/ROS) <-> STM32 串口通信
@@ -21,6 +24,41 @@ Serial_RxData_t   Serial_RxData;
 static uint8_t s_rx_state = 0;
 static uint8_t s_rx_idx   = 0;
 static uint8_t s_rx_crc   = 0;
+
+static Serial_PlaceCommand_t s_place;
+static uint8_t s_place_state = 0; /* 0=none, 1=queued, 2=executing, 3=success, 4=failed */
+static char s_place_payload[SERIAL_RX_PAYLOAD_MAX + 1];
+
+static void Serial_SendPlaceResult(const char *task_id, uint32_t command_id, uint8_t success)
+{
+    char payload[64];
+    uint8_t len, crc, i;
+    len = (uint8_t)sprintf(payload, "%s,%lu,%u", task_id,
+                           (unsigned long)command_id, (unsigned)(success != 0));
+    crc = SERIAL_TYPE_PLACE_RESULT ^ len;
+    Serial_SendByte(SERIAL_HEAD);
+    Serial_SendByte(SERIAL_TYPE_PLACE_RESULT);
+    Serial_SendByte(len);
+    for (i = 0; i < len; i++) { crc ^= (uint8_t)payload[i]; Serial_SendByte((uint8_t)payload[i]); }
+    Serial_SendByte(crc);
+    Serial_SendByte(SERIAL_TAIL);
+}
+
+uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out)
+{
+    if (!out || s_place_state != 1) return 0;
+    *out = s_place;
+    s_place_state = 2;
+    return 1;
+}
+
+void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8_t success)
+{
+    if (!task_id || s_place_state != 2 || command_id != s_place.command_id
+        || strcmp(task_id, s_place.task_id) != 0) return;
+    s_place_state = success ? 3 : 4;
+    Serial_SendPlaceResult(s_place.task_id, s_place.command_id, success);
+}
 
 /**
   * @brief  初始化 USART1：PA9(TX)/PA10(RX)，115200，8N1，RXNE 接收中断
@@ -183,6 +221,73 @@ static uint8_t Serial_ParseFloatTok(const char **pp, float *out)
     return 1;
 }
 
+static uint8_t Serial_ParsePlaceInt(const char **pp, uint32_t *out)
+{
+    const char *p = *pp;
+    uint32_t value = 0, digit;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9')
+    {
+        digit = (uint32_t)(*p - '0');
+        if (value > (2147483647UL - digit) / 10UL) return 0;
+        value = value * 10UL + digit;
+        p++;
+    }
+    *pp = p;
+    *out = value;
+    return 1;
+}
+
+static void Serial_ReceivePlaceCommand(const char *payload)
+{
+    const char *p = payload;
+    Serial_PlaceCommand_t command;
+    uint32_t values[7];
+    uint8_t i;
+    memset(&command, 0, sizeof(command));
+    for (i = 0; i < 32; i++)
+    {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) return;
+        command.task_id[i] = *p++;
+    }
+    if (!Serial_Expect(&p, ',')) return;
+    for (i = 0; i < 7; i++)
+        if (!Serial_ParsePlaceInt(&p, &values[i]) || !Serial_Expect(&p, ',')) return;
+    if (!Serial_ParseFloatTok(&p, &command.x_mm) || !Serial_Expect(&p, ',')
+        || !Serial_ParseFloatTok(&p, &command.y_mm) || !Serial_Expect(&p, ',')
+        || !Serial_ParseFloatTok(&p, &command.z_mm) || *p != '\0') return;
+    if (values[0] == 0 || values[1] < 1 || values[1] > 2
+        || values[2] < 1 || values[2] > 2 || values[3] < 1 || values[3] > 6
+        || values[4] < 1 || values[4] > 6 || values[5] < 1 || values[5] > 3
+        || values[6] < 1 || values[6] > 2
+        || (values[3] - 1) / 3 + 1 != values[2]
+        || !isfinite(command.x_mm) || !isfinite(command.y_mm) || !isfinite(command.z_mm)
+        || fabsf(command.x_mm) > 10000.0f || fabsf(command.y_mm) > 10000.0f
+        || fabsf(command.z_mm) > 10000.0f) return;
+    command.command_id = values[0]; command.stage = (uint8_t)values[1];
+    command.batch = (uint8_t)values[2]; command.sequence = (uint8_t)values[3];
+    command.color = (uint8_t)values[4]; command.ring = (uint8_t)values[5];
+    command.layer = (uint8_t)values[6];
+    if (s_place_state && strcmp(command.task_id, s_place.task_id) == 0
+        && command.command_id == s_place.command_id)
+    {
+        if (strcmp(payload, s_place_payload) != 0) return;
+        if (s_place_state == 3) Serial_SendPlaceResult(s_place.task_id, s_place.command_id, 1);
+        else if (s_place_state == 4) s_place_state = 1;
+        return;
+    }
+    if (s_place_state == 1 || s_place_state == 2)
+    {
+        Serial_SendPlaceResult(command.task_id, command.command_id, 0);
+        return;
+    }
+    if (s_place_state && strcmp(command.task_id, s_place.task_id) == 0
+        && command.command_id < s_place.command_id) return;
+    s_place = command;
+    strcpy(s_place_payload, payload);
+    s_place_state = 1;
+}
+
 /**
   * @brief  按 type 解析 Serial_RxFrame, 结果写 Serial_RxData。
   *         0x08 点位解析成功后自动触发 kin_cmd=1 (GotoXY)。
@@ -192,7 +297,7 @@ void Serial_ProcessFrame(void)
 {
     const char *p;
     uint8_t n = Serial_RxFrame.len;
-    if (n > SERIAL_RX_PAYLOAD_MAX) n = SERIAL_RX_PAYLOAD_MAX;
+    if (n > SERIAL_RX_PAYLOAD_MAX) return;
     Serial_RxFrame.payload[n] = '\0';
     p = (const char *)Serial_RxFrame.payload;
 
@@ -200,6 +305,9 @@ void Serial_ProcessFrame(void)
 
     switch (Serial_RxFrame.type)
     {
+    case SERIAL_TYPE_PLACE_COMMAND:
+        Serial_ReceivePlaceCommand(p);
+        break;
     case SERIAL_TYPE_COLOR:   /* 0x01: id:cx,cy/id:cx,cy/... */
     {
         uint8_t cnt = 0;

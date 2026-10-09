@@ -30,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pixel_to_base = identify_pack.tf_transform.pixel_to_base_node:main',
+            'place_task = identify_pack.vision_identify.place_task_node:main',
             'tf_transform = identify_pack.tf_transform.tf_transform_node:main',
             'camera_node = identify_pack.vision_identify.camera_node:main',
             'circle_detect_node = identify_pack.vision_identify.circle_detect_node:main',

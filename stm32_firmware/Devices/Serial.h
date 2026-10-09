@@ -27,8 +27,18 @@
 #define SERIAL_TYPE_GIMBAL_YAW    0x07   /* 云台角度反馈 (下位机->上位机) */
 #define SERIAL_TYPE_COLOR_TARGET  0x08   /* 颜色目标点: color_id,x_mm,y_mm,z_mm */
 #define SERIAL_TYPE_GRAB_CMD      0x09   /* 夹爪到位授权: payload "1"=授权下降抓取 */
+#define SERIAL_TYPE_PLACE_COMMAND 0x0A
+#define SERIAL_TYPE_PLACE_RESULT  0x0B
 
-#define SERIAL_RX_PAYLOAD_MAX     64     /* 接收载荷缓冲上限 */
+#define SERIAL_RX_PAYLOAD_MAX     128    /* Includes UUID and placement XYZ. */
+
+typedef struct {
+    char task_id[33];
+    uint32_t command_id;
+    uint8_t stage;      /* 1=ordinary workstation, 2=stacking area */
+    uint8_t batch, sequence, color, ring, layer;
+    float x_mm, y_mm, z_mm;  /* gimbal_base; not the Kin ground-origin frame */
+} Serial_PlaceCommand_t;
 
 /* 旧 TX 数据包 (Serial_SendPacket 用, 8 字节) */
 #define SERIAL_TX_DATA_LEN        8
@@ -85,5 +95,10 @@ void     Serial_SendString(char *str);
 void     Serial_SendPacket(void);                  /* 0xFF + 8 字节 + 0xFE     */
 void     Serial_SendGimbalYaw(float angle_deg);    /* 云台角度 -> 上位机 (0x07) */
 void     Serial_ProcessFrame(void);                /* 任务里调用: 按 type 解析一帧 */
+/* Poll once when ready to execute. Complete only after release and retreat.
+ * These functions retain/deduplicate commands; they do not drive actuators.
+ * Both must run in the same task as Serial_ProcessFrame(). */
+uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out);
+void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8_t success);
 
 #endif

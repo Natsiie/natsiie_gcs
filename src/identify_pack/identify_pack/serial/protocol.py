@@ -12,6 +12,9 @@
 
 类型号必须与 STM32F4 侧 serial_protocol.h 保持一致。
 """
+import math
+import re
+
 HEAD = 0xFF
 TAIL = 0xFE
 MAX_PAYLOAD = 255
@@ -27,16 +30,60 @@ TOPIC_TYPES = {
     'GimbalYaw':    0x07,  # 下位机 -> 上位机，ASCII 角度，单位 deg
     'ColorTarget':  0x08,  # 上位机 -> 下位机，color_id,x_mm,y_mm,z_mm，底座绝对坐标
     'GrabCmd':      0x09,  # 上位机 -> 下位机，夹爪到位授权下降抓取，payload "1"
+    'PlaceCommand': 0x0A,  # task_id,command_id,stage,batch,sequence,color,ring,layer,x,y,z
+    'PlaceResult':  0x0B,  # 下位机 -> 上位机，task_id,command_id,success
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
 GRAB_CMD_TYPE = TOPIC_TYPES['GrabCmd']
+PLACE_COMMAND_TYPE = TOPIC_TYPES['PlaceCommand']
+PLACE_RESULT_TYPE = TOPIC_TYPES['PlaceResult']
+
+
+def validate_place_identity(task_id, command_id):
+    if not isinstance(task_id, str) or re.fullmatch(r'[0-9a-f]{32}', task_id) is None:
+        raise ValueError('Invalid placement task ID')
+    if type(command_id) is not int or not 1 <= command_id <= 2147483647:
+        raise ValueError('Invalid placement command ID')
+
+
+def place_command_payload(command, base_frame):
+    validate_place_identity(command['task_id'], command['command_id'])
+    stage = {'ring_station': 1, 'stacked_ring': 2}[command['stage']]
+    if command['frame_id'] != base_frame:
+        raise ValueError('Placement frame does not match serial bridge base frame')
+    limits = {'batch': (1, 2), 'sequence': (1, 6), 'color': (1, 6),
+              'ring': (1, 3), 'layer': (1, 2)}
+    for name, (low, high) in limits.items():
+        if type(command[name]) is not int or not low <= command[name] <= high:
+            raise ValueError(f'Invalid placement {name}')
+    if (command['sequence'] - 1) // 3 + 1 != command['batch']:
+        raise ValueError('Placement sequence and batch disagree')
+    xyz = [command[key] for key in ('x_mm', 'y_mm', 'z_mm')]
+    if any(type(v) not in (float, int) or not math.isfinite(v) or abs(v) > 10000 for v in xyz):
+        raise ValueError('Invalid placement coordinates')
+    values = [command['task_id'], str(command['command_id']), str(stage)]
+    values.extend(str(command[key]) for key in limits)
+    values.extend(f'{value:.2f}' for value in xyz)
+    payload = ','.join(values)
+    if len(payload) > 128:
+        raise ValueError('Placement command exceeds firmware receive buffer')
+    return payload
+
+
+def parse_place_result(payload):
+    parts = payload.split(',')
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in ('0', '1'):
+        raise ValueError('Invalid placement result')
+    command_id = int(parts[1])
+    validate_place_identity(parts[0], command_id)
+    return {'task_id': parts[0], 'command_id': command_id, 'success': parts[2] == '1'}
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}
 

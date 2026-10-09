@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 try:
-    from natsiie_gcs.src.identify_pack.identify_pack.scripts.ring_station_detector import (
+    from identify_pack.scripts.ring_station_detector import (
         RingStationConfig,
         _extract_observations, _cluster_observations, _select_triple,
     )
