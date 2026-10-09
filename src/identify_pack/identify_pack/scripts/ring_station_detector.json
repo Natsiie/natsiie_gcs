@@ -23,29 +23,29 @@
     "roi_fallback_after_failures": 4
   },
   "reference": {
-    "station_yaw_deg": -0.1531,
+    "station_yaw_deg": -1.4688,
     "ring_centers_px": [
       [
-        199.5,
-        227.83
+        183.0,
+        215.0
       ],
       [
-        328.48,
-        227.29
+        337.0,
+        212.0
       ],
       [
-        458.38,
-        227.13
+        495.0,
+        207.0
       ]
     ],
     "image_to_station_affine": [
       [
-        1.158809,
+        0.961205,
         0.0
       ],
       [
         0.0,
-        1.158809
+        0.961205
       ]
     ],
     "minimum_confidence": 0.5,

@@ -78,12 +78,12 @@ def compute_matrix(dx, dy, dr, e0, e1, e2, e3):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='标定底盘纠偏矩阵 chassis_image_to_motion')
-    parser.add_argument('--device', default='/dev/video0')
+    parser.add_argument('--device', default='/dev/camera_upper')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--fps', type=float, default=25.0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
-    parser.add_argument('--flip-code', type=int, default=-1,
+    parser.add_argument('--flip-code', type=int, default=0,
                         help='画面翻转：-1=上下颠倒(180°)，1=左右镜像，0=不翻转（与 launch 一致）')
     parser.add_argument('--dx', type=float, default=100.0, help='X 轴位移量(mm)')
     parser.add_argument('--dy', type=float, default=100.0, help='Y 轴位移量(mm)')
