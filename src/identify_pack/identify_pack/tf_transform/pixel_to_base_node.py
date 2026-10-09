@@ -202,10 +202,25 @@ class PixelToBaseNode(Node):
             try:
                 transform = self.tf_buffer.lookup_transform(
                     self.base_frame, self.camera_frame, stamp)
-                out = self.project_centers(msg, transform_matrix(transform))
             except TransformException:
-                # Later feedback can bracket this image time; retry until tf_wait expires.
-                return
+                # 图像时刻 TF 不可用。仅当最新 TF 不晚于图像时刻（TF 偏旧/停更）
+                # 才退回最新 TF 兜底；若最新 TF 在图像时刻之后（未来），不兜底。
+                try:
+                    latest = self.tf_buffer.lookup_transform(
+                        self.base_frame, self.camera_frame, Time())
+                except TransformException:
+                    # Later feedback can bracket this image time; retry until tf_wait expires.
+                    return
+                latest_ns = (latest.header.stamp.sec * 10**9
+                             + latest.header.stamp.nanosec)
+                if latest_ns > stamp.nanoseconds:
+                    return
+                transform = latest
+                self.get_logger().warning(
+                    '图像时刻 TF 不可用，使用最新 TF 兜底（云台转动时坐标可能略偏）',
+                    throttle_duration_sec=2.0)
+            try:
+                out = self.project_centers(msg, transform_matrix(transform))
             except (ValueError, cv2.error) as error:
                 self.pending_centers.popleft()
                 self.get_logger().warning(f'颜色投影失败: {error}', throttle_duration_sec=2.0)
