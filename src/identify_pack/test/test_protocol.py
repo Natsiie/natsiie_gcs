@@ -1,7 +1,8 @@
 import unittest
 
 from identify_pack.serial.protocol import (
-    GIMBAL_YAW_TYPE, extract_frames, make_frame, parse_frame,
+    GIMBAL_YAW_TYPE, PLACE_CONTROL_TYPE, extract_frames, make_frame, parse_frame,
+    parse_place_control,
 )
 
 
@@ -32,6 +33,22 @@ class ProtocolTests(unittest.TestCase):
     def test_invalid_type_is_rejected(self):
         with self.assertRaises(ValueError):
             make_frame(256, 'angle')
+
+    def test_place_control_start_and_retry(self):
+        self.assertEqual(parse_place_control('start,2,1'),
+                         {'action': 'start', 'stage': 'stacked_ring', 'batch': 1})
+        self.assertEqual(parse_place_control('start,1,2'),
+                         {'action': 'start', 'stage': 'ring_station', 'batch': 2})
+        self.assertEqual(parse_place_control('retry,7'), {'action': 'retry', 'command_id': 7})
+        frame = make_frame(PLACE_CONTROL_TYPE, 'start,2,1')
+        self.assertEqual(parse_frame(frame)[0], PLACE_CONTROL_TYPE)
+
+    def test_place_control_rejects_bad_payloads(self):
+        for bad in ('start', 'start,2', 'start,2,1,9', 'start,x,1', 'start,3,1',
+                    'start,2,0', 'start,2,3', 'retry', 'retry,0', 'retry,-1',
+                    'stop,2,1', ''):
+            with self.assertRaises(ValueError):
+                parse_place_control(bad)
 
 
 if __name__ == '__main__':

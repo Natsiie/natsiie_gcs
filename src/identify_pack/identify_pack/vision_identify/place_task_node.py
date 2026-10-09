@@ -175,14 +175,17 @@ class PlaceTaskNode(Node):
             data = json.loads(message.data)
             if not self.enabled:
                 raise ValueError('Placement is disabled; configure heights and enable it at startup')
+            # 下位机经串口下发的控制帧不带 task_id，用当前已加载任务的 ID 兜底；
+            # 手动 pub 时仍可显式携带 task_id 精确指定。
+            task_id = data.get('task_id') or self.task.task_id
             if data['action'] == 'start':
                 self.validate_heights(data['stage'])
-                self.commit(lambda: self.task.start(data['task_id'], data['stage'], data['batch']))
+                self.commit(lambda: self.task.start(task_id, data['stage'], data['batch']))
                 self.phase_started_ns = self.get_clock().now().nanoseconds
                 self.observations.clear()
             elif data['action'] == 'retry':
                 command = self.commit(lambda: self.task.retry(
-                    data['task_id'], data['command_id'], time.monotonic()))
+                    task_id, data['command_id'], time.monotonic()))
                 self.command_pub.publish(String(data=json.dumps(command, allow_nan=False)))
             else:
                 raise ValueError('Unknown placement control action')

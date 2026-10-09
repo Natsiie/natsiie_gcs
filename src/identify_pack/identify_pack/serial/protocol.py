@@ -33,18 +33,20 @@ TOPIC_TYPES = {
     'PlaceCommand': 0x0A,  # task_id,command_id,stage,batch,sequence,color,ring,layer,x,y,z
     'PlaceResult':  0x0B,  # 下位机 -> 上位机，task_id,command_id,success
     'RingTarget':   0x0C,  # 上位机 -> 下位机，三圆环圆心 gimbal_base 毫米，x1,y1,x2,y2,x3,y3
+    'PlaceControl': 0x0D,  # 下位机 -> 上位机，start,stage,batch 或 retry,command_id
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
 GRAB_CMD_TYPE = TOPIC_TYPES['GrabCmd']
 PLACE_COMMAND_TYPE = TOPIC_TYPES['PlaceCommand']
 PLACE_RESULT_TYPE = TOPIC_TYPES['PlaceResult']
+PLACE_CONTROL_TYPE = TOPIC_TYPES['PlaceControl']
 RING_TARGET_TYPE = TOPIC_TYPES['RingTarget']
 
 
@@ -86,6 +88,36 @@ def parse_place_result(payload):
     command_id = int(parts[1])
     validate_place_identity(parts[0], command_id)
     return {'task_id': parts[0], 'command_id': command_id, 'success': parts[2] == '1'}
+
+
+PLACE_STAGE_NAMES = {1: 'ring_station', 2: 'stacked_ring'}
+
+
+def parse_place_control(payload):
+    """下位机 -> 上位机 的放置阶段控制：``start,<stage>,<batch>`` 或 ``retry,<command_id>``。
+
+    stage 采用与 PlaceCommand 相同的编号：1=普通工位，2=叠放（堆料）。
+    """
+    parts = payload.split(',')
+    if not parts:
+        raise ValueError('Invalid placement control')
+    action = parts[0].strip()
+    if action == 'start':
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            raise ValueError('Invalid placement start control')
+        stage, batch = int(parts[1]), int(parts[2])
+        if stage not in PLACE_STAGE_NAMES or not 1 <= batch <= 2:
+            raise ValueError('Invalid placement start stage or batch')
+        return {'action': 'start', 'stage': PLACE_STAGE_NAMES[stage], 'batch': batch}
+    if action == 'retry':
+        if len(parts) != 2 or not parts[1].isdigit():
+            raise ValueError('Invalid placement retry control')
+        command_id = int(parts[1])
+        if not 1 <= command_id <= 2147483647:
+            raise ValueError('Invalid placement command ID')
+        return {'action': 'retry', 'command_id': command_id}
+    raise ValueError('Unknown placement control action')
+
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}
 

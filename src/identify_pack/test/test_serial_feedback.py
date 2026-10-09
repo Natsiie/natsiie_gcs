@@ -9,7 +9,7 @@ from std_msgs.msg import Bool, String
 
 from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, make_frame,
-    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, parse_frame,
+    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE, parse_frame,
 )
 from identify_pack.serial.serial_bridge_node import SerialBridgeNode
 
@@ -27,6 +27,7 @@ class SerialFeedbackTests(unittest.TestCase):
             joint_states_topic='/gimbal/joint_states',
             get_clock=lambda: clock, get_logger=lambda: logger,
             target_frame='gimbal_base', pub_place_result=Mock(),
+            pub_place_control=Mock(),
         )
 
     def feed(self, bridge, data):
@@ -93,6 +94,20 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.pub_place_result.publish.assert_not_called()
         self.assertNotIn('PlaceResult', OUTGOING_TOPIC_TYPES)
         self.assertNotIn('PlaceCommand', OUTGOING_TOPIC_TYPES)
+
+    def test_place_control_forwarded_to_ros_topic(self):
+        self.assertNotIn('PlaceControl', OUTGOING_TOPIC_TYPES)
+        bridge = self.make_bridge()
+        self.feed(bridge, make_frame(PLACE_CONTROL_TYPE, 'start,2,1'))
+        self.assertEqual(json.loads(bridge.pub_place_control.publish.call_args.args[0].data),
+                         {'action': 'start', 'stage': 'stacked_ring', 'batch': 1})
+        bridge.pub_place_control.publish.reset_mock()
+        self.feed(bridge, make_frame(PLACE_CONTROL_TYPE, 'retry,3'))
+        self.assertEqual(json.loads(bridge.pub_place_control.publish.call_args.args[0].data),
+                         {'action': 'retry', 'command_id': 3})
+        bridge.pub_place_control.publish.reset_mock()
+        self.feed(bridge, make_frame(PLACE_CONTROL_TYPE, 'bogus'))
+        bridge.pub_place_control.publish.assert_not_called()
 
     def test_placement_transport_failure_does_not_claim_completion(self):
         bridge = self.make_bridge()

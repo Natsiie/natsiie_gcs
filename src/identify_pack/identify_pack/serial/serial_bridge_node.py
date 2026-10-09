@@ -20,7 +20,8 @@ from sensor_msgs.msg import PointCloud
 from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
     make_frame, COLOR_TARGET_TYPE, RING_TARGET_TYPE,
-    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, parse_place_result, place_command_payload,
+    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE,
+    parse_place_result, parse_place_control, place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
 from identify_pack.scripts.color_config import PICKUP_COLOR_IDS
@@ -95,6 +96,9 @@ class SerialBridgeNode(Node):
             JointState, self.joint_states_topic, 10)
         self.pub_place_result = self.create_publisher(String, '/arm/place_result', 10)
         self.create_subscription(String, '/arm/place_command', self._on_place_command, 10)
+        self.declare_parameter('place_control_topic', '/arm/place_control')
+        self.pub_place_control = self.create_publisher(
+            String, self.get_parameter('place_control_topic').value, 10)
         if serial is None:
             self.get_logger().error('pyserial 未安装，无法发送串口')
         else:
@@ -211,6 +215,13 @@ class SerialBridgeNode(Node):
                     self.pub_place_result.publish(String(data=json.dumps(result)))
                 except ValueError as error:
                     self.get_logger().warning(f'Invalid placement feedback: {error}')
+                continue
+            if type_byte == PLACE_CONTROL_TYPE:
+                try:
+                    control = parse_place_control(payload)
+                    self.pub_place_control.publish(String(data=json.dumps(control)))
+                except ValueError as error:
+                    self.get_logger().warning(f'Invalid placement control: {error}')
                 continue
             if type_byte != self.yaw_feedback_type:
                 self.get_logger().warning(

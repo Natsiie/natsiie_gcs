@@ -57,6 +57,11 @@ Start the next expected phase through `/arm/place_control`:
 {"action":"start","task_id":"<32-character task ID>","stage":"ring_station","batch":1}
 ```
 
+The lower computer can also trigger a phase over serial with a `0x0D PlaceControl`
+frame (`start,<stage>,<batch>` or `retry,<command_id>`); the serial bridge forwards it
+to `/arm/place_control`. `task_id` is optional on `/arm/place_control` — when omitted,
+the node uses the currently loaded task's ID, so the lower computer never needs to know it.
+
 Each `/arm/place_command` contains `task_id`, `command_id`, `stage`, `batch`,
 `sequence`, `color`, `ring`, `layer`, `frame_id`, `x_mm`, `y_mm`, `z_mm`.
 Only one command may be pending. Coordinates are locked when issuing it; further
@@ -92,8 +97,12 @@ The existing single serial bridge transports commands and completion feedback:
 |---|---|---|
 | `0x0A` | ROS to STM32 | `task_id,command_id,stage,batch,sequence,color,ring,layer,x_mm,y_mm,z_mm` |
 | `0x0B` | STM32 to ROS | `task_id,command_id,success` |
+| `0x0D` | STM32 to ROS | `start,stage,batch` or `retry,command_id` |
 
 Wire stage is `1` for ordinary workstation, `2` for stacking; success is `0/1`.
+`0x0D PlaceControl` lets the lower computer trigger a phase: `start,2,1` starts the
+first stacking batch, `retry,<command_id>` retries a retained command. The serial
+bridge forwards it to `/arm/place_control`.
 The wire base frame is the serial bridge `target_frame`, normally `gimbal_base`.
 Frames retain the existing FF/type/length/payload/XOR/FE format. Firmware receive
 capacity is increased to 128 bytes, and oversized frames are rejected.
