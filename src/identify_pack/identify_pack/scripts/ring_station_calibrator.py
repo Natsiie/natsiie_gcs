@@ -50,7 +50,7 @@ def open_camera(device, width, height, fps):
     if not camera.isOpened():
         camera.release()
         raise RingStationCalibrationError(f'无法打开摄像头：{device}')
-    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     camera.set(cv2.CAP_PROP_FPS, float(fps))
@@ -117,8 +117,10 @@ def parse_args():
     parser.add_argument('--device', default='/dev/video0')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
-    parser.add_argument('--fps', type=float, default=30.0)
+    parser.add_argument('--fps', type=float, default=25.0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
+    parser.add_argument('--flip-code', type=int, default=-1,
+                        help='画面翻转：-1=上下颠倒(180°)，1=左右镜像，0=不翻转（与 launch 一致）')
     return parser.parse_args()
 
 
@@ -156,6 +158,8 @@ def run(args):
             ok, frame = camera.read()
             if not ok or frame is None:
                 raise RingStationCalibrationError('标定过程中摄像头读取失败')
+            if args.flip_code:
+                frame = cv2.flip(frame, args.flip_code)
 
             result = detector.detect(frame)
 
