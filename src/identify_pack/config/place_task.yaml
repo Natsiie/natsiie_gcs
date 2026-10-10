@@ -15,8 +15,8 @@ place_task:
     confirmation_timeout_sec: 30.0
     target_max_age_sec: 0.5
     require_aligned: true
-    # If no ordinary-workstation placement is needed, use only stacked_ring:1/2.
-    phase_order: [ring_station:1, ring_station:2]
+    # 阶段顺序：ring_station=放置, stacked_ring=叠料；每阶段放/叠 3 个（环号顺序来自解码）。
+    phase_order: [ring_station:1, stacked_ring:1, ring_station:2, stacked_ring:2]
     item_height_configured: true
     item_height_mm: 60.0
     # All Z values are relative to gimbal_base, in mm.

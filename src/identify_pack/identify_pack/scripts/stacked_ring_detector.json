@@ -42,17 +42,17 @@
     "undistort_enabled": false,
     "camera_fingerprint": null,
     "center_px": [
-      340.31329345703125,
-      191.12457275390625
+      378.9510192871094,
+      253.8102264404297
     ],
     "outer_axes_px": [
-      100.33553314208984,
-      100.62712097167969
+      100.3645248413086,
+      100.48941802978516
     ],
-    "outer_angle_deg": 98.9206314086914,
+    "outer_angle_deg": 33.79863739013672,
     "outer_diameter_mm": 95.0,
     "line_offset_mm": 75.0,
-    "line_yaw_deg": -3.23726331341853,
+    "line_yaw_deg": -1.7695662813444797,
     "search_half_width_diameters": 2.7,
     "band_half_height_diameters": 0.14
   }
