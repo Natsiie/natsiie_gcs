@@ -109,6 +109,32 @@ class PlaceTaskTests(unittest.TestCase):
         self.assertEqual(task.state, 'DONE')
         self.assertEqual(task.stack_count, [2, 2, 2])
 
+    def test_ring_station_only_phases_run_without_stacking(self):
+        phases = ('ring_station:1', 'ring_station:2')
+        task = PlaceTask(phases=phases)
+        task.load('156+231+516+312')
+        commands = []
+        for batch in (1, 2):
+            task.start(task.task_id, 'ring_station', batch)
+            for index in range(3):
+                command = task.prepare((1., 2., 3.), 1, 'base', index)
+                commands.append(command['ring'])
+                task.finish(task.task_id, command['command_id'], True)
+        self.assertEqual(commands, [2, 3, 1, 3, 1, 2])
+        self.assertEqual(task.state, 'DONE')
+        self.assertEqual(task.stack_count, [0, 0, 0])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'progress.json'
+            task.save(path)
+            self.assertEqual(PlaceTask.restore(path, phases=phases).state, 'DONE')
+
+    def test_second_batch_requires_first_batch_for_each_configured_stage(self):
+        for phases in (('ring_station:2',), ('stacked_ring:2',),
+                       ('ring_station:2', 'ring_station:1'),
+                       ('stacked_ring:2', 'stacked_ring:1')):
+            with self.subTest(phases=phases), self.assertRaises(ValueError):
+                PlaceTask(phases=phases)
+
 
 if __name__ == '__main__':
     unittest.main()

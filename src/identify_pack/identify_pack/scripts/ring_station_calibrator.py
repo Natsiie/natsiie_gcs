@@ -114,7 +114,7 @@ def parse_args():
     parser.add_argument('--fourcc', default='MJPG')
     parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
-    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=-1,
+    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=0,
                         help='画面翻转：-1=上下颠倒(180°)，1=左右镜像，0=不翻转（与 launch 一致）')
     return parser.parse_args()
 

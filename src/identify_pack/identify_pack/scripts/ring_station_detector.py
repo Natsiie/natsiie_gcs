@@ -354,7 +354,27 @@ def _refine_ring_outer(image, center, seed_radius):
         return None
 
 
-def _cluster_observations(observations, image, config):
+def _hough_center(image, center, diameter, maximum_shift):
+    """Gold-medal Hough settings, with a scale-dependent local search."""
+    height, width = image.shape[:2]
+    half = int(math.ceil(diameter * 0.65))
+    x0, y0 = max(0, int(center[0]) - half), max(0, int(center[1]) - half)
+    x1, y1 = min(width, int(center[0]) + half), min(height, int(center[1]) + half)
+    gray = cv2.cvtColor(image[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    circles = cv2.HoughCircles(
+        gray, cv2.HOUGH_GRADIENT, dp=1, minDist=max(10, diameter * 0.5),
+        param1=50, param2=30, minRadius=max(5, int(diameter * 0.25)),
+        maxRadius=max(6, int(diameter * 0.55)))
+    if circles is None:
+        return None
+    centers = circles[0, :, :2].astype(float) + (x0, y0)
+    distances = np.linalg.norm(centers - center, axis=1)
+    index = int(np.argmin(distances))
+    return centers[index] if distances[index] <= maximum_shift else None
+
+
+def _cluster_observations(observations, image, config, use_hough=False):
     parent = list(range(len(observations)))
     for first in range(len(observations)):
         for second in range(first):
@@ -392,9 +412,17 @@ def _cluster_observations(observations, image, config):
             if np.linalg.norm(item.center - center) <= center_tolerance
         ] or group
         outer = max(centered, key=lambda item: item.major_axis)
+        if use_hough and outer.minor_axis / outer.major_axis >= 0.9:
+            hint = _hough_center(image, center, effective_diameter,
+                                 min(4.0, config.maximum_center_jitter_px))
+            if hint is not None:
+                # Hough contributes one vote; concentric subpixel fits dominate.
+                center = np.median([item.center for item in centered] + [hint], axis=0)
         # 用径向采样精修外圈半径，替换 fitEllipse 的单条极值轮廓。
-        refined = _refine_ring_outer(
-            image, center, effective_diameter / 2.0)
+        # Digit crops need the actual outer ellipse; radial sampling can select
+        # an inner scoring ring and truncate a tall printed numeral.
+        refined = (_refine_ring_outer(image, center, effective_diameter / 2.0)
+                   if not use_hough and outer.minor_axis / outer.major_axis >= 0.95 else None)
         if refined is not None:
             outer_radius, _ = refined
             outer_axes = (2.0 * outer_radius, 2.0 * outer_radius)
@@ -466,9 +494,9 @@ def _select_triple(candidates, image_width, config):
     return best
 
 
-def _raw_detection(image, config):
+def _raw_detection(image, config, use_hough=False):
     observations = _extract_observations(image, config)
-    candidates = _cluster_observations(observations, image, config)
+    candidates = _cluster_observations(observations, image, config, use_hough)
     selection = _select_triple(candidates, image.shape[1], config)
     if selection is None:
         return None
@@ -540,8 +568,9 @@ def _median_angle_deg(angles):
 class RingStationDetector:
     """全图搜索后转入 ROI，并只由连续直接观测产生稳定结果。"""
 
-    def __init__(self, config: RingStationConfig):
+    def __init__(self, config: RingStationConfig, use_hough=False):
         self.config = config
+        self.use_hough = use_hough
         self._samples = deque(maxlen=config.stable_frame_count)
         self._tracking_roi = None
         self._roi_failures = 0
@@ -582,9 +611,9 @@ class RingStationDetector:
 
     def _find(self, frame):
         if self._tracking_roi is None:
-            return _raw_detection(frame, self.config), "full"
+            return _raw_detection(frame, self.config, self.use_hough), "full"
         x0, y0, x1, y1 = self._tracking_roi
-        raw = _raw_detection(frame[y0:y1, x0:x1], self.config)
+        raw = _raw_detection(frame[y0:y1, x0:x1], self.config, self.use_hough)
         raw = self._offset_raw(raw, x0, y0)
         if raw is not None:
             self._roi_failures = 0
@@ -593,7 +622,7 @@ class RingStationDetector:
         if self._roi_failures < self.config.roi_fallback_after_failures:
             return None, "roi"
         self._roi_failures = 0
-        return _raw_detection(frame, self.config), "full_fallback"
+        return _raw_detection(frame, self.config, self.use_hough), "full_fallback"
 
     def detect(self, frame) -> RingStationDetection:
         """检测一帧，返回三环对位误差、纠偏量、质量和耗时。"""

@@ -18,12 +18,13 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from identify_pack.scripts.camera_geometry import pixel_to_plane
+from identify_pack.scripts.ground_homography import apply_homography, load as load_ground_homography
 from identify_pack.scripts.place_task import DEFAULT_PHASES, PlaceTask, STAGES
 from identify_pack.tf_transform.pixel_to_base_node import transform_matrix
 
 
-def placement_target(message, ring, image_size, camera_frame, matrix, distortion,
-                     base_from_camera, plane_z_mm, release_z_mm, require_aligned=True):
+def _select_ring_point(message, ring, image_size, camera_frame, release_z_mm,
+                       require_aligned=True, require_printed_ids=False):
     channels = {channel.name: list(channel.values) for channel in message.channels}
     if len(channels) != len(message.channels):
         raise ValueError('Duplicate ring metadata')
@@ -32,6 +33,9 @@ def placement_target(message, ring, image_size, camera_frame, matrix, distortion
             or channels.get('stable') != [1.0]
             or (require_aligned and channels.get('within_tolerance') != [1.0])):
         raise ValueError('Three stable, numbered rings in the camera frame are required')
+    if require_printed_ids and (channels.get('digit_mapping_valid') != [1.0]
+                                or channels.get('digit_mapping_stable') != [1.0]):
+        raise ValueError('A stable, verified mapping of ring IDs is required')
     if (channels.get('image_width') != [float(image_size[0])] * 3
             or channels.get('image_height') != [float(image_size[1])] * 3):
         raise ValueError('Ring resolution differs from camera calibration')
@@ -43,12 +47,29 @@ def placement_target(message, ring, image_size, camera_frame, matrix, distortion
             raise ValueError('Ring center outside image bounds')
     if not math.isfinite(release_z_mm):
         raise ValueError('Invalid release height')
-    point = message.points[ring - 1]
+    return message.points[ring - 1]
+
+
+def placement_target(message, ring, image_size, camera_frame, matrix, distortion,
+                     base_from_camera, plane_z_mm, release_z_mm, require_aligned=True,
+                     require_printed_ids=False):
+    point = _select_ring_point(message, ring, image_size, camera_frame, release_z_mm,
+                               require_aligned, require_printed_ids)
     # Project the visible ring plane, then set the independently calibrated gripper Z.
     xyz = pixel_to_plane((point.x, point.y), matrix, distortion,
                          base_from_camera, plane_z_mm / 1000.0) * 1000.0
     xyz[2] = release_z_mm
     return tuple(float(v) for v in xyz)
+
+
+def placement_target_homography(message, ring, image_size, camera_frame, homography,
+                                base_from_link, release_z_mm, require_aligned=True,
+                                require_printed_ids=False):
+    point = _select_ring_point(message, ring, image_size, camera_frame, release_z_mm,
+                               require_aligned, require_printed_ids)
+    link = apply_homography((point.x, point.y), homography)
+    base = np.asarray(base_from_link, dtype=float) @ np.asarray(link, dtype=float)
+    return (float(base[0]), float(base[1]), float(release_z_mm))
 
 
 class PlaceTaskNode(Node):
@@ -59,6 +80,8 @@ class PlaceTaskNode(Node):
             'calibration_file': '/home/lulu/gcs/camera_extrinsics_v2.json',
             'checkpoint_file': '/home/lulu/gcs/natsiie_gcs/place_progress.json',
             'base_frame': 'gimbal_base', 'camera_frame': 'camera_optical_frame',
+            'gimbal_frame': 'gimbal_link',
+            'mapping_mode': 'pinhole', 'homography_file': '',
             'confirmation_timeout_sec': 30.0, 'target_max_age_sec': 0.5,
             'require_aligned': True, 'item_height_configured': True,
             'item_height_mm': 60.0,
@@ -81,9 +104,16 @@ class PlaceTaskNode(Node):
         phases = self.param('phase_order')
         self.task = (PlaceTask.restore(self.path, timeout, phases)
                      if self.path.exists() else PlaceTask(timeout, phases))
+        self.mapping_mode = self.param('mapping_mode')
+        if self.mapping_mode not in ('pinhole', 'homography'):
+            raise ValueError("mapping_mode must be 'pinhole' or 'homography'")
         self.matrix = self.distortion = self.image_size = None
+        self.homography = None
         if self.enabled:
-            self.load_calibration()
+            if self.mapping_mode == 'homography':
+                self.load_homography()
+            else:
+                self.load_calibration()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.observations = {}
@@ -124,6 +154,13 @@ class PlaceTaskNode(Node):
                 or not np.isfinite(self.distortion).all()
                 or len(self.image_size) != 2 or min(self.image_size) <= 0):
             raise ValueError('Invalid camera calibration')
+
+    def load_homography(self):
+        mapping = load_ground_homography(self.param('homography_file'))
+        if mapping['base_frame'] != self.param('base_frame'):
+            raise ValueError('Homography base frame does not match')
+        self.homography = mapping['homography']
+        self.image_size = mapping['image_size']
 
     def commit(self, operation):
         previous = copy.deepcopy(self.task)
@@ -227,15 +264,26 @@ class PlaceTaskNode(Node):
                 return
             self.validate_heights(stage)
             stamp = Time.from_msg(message.header.stamp, clock_type=self.get_clock().clock_type)
-            transform = self.tf_buffer.lookup_transform(
-                self.param('base_frame'), self.param('camera_frame'), stamp)
             ring = self.task.expected.ring
             count = self.task.stack_count[ring - 1] if stage == 'stacked_ring' else 0
             release_z = self.param(f'{stage}.first_release_z_mm') + count * self.param('item_height_mm')
-            xyz = placement_target(
-                message, ring, self.image_size, self.param('camera_frame'), self.matrix,
-                self.distortion, transform_matrix(transform),
-                self.param(f'{stage}.plane_z_mm'), release_z, self.param('require_aligned'))
+            if self.mapping_mode == 'homography':
+                transform = self.tf_buffer.lookup_transform(
+                    self.param('base_frame'), self.param('gimbal_frame'), stamp)
+                base_from_link = transform_matrix(transform)[:2, :2]
+                xyz = placement_target_homography(
+                    message, ring, self.image_size, self.param('camera_frame'),
+                    self.homography, base_from_link, release_z,
+                    self.param('require_aligned'),
+                    require_printed_ids=stage == 'ring_station')
+            else:
+                transform = self.tf_buffer.lookup_transform(
+                    self.param('base_frame'), self.param('camera_frame'), stamp)
+                xyz = placement_target(
+                    message, ring, self.image_size, self.param('camera_frame'), self.matrix,
+                    self.distortion, transform_matrix(transform),
+                    self.param(f'{stage}.plane_z_mm'), release_z, self.param('require_aligned'),
+                    require_printed_ids=stage == 'ring_station')
             command = self.commit(lambda: self.task.prepare(
                 xyz, count + 1, self.param('base_frame'), time.monotonic()))
             self.command_pub.publish(String(data=json.dumps(command, allow_nan=False)))

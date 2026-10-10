@@ -48,6 +48,8 @@ class SerialBridgeNode(Node):
         self.declare_parameter('target_frame', 'gimbal_base')
         self.declare_parameter('send_legacy_color', True)
         self.declare_parameter('task_mode', False)
+        self.declare_parameter('task_code_resend_interval_sec', 1.0)
+        self.declare_parameter('task_code_send_duration_sec', 30.0)
         self.declare_parameter('wait_between_batches', True)
         self.declare_parameter('centers_topic', '/color/centers_pixel')
         self.declare_parameter('camera_frame', 'camera_optical_frame')
@@ -81,6 +83,8 @@ class SerialBridgeNode(Node):
         self.motion_ready = False
         self.motion_receive_time = -math.inf
         self.task_code_sent = False
+        self.task_code = None
+        self.task_code_send_deadline = None
         self.pub_task_status = self.create_publisher(
             String, '/arm/task_status', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         if self.task_mode:
@@ -90,6 +94,14 @@ class SerialBridgeNode(Node):
             self.create_subscription(PointCloud, self.get_parameter('centers_topic').value,
                                      self._on_motion, 1)
             self._publish_task_status()
+            resend_interval = float(self.get_parameter('task_code_resend_interval_sec').value)
+            if not math.isfinite(resend_interval) or resend_interval <= 0:
+                raise ValueError('task_code_resend_interval_sec must be finite and positive')
+            self.task_code_send_duration = float(
+                self.get_parameter('task_code_send_duration_sec').value)
+            if not math.isfinite(self.task_code_send_duration) or self.task_code_send_duration <= 0:
+                raise ValueError('task_code_send_duration_sec must be finite and positive')
+            self.create_timer(resend_interval, self._resend_task_code)
         self.ser = None
         self.rx_buffer = bytearray()
         self.pub_joint_state = self.create_publisher(
@@ -148,6 +160,9 @@ class SerialBridgeNode(Node):
         try:
             code = msg.data.strip()
             changed = self.task.load(code, self.get_clock().now().nanoseconds)
+            self.task_code = code
+            duration = getattr(self, 'task_code_send_duration', 30.0)
+            self.task_code_send_deadline = time.monotonic() + duration
             if not self.task_code_sent:
                 self.task_code_sent = self._send(
                     OUTGOING_TOPIC_TYPES['QR_Decode'], 'QR_Decode', code)
@@ -155,6 +170,19 @@ class SerialBridgeNode(Node):
                 self._publish_task_status()
         except ValueError as error:
             self.get_logger().warning(f'任务码拒绝: {error}', throttle_duration_sec=2.0)
+
+    def _resend_task_code(self):
+        """周期重发任务码，持续 task_code_send_duration_sec 后停止。"""
+        if self.task_code is None:
+            return
+        deadline = getattr(self, 'task_code_send_deadline', None)
+        if deadline is not None and time.monotonic() >= deadline:
+            self.get_logger().info('任务码发送时长已到，停止重发')
+            self.task_code = None
+            self.task_code_send_deadline = None
+            return
+        if self._send(OUTGOING_TOPIC_TYPES['QR_Decode'], 'QR_Decode', self.task_code):
+            self.task_code_sent = True
 
     def _on_pick_done(self, msg):
         if self.task.complete(msg.data, self.get_clock().now().nanoseconds):

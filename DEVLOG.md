@@ -217,3 +217,10 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - 每 5 秒日志打印采集 fps、发布 fps、帧龄、重复帧数；采集进程打印实际协商格式/分辨率/帧率。可用 `secondary_camera_fps`、`secondary_camera_fourcc` 调节上相机请求设置，默认保留 25/YUYV。
 - 硬件设备/USB 内核日志检查受沙箱隔离，自动审批服务返回模型配置 404，实际设备检查未执行；模拟永久阻塞取帧、限时回收重启、旧帧隔离以及独立监控恢复已覆盖，仍需现场验证驱动与图像显示。
 - 验证：86 个测试通过，`colcon build --packages-select identify_pack` 成功；未执行机器人启动或串口控制。
+
+## 14. 圆环与实际位置数字独立测试（2026-10-10）
+
+- 新增 `identify_pack/scripts/ring_station_digit_test.py`，复用 cyqm 已移植的轮廓提取和三环几何筛选，保留原始椭圆用于环内数字局部仿射矫正；新增 1/2/3 模板匹配。cyqm 原程序没有数字识别，不能把左右排序当作实际位置编号。
+- 支持相机实时预览、图片离线测试、数字裁剪预览、鼠标选环采集现场模板以及原图/标注/JSON 快照。使用独立模板目录，不覆盖已有数字脚本、模板或圆环标定配置；不接入 ROS 控制流程。
+- 只有三环几何通过且读到的数字为互不重复的 1/2/3 时才报告完整映射；空白、遮挡、低相似度和匹配歧义保留未知。
+- 使用方法见 `src/identify_pack/identify_pack/scripts/RING_STATION_DIGIT_TEST.md`。合成图与离线入口已验证，未进行实机相机或比赛场地图像验证，现场字体建议重新采模板。

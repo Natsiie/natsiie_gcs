@@ -1,6 +1,6 @@
 pixel_to_base:
   ros__parameters:
-    calibration_file: /home/lulu/gcs/camera_extrinsics_v2.json
+    calibration_file: /home/lulu/gcs/camera_extrinsics.json
     image_topic: /camera/secondary/image_raw
     base_frame: gimbal_base
     camera_frame: camera_optical_frame

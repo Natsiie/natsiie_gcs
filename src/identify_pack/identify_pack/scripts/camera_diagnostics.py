@@ -166,7 +166,7 @@ def main(argv=None):
     parser.add_argument('--fourcc', default='MJPG')
     parser.add_argument('--timeout', type=float, default=5)
     parser.add_argument('--frames', type=int, default=150)
-    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=-1)
+    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=0)
     parser.add_argument('--no-show', action='store_true')
     parser.add_argument('--snapshot', type=Path)
     parser.add_argument('--report', type=Path)

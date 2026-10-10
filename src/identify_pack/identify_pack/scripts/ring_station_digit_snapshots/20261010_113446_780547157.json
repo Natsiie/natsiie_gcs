@@ -1,0 +1,57 @@
+{
+  "three_ring_geometry": true,
+  "complete_digit_mapping": true,
+  "rings": [
+    {
+      "slot": 1,
+      "center_px": [
+        243.0762481689453,
+        210.58242797851562
+      ],
+      "ellipse_axes_px": [
+        86.519775390625,
+        88.08950805664062
+      ],
+      "ellipse_angle_deg": 179.9487762451172,
+      "contour_support": 11,
+      "diameter_bands": 7,
+      "digit": 1,
+      "score": 0.6902315616607666,
+      "score_margin": 0.40938252210617065
+    },
+    {
+      "slot": 2,
+      "center_px": [
+        396.9578552246094,
+        207.21327209472656
+      ],
+      "ellipse_axes_px": [
+        90.32999420166016,
+        92.99011993408203
+      ],
+      "ellipse_angle_deg": 130.22637939453125,
+      "contour_support": 7,
+      "diameter_bands": 7,
+      "digit": 2,
+      "score": 0.7442077994346619,
+      "score_margin": 0.19085067510604858
+    },
+    {
+      "slot": 3,
+      "center_px": [
+        556.77880859375,
+        203.2407684326172
+      ],
+      "ellipse_axes_px": [
+        90.8499755859375,
+        92.7247314453125
+      ],
+      "ellipse_angle_deg": 27.488122940063477,
+      "contour_support": 11,
+      "diameter_bands": 6,
+      "digit": 3,
+      "score": 0.6781941652297974,
+      "score_margin": 0.24437695741653442
+    }
+  ]
+}

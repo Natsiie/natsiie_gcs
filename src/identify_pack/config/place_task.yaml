@@ -1,22 +1,29 @@
 place_task:
   ros__parameters:
     enabled: true
-    calibration_file: /home/lulu/gcs/camera_extrinsics_v2.json
+    calibration_file: /home/lulu/gcs/camera_extrinsics.json
     checkpoint_file: /home/lulu/gcs/natsiie_gcs/place_progress.json
     base_frame: gimbal_base
     camera_frame: camera_optical_frame
+    gimbal_frame: gimbal_link
+    # 坐标映射方式：
+    #   pinhole    相机内参+外参投影（默认，用 calibration_file）
+    #   homography 地面单应（像素直接映射到平面，用 homography_file；标定见
+    #              calibrate_ground_homography.py，每点只需 x y yaw）
+    mapping_mode: homography
+    homography_file: /home/lulu/gcs/ground_homography.json
     confirmation_timeout_sec: 30.0
     target_max_age_sec: 0.5
     require_aligned: true
     # If no ordinary-workstation placement is needed, use only stacked_ring:1/2.
-    phase_order: [stacked_ring:1, stacked_ring:2]
+    phase_order: [ring_station:1, ring_station:2]
     item_height_configured: true
     item_height_mm: 60.0
     # All Z values are relative to gimbal_base, in mm.
     # plane_z is the visible ring plane; release_z is the calibrated gripper Z.
-    ring_station.height_configured: false
-    ring_station.plane_z_mm: 0.0
-    ring_station.first_release_z_mm: 0.0
+    ring_station.height_configured: true
+    ring_station.plane_z_mm: -72.5
+    ring_station.first_release_z_mm: -22.5
     stacked_ring.height_configured: true
     stacked_ring.plane_z_mm: -72.5
     stacked_ring.first_release_z_mm: -22.5

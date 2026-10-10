@@ -326,7 +326,7 @@ def parse_args():
     parser.add_argument('--fps', type=float, default=30.0)
     parser.add_argument('--fourcc', default='MJPG')
     parser.add_argument('--timeout', type=float, default=5.0)
-    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=-1)
+    parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
     return parser.parse_args()
 

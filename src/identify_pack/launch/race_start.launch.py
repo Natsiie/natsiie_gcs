@@ -27,7 +27,7 @@ def generate_launch_description():
     main_camera_device = LaunchConfiguration('main_camera_device', default='/dev/camera_front')
     secondary_camera_device = LaunchConfiguration('secondary_camera_device', default='/dev/camera_upper')
     min_consistent = LaunchConfiguration('min_consistent', default='3')
-    show = LaunchConfiguration('show', default='false')
+    show = LaunchConfiguration('show', default='true')
     secondary_image_topic = LaunchConfiguration('secondary_image_topic')
 
     return LaunchDescription([
@@ -36,8 +36,10 @@ def generate_launch_description():
         DeclareLaunchArgument('secondary_image_topic', default_value=SECONDARY_TOPIC),
         DeclareLaunchArgument('min_consistent', default_value=min_consistent),
         DeclareLaunchArgument('show', default_value=show),
+        DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
+            share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；当前无 /dev/camera_front 设备，默认关闭（需要时再开 true）。
-        DeclareLaunchArgument('start_main_camera', default_value='false'),
+        DeclareLaunchArgument('start_main_camera', default_value='true'),
         # 副相机用于颜色识别，默认打开；如果已经由其他终端启动，可改为 false。
         DeclareLaunchArgument('start_secondary_camera', default_value='true'),
         # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
@@ -58,7 +60,7 @@ def generate_launch_description():
         DeclareLaunchArgument('near_stop_speed_px_s', default_value='3.0'),
         DeclareLaunchArgument('required_low_speed_frames', default_value='5'),
         # 转盘运动检测开关；调试识别时可设为 false 跳过「先动后停」的门控。
-        DeclareLaunchArgument('motion_detect', default_value='true'),
+        DeclareLaunchArgument('motion_detect', default_value='false'),
         # 任务模式：true=按二维码顺序+抓取确认每个颜色只发一次；false=连续发送坐标（调试通信链路用）。
         DeclareLaunchArgument('task_mode', default_value='true'),
         DeclareLaunchArgument('tf_params_file', default_value=os.path.join(
@@ -260,22 +262,23 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'camera_frame': 'camera_optical_frame',
                 'centers_topic': '/ring_station/centers_pixel',
+                'digit_templates': LaunchConfiguration('ring_digit_templates'),
             }],
         ),
 
-        # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        Node(
-            package='identify_pack',
-            executable='stacked_ring_detect_node',
-            name='stacked_ring_detect_node',
-            output='screen',
-            parameters=[{
-                'image_topic': secondary_image_topic,
-                'show': ParameterValue(show, value_type=bool),
-                'camera_frame': 'camera_optical_frame',
-                'centers_topic': '/stacked_ring/centers_pixel',
-            }],
-        ),
+        # # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
+        # Node(
+        #     package='identify_pack',
+        #     executable='stacked_ring_detect_node',
+        #     name='stacked_ring_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': secondary_image_topic,
+        #         'show': ParameterValue(show, value_type=bool),
+        #         'camera_frame': 'camera_optical_frame',
+        #         'centers_topic': '/stacked_ring/centers_pixel',
+        #     }],
+        # ),
 
         # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
         # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。

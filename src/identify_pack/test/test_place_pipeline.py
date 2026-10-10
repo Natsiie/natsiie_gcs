@@ -13,8 +13,10 @@ from rclpy.time import Time
 from std_msgs.msg import Header, String
 
 from identify_pack.scripts.place_task import PlaceTask
-from identify_pack.vision_identify.place_task_node import PlaceTaskNode, placement_target
+from identify_pack.vision_identify.place_task_node import (
+    PlaceTaskNode, placement_target, placement_target_homography)
 from identify_pack.vision_identify.ring_centers import ring_centers_message
+from identify_pack.scripts.ring_station_digits import DigitMappingTracker
 
 
 class PlacePipelineTests(unittest.TestCase):
@@ -22,7 +24,13 @@ class PlacePipelineTests(unittest.TestCase):
         result = SimpleNamespace(detected=detected, stable=stable, within_tolerance=stable,
                                  centers_px=((220., 240.), (320., 240.), (420., 240.)))
         return ring_centers_message(Header(stamp=Stamp(sec=42), frame_id='camera'),
-                                    result, (640, 480), 'camera')
+                                    result, (640, 480), 'camera', {
+                                        'complete_digit_mapping': detected,
+                                        'digit_mapping_stable': stable,
+                                        'centers_by_digit_px': {},
+                                        'rings': [dict(digit=i + 1, center_px=list(center),
+                                                       score=.95, score_margin=.4)
+                                                  for i, center in enumerate(result.centers_px)]})
 
     def projection(self, message, ring=1):
         pose = np.diag([1., -1., -1., 1.])
@@ -34,6 +42,21 @@ class PlacePipelineTests(unittest.TestCase):
     def test_projection_uses_ring_plane_and_independent_release_height(self):
         np.testing.assert_allclose(self.projection(self.observation(), 1), [-214.5, 0., -42.5])
         np.testing.assert_allclose(self.projection(self.observation(), 3), [214.5, 0., -42.5])
+
+    def test_homography_mapping_rotates_link_to_base(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node(Path(directory) / 'progress.json')
+            node.mapping_mode = 'homography'
+            node.homography = np.array([[1., 0., -220.], [0., 1., -240.], [0., 0., 1.]])
+            node.task.start(node.task.task_id, 'ring_station', 1)
+            node.on_centers('ring_station', self.observation())
+            node.tick()
+            command = json.loads(node.command_pub.publish.call_args.args[0].data)
+            self.assertEqual(command['ring'], 2)
+            # 像素(320,240) -> link(100,0) mm；TF 四元数(x=1,w=0)=绕X转180°，
+            # base_from_link[:2,:2]=diag(1,-1)，故 base 仍为 (100,0)。
+            np.testing.assert_allclose([command['x_mm'], command['y_mm'], command['z_mm']],
+                                       [100., 0., -42.5])
 
     def test_missing_unstable_wrong_resolution_and_invalid_metadata_are_rejected(self):
         for message in (self.observation(stable=False), self.observation(detected=False)):
@@ -51,6 +74,7 @@ class PlacePipelineTests(unittest.TestCase):
     def node(self, path):
         node = PlaceTaskNode.__new__(PlaceTaskNode)
         params = dict(enabled=True, base_frame='base', camera_frame='camera',
+                      gimbal_frame='gimbal_link',
                       require_aligned=True, item_height_configured=True, item_height_mm=60.)
         for stage in ('ring_station', 'stacked_ring'):
             params.update({f'{stage}.height_configured': True, f'{stage}.plane_z_mm': -72.5,
@@ -58,6 +82,8 @@ class PlacePipelineTests(unittest.TestCase):
         node.param = params.__getitem__
         node.path = path
         node.enabled = True
+        node.mapping_mode = 'pinhole'
+        node.homography = None
         node.max_age = .5
         node.task = PlaceTask()
         node.task.load('156+231+516+312')
@@ -103,6 +129,60 @@ class PlacePipelineTests(unittest.TestCase):
             self.assertEqual(node.task.expected.ring, 3)
             node.tick()
             node.command_pub.publish.assert_called_once()
+
+    def test_printed_id_mapping_selects_pixels_in_task_code_order(self):
+        result = SimpleNamespace(detected=True, stable=True, within_tolerance=True,
+                                 centers_px=((220., 240.), (320., 240.), (420., 240.)))
+        report = {'complete_digit_mapping': True, 'digit_mapping_stable': True,
+                  'centers_by_digit_px': {}, 'rings': [
+                      dict(digit=label, center_px=list(point), score=.9, score_margin=.3)
+                      for label, point in zip((3, 1, 2), result.centers_px)]}
+        message = ring_centers_message(Header(stamp=Stamp(sec=42), frame_id='camera'),
+                                       result, (640, 480), 'camera', report)
+        self.assertEqual([point.x for point in message.points], [320., 420., 220.])
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node(Path(directory) / 'progress.json')
+            node.task.start(node.task.task_id, 'ring_station', 1)
+            node.on_centers('ring_station', message)
+            node.tick()
+            command = json.loads(node.command_pub.publish.call_args.args[0].data)
+            self.assertEqual(command['ring'], 2)
+            self.assertAlmostEqual(command['x_mm'], 214.5)
+
+    def test_geometry_only_ids_cannot_send_ring_station_placement(self):
+        message = self.observation()
+        message.channels = [channel for channel in message.channels
+                            if not channel.name.startswith('digit_')]
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node(Path(directory) / 'progress.json')
+            node.task.start(node.task.task_id, 'ring_station', 1)
+            node.on_centers('ring_station', message)
+            node.tick()
+            node.command_pub.publish.assert_not_called()
+
+    def test_fixed_numbering_projects_a_ring_with_covered_digit(self):
+        result = SimpleNamespace(detected=True, stable=True, within_tolerance=True,
+                                 centers_px=((220., 240.), (320., 240.), (420., 240.)))
+        tracker = DigitMappingTracker(2, 4, expected_digits=(1, 2, 3))
+        for _ in range(2):
+            report = {'three_ring_geometry': True, 'complete_digit_mapping': False,
+                      'rings': [dict(slot=i + 1, digit=digit, center_px=list(point),
+                                     score=.9 if digit else 0., score_margin=.3 if digit else 0.)
+                                for i, (digit, point) in enumerate(zip((1, None, 3), result.centers_px))]}
+            tracker.update(report, (640, 480))
+        message = ring_centers_message(Header(stamp=Stamp(sec=42), frame_id='camera'),
+                                       result, (640, 480), 'camera', report)
+        metadata = {channel.name: list(channel.values) for channel in message.channels}
+        self.assertEqual(metadata['digit_observed'], [1., 0., 3.])
+        self.assertEqual(metadata['ring_id'], [1., 2., 3.])
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node(Path(directory) / 'progress.json')
+            node.task.start(node.task.task_id, 'ring_station', 1)
+            node.on_centers('ring_station', message)
+            node.tick()
+            command = json.loads(node.command_pub.publish.call_args.args[0].data)
+            self.assertEqual(command['ring'], 2)
+            self.assertAlmostEqual(command['x_mm'], 0.)
 
     def test_stale_unstable_and_checkpoint_failure_do_not_send(self):
         with tempfile.TemporaryDirectory() as directory:

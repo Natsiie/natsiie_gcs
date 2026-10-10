@@ -30,9 +30,11 @@ class PlaceTask:
         allowed = set(DEFAULT_PHASES)
         if (not self.phases or len(set(self.phases)) != len(self.phases)
                 or any(phase not in allowed for phase in self.phases)
-                or 'stacked_ring:1' not in self.phases or 'stacked_ring:2' not in self.phases
-                or self.phases.index('stacked_ring:1') > self.phases.index('stacked_ring:2')):
-            raise ValueError('Phases must include ordered first and second stacking batches')
+                or any(f'{stage}:2' in self.phases and (
+                    f'{stage}:1' not in self.phases
+                    or self.phases.index(f'{stage}:1') > self.phases.index(f'{stage}:2'))
+                       for stage in STAGES)):
+            raise ValueError('Phases must be unique; batch two requires an earlier batch one')
         self.task_id = None
         self.code = None
         self.plan = ()
