@@ -35,6 +35,8 @@ typedef struct {
     float material_x, material_y;   /* 物料区 */
     float rough_x,    rough_y;      /* 粗加工区 */
     float staging_x,  staging_y;    /* 暂存区 */
+    /* 三工作区目标朝向 (度, 世界系, 0=+X, CCW+, 同 Imu_GetYaw) — 到中点朝该工作区转时用它 */
+    float material_yaw, rough_yaw, staging_yaw;
 } NavZoneCoord_t;
 
 /* ================= 路径点坐标 (mm, 世界系) — TODO 现场测量后填入 ================= */
@@ -46,12 +48,23 @@ extern float            nav_staging_mid_dy;       /* 里程计漂移修正量 Y 
 /* ================= 导航状态 (Keil Watch) ================= */
 extern uint8_t nav_cmd;    /* 调试: 写 1=启动, 2=中止, 3=继续; 现场用 btn3 启动 */
 extern uint8_t nav_active; /* 只读: 1=导航中 */
-extern uint8_t nav_wait;   /* 只读: 1=已到工作区, 停原地等「继续」指令 */
+extern uint8_t nav_wait;   /* 只读: 1=已到工作区/中点, 停原地等「继续」指令 */
 extern int8_t  nav_step;   /* 只读: 当前路径点序号 (-1=未启动) */
+extern NavPointId nav_at_point;  /* 只读: 暂停点 ID (nav_wait==1 时有效, 否则 NAV_POINT_COUNT) */
+
+/* ================= 导航精度测试 (无视觉, Keil Watch) ================= */
+extern uint8_t nav_test_run;     /* 写 1: 启动连续导航精度测试(不停工作区/中点, 自动关视觉纠偏, 走完全程自动清 0) */
+extern uint8_t nav_test_active;  /* 只读: 1=精度测试进行中 */
+extern float   nav_test_err_x;   /* 只读: 最近一次到点误差 X (里程计-目标, mm) */
+extern float   nav_test_err_y;   /* 只读: 最近一次到点误差 Y (里程计-目标, mm) */
+extern float   nav_test_err_max; /* 只读: 全程最大到点误差 (mm) */
 
 void Nav_Update(void);      /* 10ms, 由 App_Chassis_Task 调用 */
 void Nav_Start(void);       /* 启动全程导航 */
 void Nav_Stop(void);        /* 中止导航 (交还遥控/手动控制) */
-void Nav_Continue(void);    /* 从工作区暂停点继续 (nav_wait==1 时有效) */
+void Nav_Continue(void);    /* 从暂停点继续 (nav_wait==1 时有效) */
+void Nav_StartAt(NavPointId id);  /* 从指定路径点直接接入全程导航(跳过前面路径点), 以 nav_wait=1 状态接入 */
+void       Nav_GetPointCoord(NavPointId id, float *x, float *y);  /* 取某路径点坐标(随 nav_zone) */
+NavPointId Nav_NextPoint(void);  /* 返回当前暂停点的下一个路径点 (供中点旋转算 yaw) */
 
 #endif /* __APP_NAV_H */

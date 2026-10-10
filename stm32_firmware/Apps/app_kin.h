@@ -69,6 +69,7 @@ extern int8_t kin_extend_sign;           /* +1: 电机码值增大->r增大; -1 
 extern float  kin_extend_target_offset_mm; /* 视觉点在伸出方向偏近的补偿(mm), 逆解命令加在 r 上 */
 extern float  kin_unload_x_offset_mm;     /* 卸货落点: 视觉坐标 x 偏移(mm) */
 extern float  kin_unload_y_offset_mm;     /* 卸货落点: 视觉坐标 y 偏移(mm) */
+extern float  kin_grab_y_offset_mm;       /* 装货抓取: 视觉坐标 y 偏移(mm) */
 
 /* 升降(电机5): 高度 z(mm) <-> 电机码值(度) */
 extern float  kin_hoist_mm_per_deg;
@@ -96,12 +97,20 @@ extern uint16_t kin_extend_acc, kin_extend_dec;
 extern float    kin_extend_vel;
 
 /* ================= 状态 ================= */
-extern uint8_t kin_cmd;        /* Watch: 写 1=装货抓取 GotoXY; 卸货等视觉时 1=到位等放开; 2=停止; 3=卸货(平台抓取->50默认->等视觉) */
+extern uint8_t kin_cmd;        /* Watch: 写 1=装货抓取 GotoXY; 卸货等视觉时 1=到位等放开; 2=停止; 3=卸货(平台抓取->50默认->等视觉); 4=去默认姿态42/500/0; 5=回Tower_Boot_Task姿态220/600/500 */
 extern uint8_t kin_active;     /* 只读: 1=运动中 */
 extern uint8_t kin_done;       /* 只读: 1=刚到位(一次, 用后清0) */
 extern uint8_t kin_reachable;  /* 只读: 上次逆解 r 是否越界(0=被截断) */
 extern uint8_t kin_hoist_enable;    /* 1=走电机5升降轴; 0=跳过升降步(只测云台+电机6) */
 extern uint8_t kin_handshake_enable;/* 1=分步模式: 到点上方后等 ok(0x09) 再降到抓取高度; 0=全自动直接降 */
+
+/* 全自动流程 (mission) 用: 到位自动夹爪/松爪, 不用手动 kin_grip_cmd / kin_release_cmd */
+extern uint8_t kin_auto_grip_enable;    /* 1=装货/回装下探到位后自动闭夹爪 */
+extern uint8_t kin_auto_release_enable; /* 1=卸货/堆叠到位后自动松夹爪 */
+
+/* 卸货落高 (motor5 度): 粗加工=50, 暂存堆叠=400 */
+extern float kin_drop_hoist_deg;        /* 卸货放置时电机5降到的高度(默认 50) */
+extern float kin_reload_grab_hoist_deg; /* 回装: 从环上抓取时电机5高度(默认 50) */
 
 /* 装货放置 (抓取后自动执行): 单位与 Tower 一致 —— 电机5/6=电机度(正数), 云台=舵机度 */
 extern float kin_place_hoist_up_deg;   /* 电机5 转云台前停靠600(抓取->放置 / 放置->回默认 共用) */
@@ -113,6 +122,14 @@ extern float kin_home_hoist_deg;       /* 电机5 默认位(低, 50) */
 extern float kin_place_hoist_deg;      /* 电机5 放置高度 */
 extern float kin_place_extend2_deg;    /* 电机6 放置伸出 */
 extern float kin_unload_grab_hoist_deg;/* 卸货: 平台抓取时电机5高度 (装货放置480 改成447) */
+
+/* 全程默认/休息姿态 (mission 用, Keil Watch 可调) */
+extern float kin_pose_default_gimbal_deg;  /* 默认姿态云台 (42) */
+extern float kin_pose_default_hoist_deg;   /* 默认姿态电机5 (高度500) */
+extern float kin_pose_default_extend_deg;  /* 默认姿态电机6 (收回0) */
+extern float kin_pose_boot_gimbal_deg;     /* Tower_Boot_Task 姿态云台 (220) */
+extern float kin_pose_boot_hoist_deg;      /* Tower_Boot_Task 姿态电机5 (600) */
+extern float kin_pose_boot_extend_deg;     /* Tower_Boot_Task 姿态电机6 (500) */
 
 /* 卸货: 0x0C 帧一次给 3 个落点(3 组 xy), 状态机依次放 */
 extern float   kin_unload_x[3];        /* 3 个落点 X (塔吊系绝对 mm) */
@@ -131,7 +148,7 @@ extern uint8_t kin_release_cmd;   /* 手动松开夹爪(卸货用) */
 extern uint8_t kin_platform_sel;  /* 物料平台槽位 0/1/2 -> A/B/C, 每次放置完成后旋转一次 */
 
 /* 调试用 (Watch 只读): 运动内部状态 */
-extern uint8_t  kin_step;         /* 当前步骤 0=空闲 1=下探447 2=旧停靠(废弃) 3=云台 4=伸6 5=升5(550预降) 6=等授权 7=等夹爪 8~13=放置 14~17=回默认 18~34=卸货 */
+extern uint8_t  kin_step;         /* 当前步骤 0=空闲 1=下探447 2=旧停靠(废弃) 3=云台 4=伸6 5=升5(550预降) 6=等授权 7=等夹爪 8~13=放置 18~34=卸货 35~39=姿态切换 */
 extern uint32_t kin_motion_count; /* 触发次数, 确认重触发有没有进来 */
 extern float    kin_tgt_servo, kin_tgt_m6_deg, kin_tgt_m5_deg; /* 内部目标(舵机/电机6/电机5 码值度) */
 
@@ -155,6 +172,10 @@ float Kin_HoistDegToMm(float deg);
 void Kin_GotoXY(float x, float y);   /* 上层给 (x,y), z 用 kin_grab_z_mm; 按安全顺序走 */
 void Kin_UnloadStart(void);          /* 卸货启动: 平台抓取(220/447/500, 自动夹取)->50默认(42/50/0)->等视觉 */
 void Kin_UnloadDrop(void);           /* 卸货放置: 用 kin_target_x/y 解 θ/r(m5保持600高位), 到落点后降50, 到位等放开(kin_release_cmd) */
+void Kin_BootPosture(void);          /* 上电引导位姿: 夹爪开 -> 平台A -> 塔吊 Tower_Boot_Task 姿态 220/600/500 (不夹) */
+void Kin_GotoPosture(float gimbal_deg, float m5_deg, float m6_deg);  /* 通用姿态切换: 走到指定(云台/电机5/电机6) */
+void Kin_GoDefault(void);            /* 去工作区默认姿态 42/500/0 */
+void Kin_GoBoot(void);               /* 回 Tower_Boot_Task 姿态 220/600/500 */
 void Kin_Stop(void);
 void Kin_Update(void);      /* 10ms, 由塔吊任务调用 */
 void Kin_ReportPose(void);  /* 读当前电机位置 + 云台角 -> 算当前夹爪 (x,y,z) */

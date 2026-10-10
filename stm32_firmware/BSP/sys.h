@@ -54,6 +54,7 @@
 #include "app_tower.h"
 #include "app_nav.h"
 #include "app_kin.h"
+#include "app_mission.h"
 
 //算法
 #include "PID.h"

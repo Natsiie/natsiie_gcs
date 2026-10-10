@@ -869,6 +869,16 @@
               <FileType>5</FileType>
               <FilePath>..\Apps\app_kin.h</FilePath>
             </File>
+            <File>
+              <FileName>app_mission.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Apps\app_mission.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_mission.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Apps\app_mission.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

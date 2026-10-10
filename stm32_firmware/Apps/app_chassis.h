@@ -10,6 +10,14 @@ void App_Chassis_Task(void);        /* 10ms: 遥控直控底盘 (含定位/里�
 void App_Chassis_Test_Task(void);   /* 10ms: 底盘单项测试 (Watch 改 chassis_test_mode) */
 void Chassis_ApplyVisionTrim(void); /* 视觉底盘微调: 0x04/0x05 corr -> 底盘目标位姿 */
 
+/* ================= 全自动流程 (mission) 用底盘接口 ================= */
+void Chassis_RotateTo(float yaw_deg);   /* 原地旋转到世界系 yaw(度, 与 Imu_GetYaw 同系), 到位后 chassis_rotate_active=0 */
+extern uint8_t chassis_rotate_active;   /* 只读: 1=原地旋转中 */
+extern float   chassis_rotate_target;   /* 只读: 旋转目标 yaw (度) */
+extern uint8_t chassis_qr_scan_active;  /* 1=扫码直行(沿当前车头锁航向), mission 清 0 停 */
+extern float   chassis_qr_scan_speed;   /* 扫码直行轮速 (RPM) */
+extern uint8_t chassis_lock;            /* 1=锁定底盘(忽略 0x04/0x05 视觉纠偏), 塔吊作业时置 1 */
+
 /* 视觉底盘纠偏 (0x04/0x05): 偏了多少(err) / 要矫正多少(corr) / 是否矫正成功(within) */
 extern uint8_t chassis_trim_enable;    /* 1=启用纠偏 (Watch 写 0 关掉) */
 extern float   chassis_trim_gain_x;    /* corr_x 增益, 可负/调大小 */

@@ -46,7 +46,7 @@ void system_start_task(void *p_arg)
     Serial_Init();                       // 上位机通信 (PA9/PA10, 115200, 0xFF..0xFE)
     BSP_USART_Init(UART_3, 420000);   // ELRS 遥控 (PC10/PC11)
     BSP_USART_Init(UART_5, 420000);   // ELRS 遥控 (PD2/PC12)
-    TJC_Init(115200);   // 串口屏 (PC6/PC7, 原 VOFA 调试口已改)
+    TJC_Init(9600);   // 串口屏 (PC6/PC7, 原 VOFA 调试口已改)
     ELRS_Remote_Init();
 
     App_Chassis_Init();

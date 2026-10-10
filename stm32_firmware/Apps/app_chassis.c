@@ -73,6 +73,13 @@ uint8_t chassis_trim_within   = 0;       /* 是否矫正成功: 视觉 within (1
 float   chassis_dock_corr_x = 0.0f;      /* 自动停靠时快照的视觉 corr_x (mm), 供塔吊卸货落点补偿 */
 float   chassis_dock_corr_y = 0.0f;      /* 自动停靠时快照的视觉 corr_y (mm), 供塔吊卸货落点补偿 */
 
+/* 全自动流程 (mission) 用 */
+uint8_t chassis_rotate_active  = 0;      /* 1=原地旋转中 */
+float   chassis_rotate_target  = 0.0f;   /* 旋转目标 yaw (度, 世界系) */
+uint8_t chassis_qr_scan_active = 0;      /* 1=扫码直行中 */
+float   chassis_qr_scan_speed  = 40.0f;  /* 扫码直行轮速 (RPM) */
+uint8_t chassis_lock           = 0;      /* 1=锁定底盘(忽略视觉纠偏) */
+
 /* 同步发送 4 轮速度: 先暂存 4 条速度命令到 MMCL 缓冲区, 再 X_V2_Multi_Motor_Cmd(0)
    广播地址 0 一次性发出, 4 个电机同时收到同一条多机命令 -> 同步动作 */
 static void Chassis_SendWheels(float w_bl, float w_br, float w_fl, float w_fr)
@@ -238,6 +245,17 @@ void Chassis_ApplyVisionTrim(void)
 }
 
 /**
+  * @brief  原地旋转到世界系 yaw (mission 用): 设目标, 底盘任务里 PID 转到位后清 active
+  *         转完后点对点继续用该 yaw 锁车头 (chassis_yaw_target 一并更新)。
+  */
+void Chassis_RotateTo(float yaw_deg)
+{
+    chassis_rotate_target = yaw_deg;
+    chassis_yaw_target    = yaw_deg;
+    chassis_rotate_active = 1;
+}
+
+/**
   * @brief  底盘单项测试: 按 chassis_test_mode 跑 前进/后退/左右平移 + 顺逆时针旋转
   *         平移(1~4)时用陀螺仪偏航 PID 锁车头走直线
   */
@@ -318,6 +336,8 @@ void App_Chassis_Task(void)
     static uint8_t yaw_pid_inited = 0;
     static uint16_t odom_tick = 0;
     static uint16_t vbus_tick = 0;
+    static uint8_t  qr_armed = 0;    /* 扫码直行: 首次进入捕获车头朝向 */
+    static uint8_t  rot_armed = 0;   /* 原地旋转: 首次进入清 PID 积分 */
     float vx, vy, omega, yaw;
     float w_bl, w_br, w_fl, w_fr;
 
@@ -360,11 +380,46 @@ void App_Chassis_Task(void)
         return;
     }
 
+    /* 扫码直行 (mission): 沿当前车头锁航向直行, 覆盖导航/纠偏/遥控 */
+    if (chassis_qr_scan_active)
+    {
+        if (!qr_armed) { qr_armed = 1; chassis_yaw_target = yaw; PID_Clear(&yaw_pid); }
+        vx = chassis_qr_scan_speed;
+        vy = 0.0f;
+        omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_yaw_target, yaw);
+        w_bl =  vx + vy + omega;
+        w_br = -vx + vy + omega;
+        w_fl =  vx + vy - omega;
+        w_fr = -vx + vy - omega;
+        Chassis_SendWheels(w_bl, w_br, w_fl, w_fr);
+        return;
+    }
+    qr_armed = 0;
+
+    /* 原地旋转 (mission): 只转 yaw, 到位退出 (world yaw, 与 Imu 同系) */
+    if (chassis_rotate_active)
+    {
+        if (!rot_armed) { rot_armed = 1; PID_Clear(&yaw_pid); }
+        if (fabsf(chassis_rotate_target - yaw) <= chassis_yaw_deadzone)
+        {
+            chassis_rotate_active = 0;
+            Chassis_SendWheels(0, 0, 0, 0);
+        }
+        else
+        {
+            omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_rotate_target, yaw);
+            Chassis_SendWheels(omega, omega, -omega, -omega);
+        }
+        return;
+    }
+    rot_armed = 0;
+
     /* 全程导航状态机 (优先于手动 btn0/btn1 定位) */
     Nav_Update();
 
-    /* 视觉底盘纠偏: 收到 0x04/0x05 帧 -> 更新偏了多少/要矫正多少/是否成功, 未到位则纠偏 */
-    if (chassis_trim_enable && Serial_ChassisTrimReady)
+    /* 视觉底盘纠偏: 收到 0x04/0x05 帧 -> 更新偏了多少/要矫正多少/是否成功, 未到位则纠偏
+       (底盘锁定 chassis_lock=1 时忽略, 塔吊作业期间不再纠偏) */
+    if (chassis_trim_enable && !chassis_lock && !nav_test_active && Serial_ChassisTrimReady)
     {
         Serial_ChassisTrimReady = 0;
         Chassis_ApplyVisionTrim();
@@ -427,6 +482,15 @@ void App_Chassis_Task(void)
         }
 
         omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_yaw_target, yaw);
+    }
+    else if (chassis_lock)
+    {
+        /* 塔吊作业锁底盘: 忽略遥控, 停 4 轮保持原位 (防作业时误动) */
+        vx = 0.0f;
+        vy = 0.0f;
+        omega = 0.0f;
+        chassis_yaw_target = yaw;
+        PID_Clear(&yaw_pid);
     }
     else
     {

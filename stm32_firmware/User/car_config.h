@@ -60,7 +60,7 @@
 #define SERVO_GIMBAL_RANGE    360.0f
 
 /* 夹爪 */
-#define GRIPPER_CLOSE_ANGLE   28.0f
+#define GRIPPER_CLOSE_ANGLE   5.0f
 #define GRIPPER_OPEN_ANGLE    80.0f
 
 /* 物料平台 (3 档, 现场标定) */

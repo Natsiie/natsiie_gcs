@@ -140,6 +140,14 @@ void Screen_ShowCount(uint8_t ok, uint8_t err, uint8_t total)
     TJC_SendCmd(buf);
 }
 
+void Screen_ShowZone(uint8_t zone)
+{
+    char buf[32];
+
+    sprintf(buf, "page0.t1.txt=\"ZONE:%u\"", (unsigned)(zone == 2 ? 2 : 1));
+    TJC_SendCmd(buf);
+}
+
 /* ================= 上电引导 (10ms 任务里调用) ================= */
 
 void Screen_Boot(void)

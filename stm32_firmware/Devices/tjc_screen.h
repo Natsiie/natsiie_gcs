@@ -21,6 +21,7 @@ void Screen_Init(void);                    /* 上电写占位内容 (----+---- /
 void Screen_ShowTaskCode(const char *code_t0, const char *code_t2);/* 显示任务码 (t0=code_t0, t2=code_t2) */
 void Screen_ShowQRCode(const char *raw);   /* 解析二维码原始文本(4组三位数) -> t0=前两组 / t2=后两组 */
 void Screen_ShowCount(uint8_t ok, uint8_t err, uint8_t total); /* 显示正确/错误次数 (t1) */
+void Screen_ShowZone(uint8_t zone);    /* 显示当前启动区 (t1: ZONE:1 / ZONE:2) */
 void Screen_Boot(void);                    /* 10ms 任务里调, 上电延时约400ms后自动 Screen_Init() 一次 */
 
 /* ================= 测试接口 (Keil Watch 里改, 由 Screen_Test_Task 发送) ================= */

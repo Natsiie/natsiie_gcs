@@ -21,6 +21,8 @@ Serial_RxFrame_t  Serial_RxFrame;
 Serial_RxData_t   Serial_RxData;
 volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 组 xy) 新帧标志 */
 volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘微调(corr) 新帧标志 */
+volatile uint8_t Serial_ColorTargetReady = 0;  /* 0x08 颜色目标点 新帧标志 */
+volatile uint8_t Serial_QRReady = 0;           /* 0x06 二维码 新帧标志 */
 
 /* RX 状态机: 0=等帧头 1=收TYPE 2=收LEN 3=收载荷 4=收CRC 5=收帧尾 */
 static uint8_t s_rx_state = 0;
@@ -419,6 +421,7 @@ void Serial_ProcessFrame(void)
         for (i = 0; i < n; i++) Serial_RxData.str[i] = (char)Serial_RxFrame.payload[i];
         Serial_RxData.str[n] = '\0';
         Screen_ShowQRCode(Serial_RxData.str);   /* t0=前两组 t2=后两组, 覆盖占位 */
+        Serial_QRReady = 1;                     /* 通知 mission 解析环序 */
         break;
     }
 
@@ -438,6 +441,7 @@ void Serial_ProcessFrame(void)
             /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_grab_z_mm 定死; 等 Watch 写 kin_cmd=1 才走 */
             kin_target_x = x;
             kin_target_y = y;
+            Serial_ColorTargetReady = 1;   /* 通知 mission: 新颜色目标点已锁存 */
         }
         break;
     }

@@ -47,9 +47,9 @@ void SIGNALING_Tasks(void *p_arg)
     while (1)
     {
 //        Tower_Boot_Task();     /* 上电默认(只执行一次): 云台42->220, 电机5升抓取高度, 电机6不动 */
-//        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
+        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
 //        Screen_SendTestLoop();  /* 连续发送: 每100ms发 "TJC_TX_OK N" (串口助手测TX用) */
-//        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
+        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
 //        Gimbal_Test_Task();    /* 云台角度调试 (Watch 写 gimbal_test_angle) */
 //        Platform_Test_Task();  /* 物料平台角度调试 (Watch 写 platform_test_angle) */
         Serial_Test_Task();    /* 串口1 发送云台舵机角度给上位机 (natsiie GCS) */
@@ -74,8 +74,9 @@ void DATE_Tasks(void *p_arg)
 
     while (1)
     {
-//		key = Key_Read();
+		key = Key_Read();
         ELRS_Remote_Update();
+        Mission_Update(key);   /* 全自动比赛流程 (mission_enable=1 才介入) */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }
