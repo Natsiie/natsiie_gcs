@@ -1,7 +1,7 @@
 place_task:
   ros__parameters:
     enabled: true
-    calibration_file: /home/lulu/gcs/camera_extrinsics_new.json
+    calibration_file: /home/lulu/gcs/camera_extrinsics_new2.json
     checkpoint_file: /home/lulu/gcs/natsiie_gcs/place_progress.json
     base_frame: gimbal_base
     camera_frame: camera_optical_frame
@@ -22,8 +22,8 @@ place_task:
     # All Z values are relative to gimbal_base, in mm.
     # plane_z is the visible ring plane; release_z is the calibrated gripper Z.
     ring_station.height_configured: true
-    ring_station.plane_z_mm: -116
-    ring_station.first_release_z_mm: -66
+    ring_station.plane_z_mm: -116.0
+    ring_station.first_release_z_mm: -66.0
     stacked_ring.height_configured: true
-    stacked_ring.plane_z_mm: -116
-    stacked_ring.first_release_z_mm: -66
+    stacked_ring.plane_z_mm: -116.0
+    stacked_ring.first_release_z_mm: -66.0

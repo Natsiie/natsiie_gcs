@@ -1,6 +1,6 @@
 pixel_to_base:
   ros__parameters:
-    calibration_file: /home/lulu/gcs/camera_extrinsics_new.json
+    calibration_file: /home/lulu/gcs/camera_extrinsics_new2.json
     image_topic: /camera/secondary/image_raw
     base_frame: gimbal_base
     camera_frame: camera_optical_frame
@@ -18,6 +18,6 @@ pixel_to_base:
     # calibration mode assumes base/gimbal origins coincide vertically.
     plane_mode: object
     object_plane_configured: true
-    object_plane_z_mm: -56   # Relative to gimbal_base, as measured.
+    object_plane_z_mm: -56.0   # Relative to gimbal_base, as measured.
     ring_plane_configured: true
-    ring_plane_z_mm: -116     # 圆环平面高度（相对 gimbal_base），现场量准后确认
+    ring_plane_z_mm: -116.0     # 圆环平面高度（相对 gimbal_base），现场量准后确认
