@@ -144,7 +144,7 @@ def solve_camera_transform(objects_mm, pixels, matrix, distortion):
     return transform, rms, errors
 
 
-def build_result(samples, matrix, distortion, image_size, plane_z_mm=-72.5):
+def build_result(samples, matrix, distortion, image_size, plane_z_mm=-116):
     if not np.isfinite(plane_z_mm):
         raise ValueError('验证平面高度必须为有限数值')
     transform, rms, errors = solve_camera_transform(
@@ -284,7 +284,7 @@ def main():
     parser.add_argument('--distortion', type=Path, default=Path('dist_coeffs.npy'))
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
-    parser.add_argument('--plane-z-mm', type=float, default=-72.5,
+    parser.add_argument('--plane-z-mm', type=float, default=-116,
                         help='下游 calibration 模式使用的水平验证平面高度(mm)，需实测；不参与外参求解')
     parser.add_argument('--color-config', default='',
                         help='粉色(color_id=7) HSV 配置 color_config.json 路径；留空用脚本同目录')

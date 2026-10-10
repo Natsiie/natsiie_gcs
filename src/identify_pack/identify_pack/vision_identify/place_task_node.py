@@ -92,7 +92,7 @@ class PlaceTaskNode(Node):
                              f'{stage}.plane_z_mm': 0.0,
                              f'{stage}.first_release_z_mm': 0.0,
                              f'{stage}.centers_topic': f'/{stage}/centers_pixel'})
-        defaults['stacked_ring.plane_z_mm'] = -72.5
+        defaults['stacked_ring.plane_z_mm'] = -116
         for name, value in defaults.items():
             self.declare_parameter(name, value, ParameterDescriptor(read_only=True))
         self.enabled = self.param('enabled')
