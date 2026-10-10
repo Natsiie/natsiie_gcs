@@ -48,6 +48,33 @@ static void Serial_SendPlaceResult(const char *task_id, uint32_t command_id, uin
     Serial_SendByte(SERIAL_TAIL);
 }
 
+/* 组帧发送: 0xFF TYPE LEN PAYLOAD CRC(异或) 0xFE */
+static void Serial_SendFramed(uint8_t type, const char *payload, uint8_t len)
+{
+    uint8_t crc = type ^ len, i;
+    Serial_SendByte(SERIAL_HEAD);
+    Serial_SendByte(type);
+    Serial_SendByte(len);
+    for (i = 0; i < len; i++) { crc ^= (uint8_t)payload[i]; Serial_SendByte((uint8_t)payload[i]); }
+    Serial_SendByte(crc);
+    Serial_SendByte(SERIAL_TAIL);
+}
+
+/* 0x0D PlaceControl: 下位机触发上位机放置阶段 (start 或 retry) */
+void Serial_SendPlaceControlStart(uint8_t stage, uint8_t batch)
+{
+    char payload[12];
+    uint8_t len = (uint8_t)sprintf(payload, "start,%u,%u", (unsigned)stage, (unsigned)batch);
+    Serial_SendFramed(SERIAL_TYPE_PLACE_CONTROL, payload, len);
+}
+
+void Serial_SendPlaceControlRetry(uint32_t command_id)
+{
+    char payload[20];
+    uint8_t len = (uint8_t)sprintf(payload, "retry,%lu", (unsigned long)command_id);
+    Serial_SendFramed(SERIAL_TYPE_PLACE_CONTROL, payload, len);
+}
+
 uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out)
 {
     if (!out || s_place_state != 1) return 0;

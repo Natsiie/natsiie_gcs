@@ -30,6 +30,7 @@
 #define SERIAL_TYPE_PLACE_COMMAND 0x0A
 #define SERIAL_TYPE_PLACE_RESULT  0x0B
 #define SERIAL_TYPE_UNLOAD_COORD  0x0C   /* 卸货坐标: 3 组 x,y (3 个落点, 塔吊系绝对 mm) */
+#define SERIAL_TYPE_PLACE_CONTROL 0x0D   /* 放置阶段控制 (下位机->上位机): start,stage,batch 或 retry,command_id */
 
 #define SERIAL_RX_PAYLOAD_MAX     128    /* Includes UUID and placement XYZ. */
 
@@ -114,5 +115,7 @@ void     Serial_ProcessFrame(void);                /* 任务里调用: 按 type 
  * Both must run in the same task as Serial_ProcessFrame(). */
 uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out);
 void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8_t success);
+void Serial_SendPlaceControlStart(uint8_t stage, uint8_t batch);  /* 0x0D: start,<stage>,<batch> */
+void Serial_SendPlaceControlRetry(uint32_t command_id);           /* 0x0D: retry,<command_id> */
 
 #endif
