@@ -239,17 +239,17 @@ def generate_launch_description():
 
         # 颜色识别、TF、坐标投影和串口桥已在本文件上方直接定义。
 
-        # # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
-        # Node(
-        #     package='identify_pack',
-        #     executable='turntable_detect_node',
-        #     name='turntable_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': SECONDARY_TOPIC,
-        #         'show': True,
-        #     }],
-        # ),
+        # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
+        Node(
+            package='identify_pack',
+            executable='turntable_detect_node',
+            name='turntable_detect_node',
+            output='screen',
+            parameters=[{
+                'image_topic': SECONDARY_TOPIC,
+                'show': True,
+            }],
+        ),
 
         # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         Node(

@@ -1,0 +1,6 @@
+{
+  "format_version": 1,
+  "reference_center_px": [0.0, 0.0],
+  "turntable_diameter_mm": 200.0,
+  "tolerance_mm": 10.0
+}

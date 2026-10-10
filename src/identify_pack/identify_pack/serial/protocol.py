@@ -34,6 +34,7 @@ TOPIC_TYPES = {
     'PlaceResult':  0x0B,  # 下位机 -> 上位机，task_id,command_id,success
     'RingTarget':   0x0C,  # 上位机 -> 下位机，三圆环圆心 gimbal_base 毫米，x1,y1,x2,y2,x3,y3
     'PlaceControl': 0x0D,  # 下位机 -> 上位机，start,stage,batch 或 retry,command_id
+    'TurntableAlign': 0x0E,  # 上位机 -> 下位机，转盘圆心对齐纠偏 corr_x,corr_y,within(0/1)
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。

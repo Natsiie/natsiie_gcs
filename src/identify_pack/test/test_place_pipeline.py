@@ -89,6 +89,7 @@ class PlacePipelineTests(unittest.TestCase):
         node.task.load('156+231+516+312')
         node.phase_started_ns = 41 * 10**9
         node.observations = {}
+        node.frozen_observation = None
         node.command_pub = Mock()
         node.status_pub = Mock()
         clock = Mock()
@@ -201,6 +202,27 @@ class PlacePipelineTests(unittest.TestCase):
             node.tick()
             node.command_pub.publish.assert_not_called()
             self.assertEqual(node.task.state, 'WAIT_TARGET')
+
+    def test_start_freezes_stopped_centers_and_ignores_later_motion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            node = self.node(Path(directory) / 'progress.json')
+            # 车停稳，圆心观测先到。
+            node.on_centers('ring_station', self.observation())
+            # 下位机停到位发 start，冻结这份停稳观测。
+            node.on_control(String(data=json.dumps(
+                {'action': 'start', 'stage': 'ring_station', 'batch': 1})))
+            self.assertIsNotNone(node.frozen_observation)
+            # 后续运动导致圆心漂移，实时观测被更新（不应被采用）。
+            moved = self.observation()
+            for point in moved.points:
+                point.x += 200.0
+            node.on_centers('ring_station', moved)
+            node.tick()
+            command = json.loads(node.command_pub.publish.call_args.args[0].data)
+            self.assertEqual(command['ring'], 2)
+            # 仍用冻结的停稳圆心（ring 2 中心 x=0），而非漂移后的中心。
+            np.testing.assert_allclose([command['x_mm'], command['y_mm'], command['z_mm']],
+                                       [0., 0., -42.5])
 
 
 if __name__ == '__main__':

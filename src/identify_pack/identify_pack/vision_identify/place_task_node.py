@@ -117,6 +117,7 @@ class PlaceTaskNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.observations = {}
+        self.frozen_observation = None
         self.phase_started_ns = self.get_clock().now().nanoseconds
         self.command_pub = self.create_publisher(String, '/arm/place_command', 10)
         self.status_pub = self.create_publisher(
@@ -219,7 +220,7 @@ class PlaceTaskNode(Node):
                 self.validate_heights(data['stage'])
                 self.commit(lambda: self.task.start(task_id, data['stage'], data['batch']))
                 self.phase_started_ns = self.get_clock().now().nanoseconds
-                self.observations.clear()
+                self.frozen_observation = self._freeze_observation(data['stage'])
             elif data['action'] == 'retry':
                 command = self.commit(lambda: self.task.retry(
                     task_id, data['command_id'], time.monotonic()))
@@ -228,6 +229,34 @@ class PlaceTaskNode(Node):
                 raise ValueError('Unknown placement control action')
         except (ValueError, KeyError, TypeError, OSError) as error:
             self.reject(error)
+
+    def _freeze_observation(self, stage):
+        """冻结下位机停到位（收到 start）瞬间的圆环圆心观测。
+
+        车停稳后圆心稳定且对齐；冻结后整个阶段都用这份观测计算放置坐标，
+        后续车/云台运动导致的圆心漂移不再被采用。仅当 start 到达时已有足够
+        新、稳定且对齐的观测才冻结，否则返回 None，由 tick 退回实时观测兜底。
+        """
+        observation = self.observations.get(stage)
+        if observation is None:
+            self.get_logger().warning(
+                f'{stage} 收到 start 时暂无圆心观测，退回实时观测兜底')
+            return None
+        message, received = observation
+        stamp_ns = message.header.stamp.sec * 10**9 + message.header.stamp.nanosec
+        age = (self.phase_started_ns - stamp_ns) / 1e9
+        if age < 0 or age > self.max_age or time.monotonic() - received > self.max_age:
+            self.get_logger().warning(
+                f'{stage} 停稳圆心观测已过期（{age:.2f}s），拒绝冻结，退回实时观测')
+            return None
+        channels = {channel.name: list(channel.values) for channel in message.channels}
+        if (channels.get('stable') != [1.0] or channels.get('within_tolerance') != [1.0]):
+            self.get_logger().warning(
+                f'{stage} 停稳圆心观测不稳定或未对齐，拒绝冻结，退回实时观测')
+            return None
+        self.get_logger().info(
+            f'{stage} 冻结停稳圆心观测（start 前 {age:.3f}s），后续运动不再影响放置坐标')
+        return observation
 
     def on_result(self, message):
         try:
@@ -253,15 +282,18 @@ class PlaceTaskNode(Node):
             if not self.enabled or self.task.state != 'WAIT_TARGET':
                 return
             stage = self.task.stage
-            if stage not in self.observations:
-                return
-            message, received = self.observations[stage]
-            now_ns = self.get_clock().now().nanoseconds
-            stamp_ns = message.header.stamp.sec * 10**9 + message.header.stamp.nanosec
-            age = (now_ns - stamp_ns) / 1e9
-            if (stamp_ns <= self.phase_started_ns or age < 0 or age > self.max_age
-                    or time.monotonic() - received > self.max_age):
-                return
+            if self.frozen_observation is not None:
+                message, _ = self.frozen_observation
+            else:
+                if stage not in self.observations:
+                    return
+                message, received = self.observations[stage]
+                now_ns = self.get_clock().now().nanoseconds
+                stamp_ns = message.header.stamp.sec * 10**9 + message.header.stamp.nanosec
+                age = (now_ns - stamp_ns) / 1e9
+                if (stamp_ns <= self.phase_started_ns or age < 0 or age > self.max_age
+                        or time.monotonic() - received > self.max_age):
+                    return
             self.validate_heights(stage)
             stamp = Time.from_msg(message.header.stamp, clock_type=self.get_clock().clock_type)
             ring = self.task.expected.ring
