@@ -21,6 +21,7 @@ from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
     make_frame, COLOR_TARGET_TYPE, RING_TARGET_TYPE,
     PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE,
+    PICK_DONE_TYPE, NEXT_BATCH_TYPE,
     parse_place_result, parse_place_control, place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
@@ -107,6 +108,8 @@ class SerialBridgeNode(Node):
         self.pub_joint_state = self.create_publisher(
             JointState, self.joint_states_topic, 10)
         self.pub_place_result = self.create_publisher(String, '/arm/place_result', 10)
+        self.pub_pick_done = self.create_publisher(UInt32, '/arm/pick_done', 10)
+        self.pub_next_batch = self.create_publisher(UInt32, '/arm/next_batch', 10)
         self.create_subscription(String, '/arm/place_command', self._on_place_command, 10)
         self.declare_parameter('place_control_topic', '/arm/place_control')
         self.pub_place_control = self.create_publisher(
@@ -250,6 +253,28 @@ class SerialBridgeNode(Node):
                     self.pub_place_control.publish(String(data=json.dumps(control)))
                 except ValueError as error:
                     self.get_logger().warning(f'Invalid placement control: {error}')
+                continue
+            if type_byte == PICK_DONE_TYPE:
+                try:
+                    seq = int(payload.strip())
+                    if not 1 <= seq <= 6:
+                        raise ValueError('序号需在 1..6')
+                    self.pub_pick_done.publish(UInt32(data=seq))
+                    self.get_logger().info(f'RX PickDone: seq={seq}', throttle_duration_sec=1.0)
+                except (TypeError, ValueError) as error:
+                    self.get_logger().warning(
+                        f'忽略非法 PickDone payload={payload!r}: {error}')
+                continue
+            if type_byte == NEXT_BATCH_TYPE:
+                try:
+                    batch = int(payload.strip())
+                    if batch != 1:
+                        raise ValueError('批次号需为 1')
+                    self.pub_next_batch.publish(UInt32(data=batch))
+                    self.get_logger().info(f'RX NextBatch: {batch}')
+                except (TypeError, ValueError) as error:
+                    self.get_logger().warning(
+                        f'忽略非法 NextBatch payload={payload!r}: {error}')
                 continue
             if type_byte != self.yaw_feedback_type:
                 self.get_logger().warning(

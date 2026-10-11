@@ -35,12 +35,14 @@ TOPIC_TYPES = {
     'RingTarget':   0x0C,  # 上位机 -> 下位机，三圆环圆心 gimbal_base 毫米，x1,y1,x2,y2,x3,y3
     'PlaceControl': 0x0D,  # 下位机 -> 上位机，start,stage,batch 或 retry,command_id
     'TurntableAlign': 0x0E,  # 上位机 -> 下位机，转盘圆心对齐纠偏 corr_x,corr_y,within(0/1)
+    'PickDone':      0x0F,  # 下位机 -> 上位机，抓取完成序号 1~6
+    'NextBatch':     0x10,  # 下位机 -> 上位机，第一批完成回装就绪，payload "1"
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl', 'PickDone', 'NextBatch')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
@@ -49,6 +51,8 @@ PLACE_COMMAND_TYPE = TOPIC_TYPES['PlaceCommand']
 PLACE_RESULT_TYPE = TOPIC_TYPES['PlaceResult']
 PLACE_CONTROL_TYPE = TOPIC_TYPES['PlaceControl']
 RING_TARGET_TYPE = TOPIC_TYPES['RingTarget']
+PICK_DONE_TYPE = TOPIC_TYPES['PickDone']
+NEXT_BATCH_TYPE = TOPIC_TYPES['NextBatch']
 
 
 def validate_place_identity(task_id, command_id):
