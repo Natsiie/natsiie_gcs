@@ -1,3 +1,41 @@
 {
-    "cmake.sourceDirectory": "C:/Users/xszx1/Desktop/工创小车/FreeRTOS"
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/User",
+    "${workspaceFolder}/Apps",
+    "${workspaceFolder}/BSP",
+    "${workspaceFolder}/Devices",
+    "${workspaceFolder}/Algorithms",
+    "${workspaceFolder}/Library",
+    "${workspaceFolder}/Startup",
+    "${workspaceFolder}/FreeRTOS/include",
+    "${workspaceFolder}/FreeRTOS/portable/RVDS/ARM_CM4F"
+  ],
+  "C_Cpp.default.defines": [
+    "STM32F407VG",
+    "USE_STDPERIPH_DRIVER"
+  ],
+  "C_Cpp.default.cStandard": "c99",
+  "C_Cpp.default.intelliSenseMode": "windows-gcc-arm",
+  "C_Cpp.errorSquiggles": "enabled",
+
+  "files.associations": {
+    "*.uvprojx": "xml",
+    "*.uvoptx": "xml"
+  },
+  "files.exclude": {
+    "**/Output": true,
+    "**/Listings": true,
+    "**/*.uvguix.*": true,
+    "**/*.bak": true
+  },
+  "search.exclude": {
+    "**/Output": true,
+    "**/Listings": true
+  },
+
+  "errorLens.enabledDiagnosticLevels": ["error", "warning"],
+  "errorLens.followCursor": "activeLine",
+
+  "editor.renderWhitespace": "boundary",
+  "editor.rulers": [100]
 }
