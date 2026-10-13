@@ -57,8 +57,17 @@
 2. **0x0E TurntableAlign —— 已占号但未启用**
    上位机只在 `protocol.py` 里定义了类型号，**没有发送方**；固件 `Serial_ProcessFrame()` 也没有对应 `case`。属于"预留位"。
 
-3. **0x0C 一帧两义**
-   固件注释：卸货坐标 3 组 xy（塔吊系绝对 mm）；上位机注释：RingTarget 三圆环圆心（gimbal_base mm）。同一类型号两种语义，**必须在这里定稿**（建议以实际发送方 = 上位机为准），然后同步两边代码注释。
+3. **0x0C 坐标系声明不一致 —— 需要你们拍板**
+   payload 形状两侧一致（`x1,y1,x2,y2,x3,y3`，上位机发、固件收），固件把收到的值**直接当 Kin 目标**用
+   （`Serial_RxData.unload_x/y` → `kin_unload_x/y` → `kin_target_x/y`）。但注释里声明的坐标系不同：
+   - 上位机：`RingTarget`，三圆环圆心，**gimbal_base 毫米**
+   - 固件：`SERIAL_TYPE_UNLOAD_COORD`，卸货坐标 3 组 xy，**塔吊系绝对 mm**
+
+   同文件里 0x0A `PlaceCommand` 的注释明确写着 `gimbal_base; not the Kin ground-origin frame`，
+   说明这两个系确实不是一回事。
+   → **要确认 0x0C 到底属于哪个系**。如果两侧不一致，落点会带固定偏移，而现场调出来的
+   `kin_unload_x_offset_mm / kin_unload_y_offset_mm` 可能正好把这个偏差掩盖了。
+   定稿后把两侧注释一起改掉。
 
 4. **文档指针失效**：`protocol.py` 顶部写"必须与 STM32F4 侧 `serial_protocol.h` 保持一致"，实际文件是 `Devices/Serial.h`。
 
@@ -74,6 +83,16 @@
 - 目的：消灭"我以为你那边是新的"这类扯皮，联调一开场就能确认两端是不是同一份协议
 
 ## 6. 联调记录约定
+
+**抓一段串口日志存档**（联调时后台开着，结束后日志进 `Output/serial.log`）：
+
+```powershell
+C:\Users\xszx1\.dsh\tools\pyocd\Scripts\python.exe tools\serial_monitor.py --port COM3 --log Output\serial.log
+# 只看本次关心的帧:  --types 0x0F,0x10
+```
+
+VS Code 里也有现成任务：**「联调: 串口协议监视」** / **「联调: 串口监视(只看 0x0F/0x10)」**。
+它会逐帧打印类型名、payload、CRC 校验结果和统计（CRC 错误、丢弃字节），比裸看 HEX 快得多。
 
 每次联调结束，在 `DEVLOG.md` 追加一条：
 
