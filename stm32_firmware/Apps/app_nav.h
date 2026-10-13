@@ -59,6 +59,12 @@ extern float   nav_test_err_x;   /* 只读: 最近一次到点误差 X (里程�
 extern float   nav_test_err_y;   /* 只读: 最近一次到点误差 Y (里程计-目标, mm) */
 extern float   nav_test_err_max; /* 只读: 全程最大到点误差 (mm) */
 
+/* ================= 纯底盘自跑选项 (无视觉/无上层) ================= */
+extern uint8_t nav_skip_corner;  /* 写 1: 启动时跳过拐角, 直连物料点(L型先X后Y, 转 material_yaw 后接入全程) */
+extern uint8_t nav_auto_rotate;  /* 写 1: 到中点自动原地旋转朝向下一个工作区, 转完自动继续(不停中点) */
+extern uint8_t nav_auto_run;     /* 写 1: 一键纯跑底盘(跳拐角+中点旋转+全程不停, 无视觉/无上层), 走完自动清 0 */
+extern uint8_t nav_auto_active;  /* 只读: 1=一键纯跑进行中 */
+
 void Nav_Update(void);      /* 10ms, 由 App_Chassis_Task 调用 */
 void Nav_Start(void);       /* 启动全程导航 */
 void Nav_Stop(void);        /* 中止导航 (交还遥控/手动控制) */

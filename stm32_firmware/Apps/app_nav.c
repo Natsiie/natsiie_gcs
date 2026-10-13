@@ -11,6 +11,8 @@ extern float   chassis_pos_target_x_mm;
 extern float   chassis_pos_target_y_mm;
 extern float   chassis_odom_x_mm;      /* 里程计世界坐标 X, 最后一次粗加工->暂存的中点到达时修正漂移 */
 extern float   chassis_odom_y_mm;      /* 里程计世界坐标 Y */
+extern uint8_t chassis_rotate_active;  /* 只读: 1=原地旋转中 */
+void Chassis_RotateTo(float yaw_deg);  /* 原地旋转到世界系 yaw(度), 到位后 chassis_rotate_active=0 */
 
 /* ================= 路径点坐标 (mm, 世界系) — TODO 现场测量后填入 ================= */
 uint8_t nav_zone = 1;    /* 当前启动区: 1=启动区1, 2=启动区2; Nav_Start 前设好 */
@@ -56,8 +58,23 @@ float   nav_test_err_x  = 0.0f; /* 最近到点误差 X (里程计-目标) */
 float   nav_test_err_y  = 0.0f; /* 最近到点误差 Y */
 float   nav_test_err_max = 0.0f;/* 全程最大到点误差 */
 
+/* 纯底盘自跑选项 (无视觉/无上层, Keil Watch):
+   nav_skip_corner=1: 启动时跳过拐角, 直连物料点(先走X再走Y, 转 material_yaw 后接入全程);
+   nav_auto_rotate =1: 到中点自动原地旋转朝向下一个工作区, 转完自动继续(不停中点)。 */
+uint8_t nav_skip_corner = 0;
+uint8_t nav_auto_rotate  = 0;
+uint8_t nav_auto_run     = 0;   /* 写 1: 一键纯跑底盘(跳拐角+中点旋转+全程不停, 无视觉/无上层), 走完自动清 0 */
+uint8_t nav_auto_active  = 0;   /* 只读: 1=一键纯跑进行中 */
+
 static int8_t nav_index = -1;   /* 当前在 nav_route[] 里的下标 */
 static uint8_t nav_staging_mid_count = 0;  /* 已到「粗加工->暂存」段中点次数 (第二次/最后一次时修正里程计 x) */
+
+/* 跳过拐角直连物料点的子阶段 + 中点原地旋转状态 */
+#define NAV_SKIP_X       1   /* 先走 X (保持当前 y) */
+#define NAV_SKIP_Y       2   /* 再走 Y */
+#define NAV_SKIP_ROTATE  3   /* 转 material_yaw */
+static uint8_t nav_skip_phase = 0;   /* 0=未启用 */
+static uint8_t nav_rotating   = 0;   /* 1=中点原地旋转中 */
 
 /* 全程路径 (展平后的顺序), 两个启动区共用:
    启动区起点 -> 拐角 -> 中点, 之后每个工作区都是「中点 -> 工作区 -> 中点」,
@@ -101,6 +118,20 @@ void Nav_Start(void)
     nav_step = 0;
     nav_at_point = NAV_POINT_COUNT;
     nav_staging_mid_count = 0;   /* 重新计数: 最后一次「粗加工->暂存」的中点到达才修正里程计 x */
+    nav_skip_phase = 0;
+    nav_rotating   = 0;
+
+    if (nav_skip_corner || nav_auto_active)
+    {
+        /* 跳过拐角: 直连物料点, 先走 X (保持当前 y), 再走 Y, 转 material_yaw 后接入全程 */
+        NavZoneCoord_t *z = &nav_zone_coord[(nav_zone == 2) ? 1 : 0];
+        nav_skip_phase = NAV_SKIP_X;
+        chassis_pos_target_x_mm = z->material_x;
+        chassis_pos_target_y_mm = chassis_odom_y_mm;
+        chassis_pos_active = 1;
+        return;
+    }
+
     Nav_LoadWaypoint(nav_route[0]);
     chassis_pos_active = 1;
 }
@@ -115,6 +146,9 @@ void Nav_Stop(void)
     nav_at_point = NAV_POINT_COUNT;
     chassis_pos_active = 0;
     nav_test_active = 0;   /* 结束(含走完/中止)同时结束精度测试 */
+    nav_auto_active = 0;   /* 一键纯跑结束(走完/中止) */
+    nav_skip_phase = 0;
+    nav_rotating   = 0;
 }
 
 /* 从暂停点继续: 推进到下一个路径点 (仅 nav_wait==1 时有效) */
@@ -176,6 +210,27 @@ NavPointId Nav_NextPoint(void)
     return (NavPointId)nav_route[nav_index + 1];
 }
 
+/* 中点原地旋转目标 yaw (纯底盘自跑用, 与 mission 的 Mission_RotateAtMid 同逻辑):
+   去工作区用该站现场标定的目标朝向; 收车去拐角/起点用 atan2 朝下一目标 */
+static void Nav_RotateAtMid(void)
+{
+    NavZoneCoord_t *z = &nav_zone_coord[(nav_zone == 2) ? 1 : 0];
+    NavPointId next = Nav_NextPoint();
+    float nx, ny, target_yaw;
+
+    switch (next)
+    {
+    case NAV_MATERIAL: target_yaw = z->material_yaw; break;
+    case NAV_ROUGH:    target_yaw = z->rough_yaw;    break;
+    case NAV_STAGING:  target_yaw = z->staging_yaw;  break;
+    default:
+        Nav_GetPointCoord(next, &nx, &ny);
+        target_yaw = atan2f(ny - z->mid_y, nx - z->mid_x) * (180.0f / MATH_PI);
+        break;
+    }
+    Chassis_RotateTo(target_yaw);
+}
+
 /**
   * @brief  导航状态机 (每 10ms 调用, 在 App_Chassis_Task 锁检查之后执行)
   *         - btn3 边沿启动导航 (导航中忽略, 防误触重来); nav_cmd 1=启动 2=中止 3=继续 (处理后回 0)
@@ -197,6 +252,14 @@ void Nav_Update(void)
         Nav_Start();
     }
 
+    /* 一键纯跑底盘: 跳拐角直连物料点 + 中点自动旋转 + 全程不停车, 无视觉/无上层, 走完自动清 0 */
+    if (nav_auto_run)
+    {
+        nav_auto_run = 0;
+        nav_auto_active = 1;
+        Nav_Start();
+    }
+
     /* btn3 边沿启动导航 */
     {
         static uint8_t last_btn3 = 0;
@@ -215,6 +278,55 @@ void Nav_Update(void)
 
     /* 已到工作区, 停原地等「继续」指令 (抓取/视觉微调), 不推进 */
     if (nav_wait) return;
+
+    /* 跳过拐角直连物料点: L型先 X 后 Y, 再转 material_yaw 后接入全程 */
+    if (nav_skip_phase)
+    {
+        NavZoneCoord_t *z = &nav_zone_coord[(nav_zone == 2) ? 1 : 0];
+        switch (nav_skip_phase)
+        {
+        case NAV_SKIP_X:
+            if (chassis_pos_active == 0)
+            {
+                nav_skip_phase = NAV_SKIP_Y;
+                chassis_pos_target_x_mm = z->material_x;
+                chassis_pos_target_y_mm = z->material_y;
+                chassis_pos_active = 1;
+            }
+            break;
+        case NAV_SKIP_Y:
+            if (chassis_pos_active == 0)
+            {
+                nav_skip_phase = NAV_SKIP_ROTATE;
+                Chassis_RotateTo(z->material_yaw);
+            }
+            break;
+        case NAV_SKIP_ROTATE:
+            if (!chassis_rotate_active)
+            {
+                nav_skip_phase = 0;
+                Nav_StartAt(NAV_MATERIAL);           /* 转完 -> 以「已到物料区」状态接入全程 (nav_wait=1 停原地) */
+                if (nav_test_active || nav_auto_active) Nav_Continue();  /* 连续模式(精度测试/一键纯跑): 不停物料点 */
+            }
+            break;
+        }
+        return;
+    }
+
+    /* 中点原地旋转中: 转完自动继续 (nav_auto_rotate=1 时到中点触发) */
+    if (nav_rotating)
+    {
+        if (!chassis_rotate_active)
+        {
+            nav_rotating = 0;
+            if (nav_index + 1 >= NAV_ROUTE_LEN) { Nav_Stop(); return; }
+            nav_index++;
+            Nav_LoadWaypoint(nav_route[nav_index]);
+            chassis_pos_active = 1;
+            nav_step = nav_index;
+        }
+        return;
+    }
 
     /* 当前点到达 -> 推进到下一个路径点; 全部走完则结束 */
     if (chassis_pos_active == 0)
@@ -246,10 +358,18 @@ void Nav_Update(void)
             }
         }
 
+        /* 中点原地旋转: nav_auto_rotate=1 时到中点自动转朝向下一个工作区, 转完自动继续(不停中点) */
+        if ((nav_auto_rotate || nav_auto_active) && nav_route[nav_index] == NAV_MID)
+        {
+            Nav_RotateAtMid();
+            nav_rotating = 1;
+            return;
+        }
+
         /* 到达工作区/中点 -> 停下来等「继续」 (不自动推进)
            中点也停: 总控在中点原地旋转朝向下一个工作区后再继续。
            精度测试不停, 直接连续走完全程测误差。 */
-        if (!nav_test_active &&
+        if (!nav_test_active && !nav_auto_active &&
             (nav_route[nav_index] == NAV_MATERIAL ||
              nav_route[nav_index] == NAV_ROUGH    ||
              nav_route[nav_index] == NAV_STAGING  ||
