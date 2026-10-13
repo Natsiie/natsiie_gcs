@@ -75,6 +75,24 @@ void Serial_SendPlaceControlRetry(uint32_t command_id)
     Serial_SendFramed(SERIAL_TYPE_PLACE_CONTROL, payload, len);
 }
 
+/* 0x0F PickDone: 抓取完成序号 (1~6)。上位机 identify_pack/scripts/pick_task.py 的
+ * Pick.sequence = batch*3 + index + 1，只有序号与其期望值一致才会推进状态机。 */
+void Serial_SendPickDone(uint8_t seq)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u", (unsigned)seq);
+    Serial_SendFramed(SERIAL_TYPE_PICK_DONE, payload, len);
+}
+
+/* 0x10 NextBatch: 第一批(前 3 次抓取)完成、回装就绪。上位机 next_batch() 只接受 payload "1"，
+ * 收到后才从 WAIT_NEXT_BATCH 放行第二批。 */
+void Serial_SendNextBatch(uint8_t batch)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u", (unsigned)batch);
+    Serial_SendFramed(SERIAL_TYPE_NEXT_BATCH, payload, len);
+}
+
 uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out)
 {
     if (!out || s_place_state != 1) return 0;

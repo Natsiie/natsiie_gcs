@@ -38,6 +38,7 @@ enum {
 
 uint8_t mission_enable = 0;   /* 0=保留单功能测试代码; 1=全自动比赛流程 (Watch 改) */
 uint8_t mission_skip_work = 0; /* 写1=跳过当前工作区(物料/粗加工/暂存)塔吊作业直接离站, 跳完自动清0 (Watch) */
+uint8_t mission_report_pick = 1; /* 1=每次装货抓取完成上报 0x0F/0x10 (Watch 可置 0 关闭, 联调兜底) */
 
 /* 二维码解析结果: 只用到第2组(第1轮环序)/第4组(第2轮环序), 第1/3组颜色由视觉自己把握 */
 static uint8_t ms_qr_rings[2][3] = { {1,2,3}, {1,2,3} };   /* [轮][序号] = 环号(1~3) */
@@ -87,6 +88,8 @@ void Chassis_RotateTo(float yaw_deg);
 extern volatile uint8_t Serial_ColorTargetReady;
 extern volatile uint8_t Serial_QRReady;
 extern Serial_RxData_t   Serial_RxData;
+void Serial_SendPickDone(uint8_t seq);      /* 0x0F: 抓取完成序号 1~6 */
+void Serial_SendNextBatch(uint8_t batch);   /* 0x10: 第一批完成 1 */
 
 void Screen_ShowZone(uint8_t zone);
 
@@ -311,10 +314,24 @@ void Mission_Update(uint8_t key_pressed)
 
     case MS_LOAD:
         /* 装货 x3: 视觉发 0x08 坐标 -> 锁存坐标过去 -> 等 0x09 ok -> 自动夹 -> 收平台。
-           0x08 可能周期性带抖动, 抓完清标志只认下一个物料的新坐标(旧的 0x08 不管)。 */
+           0x08 可能周期性带抖动, 抓完清标志只认下一个物料的新坐标(旧的 0x08 不管)。
+
+           抓取完成上报 (与上位机 pick_task.py 对齐):
+             0x0F PickDone  序号 = 轮*3 + 本工作区第几个 + 1, 即第1轮 1/2/3、第2轮 4/5/6;
+             0x10 NextBatch 第1轮 3 次抓完后发 "1", 上位机据此从 WAIT_NEXT_BATCH 放行第二批
+                            (第2轮 3 次抓完上位机已 DONE, 不需要也不接受再次 NextBatch)。
+           mission_report_pick=0 可整体关闭上报, 联调出问题时的兜底开关。 */
         if (ms_sub < 3)
         {
-            if (kin_done) { kin_done = 0; ms_sub++; Serial_ColorTargetReady = 0; }   /* 抓+放+回收完成, 清残留抖动帧 */
+            if (kin_done)
+            {
+                kin_done = 0;
+                if (mission_report_pick) Serial_SendPickDone((uint8_t)(ms_round * 3 + ms_sub + 1));
+                ms_sub++;
+                Serial_ColorTargetReady = 0;   /* 抓+放+回收完成, 清残留抖动帧 */
+                if (ms_sub >= 3 && ms_round == 0 && mission_report_pick)
+                    Serial_SendNextBatch(1);
+            }
             if (ms_sub < 3 && !kin_active && Serial_ColorTargetReady)
             {
                 Serial_ColorTargetReady = 0;
