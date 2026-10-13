@@ -39,16 +39,20 @@
 | 0x0C | ⚠ 见 §3.3 | 上→下 | 3 组 `x,y` | **固件叫「卸货坐标（塔吊系绝对 mm）」/ 上位机叫「RingTarget 三圆环圆心（gimbal_base mm）」——语义待统一** | 收 ✓ | 发 ✓ |
 | 0x0D | PlaceControl | 下→上 | `start,stage,batch` 或 `retry,command_id` | 放置阶段控制（下位机请求上位机开始/重试） | 发 ✓ | 收 ✓ |
 | 0x0E | TurntableAlign | 上→下 | `corr_x,corr_y,within(0/1)` | 转盘圆心对齐纠偏 | **未实现** ✗ | 无发送方 ✗ |
-| 0x0F | PickDone | 下→上 | 序号 `1~6` | 抓取完成（上位机 `/arm/pick_done`） | **未实现** ✗ | 已收 ✓ |
-| 0x10 | NextBatch | 下→上 | `1` | 第一批完成、回装就绪（上位机 `/arm/next_batch`） | **未实现** ✗ | 已收 ✓ |
+| 0x0F | PickDone | 下→上 | 序号 `1~6` | 抓取完成（上位机 `/arm/pick_done`）；序号 = `轮*3 + 本工作区第几个 + 1` | 发 ✓ | 收 ✓ |
+| 0x10 | NextBatch | 下→上 | `1` | 第一批（前 3 次抓取）完成、回装就绪（上位机 `/arm/next_batch`） | 发 ✓ | 收 ✓ |
 
 > 类型号来源：固件 `Devices/Serial.h` 的 `SERIAL_TYPE_*`；上位机 `serial/protocol.py` 的 `TOPIC_TYPES`。两侧必须一致。
 
 ## 3. 现存缺口（2026-10-13 核对）
 
-1. **0x0F PickDone / 0x10 NextBatch —— 上位机在等，固件还没发**
-   上位机 `serial_bridge_node.py` 已经订阅并在收到时发布 `/arm/pick_done`、`/arm/next_batch`，但固件侧**没有常量、没有发送函数**，所以这两个话题目前永远不会触发，`task_mode` 的抓取完成 / 回装回路走不通。
-   **待办（固件侧）**：加 `SERIAL_TYPE_PICK_DONE 0x0F`、`SERIAL_TYPE_NEXT_BATCH 0x10` 及对应发送点。
+1. **0x0F PickDone / 0x10 NextBatch —— 已实现（2026-10-13，固件侧）**
+   固件新增 `Serial_SendPickDone()` / `Serial_SendNextBatch()`（`Devices/Serial.c`），上报点在
+   `Apps/app_mission.c` 的 `MS_LOAD`：每次装货抓取完成上报序号 `轮*3 + 本工作区第几个 + 1`
+   （第 1 轮 1/2/3、第 2 轮 4/5/6）；第 1 轮 3 次抓完后发 `NextBatch(1)`。
+   与上位机 `pick_task.py` 的 `Pick.sequence = batch*3 + index + 1`、`next_batch(1)` 一一对应。
+   **兜底开关**：`mission_report_pick`（Watch 可置 0 整体关闭上报）。
+   ⚠ 尚未实机验证；当前按"Kin 动作完成"即上报，**不区分是否真的夹住物料**。
 
 2. **0x0E TurntableAlign —— 已占号但未启用**
    上位机只在 `protocol.py` 里定义了类型号，**没有发送方**；固件 `Serial_ProcessFrame()` 也没有对应 `case`。属于"预留位"。
