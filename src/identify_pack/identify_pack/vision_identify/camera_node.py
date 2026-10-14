@@ -42,6 +42,7 @@ class CameraNode(Node):
         self.declare_parameter('qr_topic', 'QR_Decode')
         self.declare_parameter('qr_min_consistent', 3)
         self.declare_parameter('stop_after_qr', True)
+        self.declare_parameter('show', False)  # cv2 调试窗口（需图形环境，无 DISPLAY 时自动关闭）
 
         self.device = self.get_parameter('device').value
         self.image_topic = self.get_parameter('image_topic').value
@@ -63,6 +64,8 @@ class CameraNode(Node):
         self.qr_topic = self.get_parameter('qr_topic').value
         self.qr_min_consistent = int(self.get_parameter('qr_min_consistent').value)
         self.stop_after_qr = bool(self.get_parameter('stop_after_qr').value)
+        self.show = bool(self.get_parameter('show').value)
+        self._window_name = f'{self.get_name()} [{self.device}]'
 
         # QR 解码（主相机用，副相机不依赖 pyzbar）
         self.decode_qr = None
@@ -187,7 +190,11 @@ class CameraNode(Node):
         self._published_frames += 1
 
         if self.decode_qr is not None:
-            self.maybe_read_qr(frame)
+            qr_objs = self.maybe_read_qr(frame)
+        else:
+            qr_objs = ()
+        if self.show:
+            self._show_frame(frame, qr_objs)
 
     def watchdog_cb(self):
         """Run outside the ROS executor so publish/QR stalls cannot disable recovery."""
@@ -208,9 +215,11 @@ class CameraNode(Node):
             self._restart_capture()
 
     def maybe_read_qr(self, frame):
-        """连续多帧读到同一 QR 内容则发布；stop_after_qr 时随即停摄像头。"""
+        """连续多帧读到同一 QR 内容则发布；stop_after_qr 时随即停摄像头。
+        返回本帧解码到的 QR 对象列表，供调试窗口画框。"""
+        objs = list(self.decode_qr(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
         current = None
-        for obj in self.decode_qr(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)):
+        for obj in objs:
             try:
                 text = obj.data.decode('utf-8').strip()
             except Exception:
@@ -222,7 +231,7 @@ class CameraNode(Node):
         if not current:
             self.qr_last = None
             self.qr_count = 0
-            return
+            return objs
 
         if current == self.qr_last:
             self.qr_count += 1
@@ -233,7 +242,7 @@ class CameraNode(Node):
                                throttle_duration_sec=1.0)
 
         if self.qr_count < self.qr_min_consistent:
-            return
+            return objs
 
         out = String()
         out.data = current
@@ -244,6 +253,28 @@ class CameraNode(Node):
         if self.stop_after_qr:
             self.qr_stopped = True
             self.get_logger().info('QR 已读取，停止采集进程')
+        return objs
+
+    def _show_frame(self, frame, qr_objs):
+        """cv2 调试窗口：叠加 QR 框和内容；无显示环境时自动关闭。"""
+        for obj in qr_objs:
+            try:
+                text = obj.data.decode('utf-8').strip()
+            except Exception:
+                text = None
+            if not text:
+                continue
+            x, y, w, h = obj.rect
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(frame, text, (x, max(y - 6, 16)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        try:
+            cv2.imshow(self._window_name, frame)
+            cv2.waitKey(1)
+        except cv2.error:
+            self.show = False
+            self.get_logger().warning(
+                '无法打开调试窗口（无图形环境/DISPLAY），已自动关闭 show')
 
     def destroy_node(self):
         self._stop.set()

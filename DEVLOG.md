@@ -224,3 +224,11 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - 支持相机实时预览、图片离线测试、数字裁剪预览、鼠标选环采集现场模板以及原图/标注/JSON 快照。使用独立模板目录，不覆盖已有数字脚本、模板或圆环标定配置；不接入 ROS 控制流程。
 - 只有三环几何通过且读到的数字为互不重复的 1/2/3 时才报告完整映射；空白、遮挡、低相似度和匹配歧义保留未知。
 - 使用方法见 `src/identify_pack/identify_pack/scripts/RING_STATION_DIGIT_TEST.md`。合成图与离线入口已验证，未进行实机相机或比赛场地图像验证，现场字体建议重新采模板。
+
+## 15. 全图多物块颜色跟踪（2026-10-14）
+
+- 新增 `vision_identify/tracking_color_node.py` 与纯逻辑 `scripts/color_tracking.py`，全图六色 HSV 检测、形状筛选、卡尔曼位置/速度滤波、匈牙利关联、跨帧颜色投票和轨迹生命周期管理。剔除粉色标记像素，合并蓝/浅蓝候选分割，逐候选判色。
+- 保留原 ROI 识别和现有比赛 launch。新增独立 `tracking_color.launch.py`、`config/tracking_color.yaml` 和 ROS 可执行入口。默认复用 `/camera/secondary/image_raw`，可选只启动相机与跟踪，便于独立验证。
+- 发布 `/tracking_color/tracks`、`/tracking_color/centers_pixel`、`/tracking_color/debug_image`。待确认/丢失轨迹在 JSON 中明确区分，只有当前观测且确认的目标进入像素点云；图像超时清空目标，输出保留原图时间戳。没有接入抓取或串口指令。
+- 使用与限制见 `src/identify_pack/identify_pack/vision_identify/TRACKING_COLOR.md`。测试覆盖多目标关联、同色交叉、短时遮挡、目标移除、颜色跳变、超时与时间戳；尚未验证实机场景，色块质心仍不等同于顶面抓取中心。
+- 验证：新增 17 项测试通过，完整 `identify_pack` 测试集 142 项通过；独立临时目录中的 ROS 包构建成功。

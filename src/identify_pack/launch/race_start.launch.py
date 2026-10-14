@@ -4,7 +4,7 @@
   - 主相机发布到 /camera/main/image_raw
   - 副相机发布到 /camera/secondary/image_raw
 
-二维码任务码控制颜色抓取顺序，其他工位识别节点暂未启用。
+二维码任务码控制颜色抓取顺序；颜色/工位/转盘/叠放位等识别节点均已启用。
 设备路径、串口和标定配置可用 launch 参数覆盖。
 """
 import os
@@ -26,6 +26,10 @@ def generate_launch_description():
     share = get_package_share_directory('identify_pack')
     main_camera_device = LaunchConfiguration('main_camera_device', default='/dev/camera_front')
     secondary_camera_device = LaunchConfiguration('secondary_camera_device', default='/dev/camera_upper')
+    # 主相机分辨率/帧率：默认 640x480 保证 pyzbar 解码不吃满 CPU；需要更远/更小的码时再上 1280x720。
+    main_camera_width = LaunchConfiguration('main_camera_width', default='640')
+    main_camera_height = LaunchConfiguration('main_camera_height', default='480')
+    main_camera_fps = LaunchConfiguration('main_camera_fps', default='25')
     min_consistent = LaunchConfiguration('min_consistent', default='3')
     show = LaunchConfiguration('show', default='true')
     secondary_image_topic = LaunchConfiguration('secondary_image_topic')
@@ -33,14 +37,17 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('main_camera_device', default_value=main_camera_device),
         DeclareLaunchArgument('secondary_camera_device', default_value=secondary_camera_device),
+        DeclareLaunchArgument('main_camera_width', default_value=main_camera_width),
+        DeclareLaunchArgument('main_camera_height', default_value=main_camera_height),
+        DeclareLaunchArgument('main_camera_fps', default_value=main_camera_fps),
         DeclareLaunchArgument('secondary_image_topic', default_value=SECONDARY_TOPIC),
         DeclareLaunchArgument('min_consistent', default_value=min_consistent),
         DeclareLaunchArgument('show', default_value=show),
         DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
             share, 'ring_station_digit_templates')),
-        # QR 任务码由主相机读取；当前无 /dev/camera_front 设备，默认关闭（需要时再开 true）。
-        DeclareLaunchArgument('start_main_camera', default_value='false'),
-        # 副相机用于颜色识别，默认打开；如果已经由其他终端启动，可改为 false。
+        # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
+        DeclareLaunchArgument('start_main_camera', default_value='true'),
+        # 副相机用于颜色/工位识别，默认打开；如果已经由其他终端启动，可改为 false。
         DeclareLaunchArgument('start_secondary_camera', default_value='true'),
         # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
         DeclareLaunchArgument('secondary_frozen_frame_timeout_sec', default_value='5.0'),
@@ -49,7 +56,7 @@ def generate_launch_description():
         # 副相机画面翻转：-1=上下颠倒(180°), 1=左右镜像, 0=不翻转。
         DeclareLaunchArgument('secondary_camera_flip_code', default_value='0'),
         # 统一串口桥使用的设备和波特率。
-        DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('serial_port', default_value='/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0'),
         DeclareLaunchArgument('baud', default_value='115200'),
         # 颜色识别 ROI、HSV 配置以及 TF/像素投影参数文件。
         DeclareLaunchArgument('roi_file', default_value=os.path.join(share, 'ROI_Range.txt')),
@@ -94,7 +101,12 @@ def generate_launch_description():
                 'image_topic': MAIN_TOPIC,
                 'qr_decode': True,
                 'stop_after_qr': True,
+                'fourcc': 'MJPG',  # 主相机用 MJPEG，提升扫码清晰度
+                'width': ParameterValue(main_camera_width, value_type=int),
+                'height': ParameterValue(main_camera_height, value_type=int),
+                'fps': ParameterValue(main_camera_fps, value_type=int),
                 'qr_min_consistent': ParameterValue(min_consistent, value_type=int),
+                'show': ParameterValue(show, value_type=bool),
             }],
         ),
 
@@ -226,7 +238,7 @@ def generate_launch_description():
             }],
         ),
 
-        # # 霍夫圆检测节点：订阅副相机（只做圆+数字，发布 /circle_detect、/Order）
+        # 霍夫圆检测节点：订阅副相机（只做圆+数字，发布 /circle_detect、/Order）
         # Node(
         #     package='identify_pack',
         #     executable='circle_detect_node',
@@ -236,8 +248,6 @@ def generate_launch_description():
         #         'image_topic': SECONDARY_TOPIC,
         #     }],
         # ),
-
-        # 颜色识别、TF、坐标投影和串口桥已在本文件上方直接定义。
 
         # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
         Node(
@@ -290,7 +300,7 @@ def generate_launch_description():
             parameters=[LaunchConfiguration('place_task_params_file')],
         ),
 
-        # # ROI 叠加节点：订阅副相机（调试用）
+        # ROI 叠加节点：订阅副相机（调试用）
         # Node(
         #     package='identify_pack',
         #     executable='roi_overlay_node',
