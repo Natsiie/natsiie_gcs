@@ -7,6 +7,17 @@
 
 __IO CAN_t can = {0};
 
+/* EMM 定时主动上报位置快照表 (定义见 bsp_can.h) */
+__IO uint32_t can_pos_raw[7]  = {0};
+__IO uint8_t  can_pos_sign[7] = {0};
+__IO uint16_t can_pos_cnt[7]  = {0};
+__IO uint32_t can_rx_drop     = 0;
+
+/* 底盘电机1母线电压回包 (0x24) 专用槽位 (定义见 bsp_can.h) */
+__IO uint16_t can_vbus_mv   = 0;
+__IO uint8_t  can_vbus_flag = 0;
+__IO uint32_t can_vbus_ok   = 0;
+
 static void can_nvic_init(void)
 {
     NVIC_InitTypeDef NVIC_InitStructure;
@@ -124,7 +135,46 @@ void can_SendCmd(__IO uint8_t *cmd, uint8_t len)
 
 void CAN1_RX0_IRQHandler(void)
 {
-    CAN_Receive(CAN1, CAN_FIFO0, (CanRxMsg *)(&can.CAN_RxMsg));
-    can.rxFrameFlag = true;
+    CanRxMsg msg;                     /* 局部变量: 不再直接写共享缓冲 */
+    uint8_t  addr;
+
+    CAN_Receive(CAN1, CAN_FIFO0, &msg);
+
+    addr = (uint8_t)(msg.ExtId >> 8);
+
+    /* 位置帧 0x36: 全部电机(底盘 EMM 1~4 + 塔吊 X_V2 5/6)都入按地址索引的专用槽
+       can_pos_raw/can_pos_cnt, 不再走共享 rxFrameFlag —— 否则底盘 EMM 命令的 ACK
+       回包会覆盖塔吊电机的 0x36 位置回包, Tower_ReadPos5/6 永久等不到就超时,
+       卡死整个 SIGNALING 任务(云台跟着冻结)。解码在读取侧按电机区分:
+       EMM 是 65536=360°, X_V2 是 ×0.1=度 (见 app_chassis.c / app_tower.c)。 */
+    if (msg.Data[0] == 0x36u && msg.DLC == 7u)
+    {
+        if (addr >= 1u && addr <= MOTOR_ADDR_MAX)
+        {
+            can_pos_raw[addr]  = ((uint32_t)msg.Data[2] << 24) |
+                                 ((uint32_t)msg.Data[3] << 16) |
+                                 ((uint32_t)msg.Data[4] << 8)  |
+                                  (uint32_t)msg.Data[5];
+            can_pos_sign[addr] = msg.Data[1];
+            can_pos_cnt[addr]++;      /* 最后写: 数据就绪标志 */
+        }
+        else
+        {
+            can_rx_drop++;            /* 位置帧地址越界 (0 或 >6) */
+        }
+    }
+    /* 电压回包 0x24: 只收底盘电机1母线电压; 塔吊电机5的 0x24 仍走旧路径 */
+    else if (msg.Data[0] == 0x24u && msg.DLC >= 3u && addr == 1u)
+    {
+        can_vbus_mv   = ((uint16_t)msg.Data[1] << 8) | (uint16_t)msg.Data[2];
+        can_vbus_ok++;
+        can_vbus_flag = 1;            /* 最后置标志 */
+    }
+    else
+    {
+        can.CAN_RxMsg   = msg;        /* 其它帧 (ACK 等): 保留旧 rxFrameFlag 路径 */
+        can.rxFrameFlag = true;
+    }
+
     CAN_ClearITPendingBit(CAN1, CAN_IT_FMP0);
 }

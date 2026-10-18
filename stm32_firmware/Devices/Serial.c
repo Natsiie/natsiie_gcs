@@ -23,6 +23,7 @@ volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 组 xy) �
 volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘微调(corr) 新帧标志 */
 volatile uint8_t Serial_ColorTargetReady = 0;  /* 0x08 颜色目标点 新帧标志 */
 volatile uint8_t Serial_QRReady = 0;           /* 0x06 二维码 新帧标志 */
+volatile uint8_t Serial_VisionCmd = 0;         /* 工作视觉指令(0x04/05/08/09/0C)新帧标志, 供 mission 视觉超时看门狗 */
 
 /* RX 状态机: 0=等帧头 1=收TYPE 2=收LEN 3=收载荷 4=收CRC 5=收帧尾 */
 static uint8_t s_rx_state = 0;
@@ -429,6 +430,7 @@ void Serial_ProcessFrame(void)
 
             /* 通知业务层: corr=底盘微调(底盘); err 是偏移坐标, 由上层按需使用 */
             Serial_ChassisTrimReady = 1;
+            Serial_VisionCmd = 1;
         }
         break;
     }
@@ -456,7 +458,10 @@ void Serial_ProcessFrame(void)
         }
 
         if (Serial_RxData.unload_count > 0)
+        {
             Serial_UnloadCoordReady = 1;
+            Serial_VisionCmd = 1;
+        }
         break;
     }
 
@@ -483,10 +488,11 @@ void Serial_ProcessFrame(void)
             Serial_RxData.target_y_mm = y;
             Serial_RxData.target_z_mm = z;
 
-            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_grab_z_mm 定死; 等 Watch 写 kin_cmd=1 才走 */
-            kin_target_x = x;
-            kin_target_y = y;
+            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_cal.grab_z_mm 定死; 等 Watch 写 kin_flag.cmd=1 才走 */
+            kin_tgt.target_x = x;
+            kin_tgt.target_y = y;
             Serial_ColorTargetReady = 1;   /* 通知 mission: 新颜色目标点已锁存 */
+            Serial_VisionCmd = 1;
         }
         break;
     }
@@ -498,6 +504,7 @@ void Serial_ProcessFrame(void)
         {
             Serial_RxData.grab_cmd = 1;
             grab_cmd = 1;   /* 装货流程: 电机5 从550降到447 下探抓取 */
+            Serial_VisionCmd = 1;
         }
         break;
     }

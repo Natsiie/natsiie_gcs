@@ -1,171 +1,337 @@
 #include "sys.h"
 
 /**
-  * @brief  麦轮底盘控制 (4 × X固件闭环步进, 速度模式)
+  * @brief  麦轮底盘控制 (4 × EMM固件闭环步进, 速度模式)
   *         - 遥控直控: sw[0] 锁定, Rx左右 Ry前后, Lx旋转(速率直控+松杆锁航向)
   *         - 点对点定位: btn0 回原点(0,0) / btn1 沿车头往前, 里程计闭环 P 控 + 陀螺仪锁车头
   *         - 麦轮里程计: 读4轮位置 + 陀螺仪 yaw 航迹推算
-  *         电机地址: 1=BL(后左) 2=BR(后右) 3=FL(前左) 4=FR(前右)
+  *         电机地址: 1=BL(后左) 2=BR(后右) 3=FL(前左) 4=FR(前右); 四轮 EMM 固件, 上电自动使能
   */
 
-/* ================= 底盘测试 (全部变量, Keil Watch 里改) ================= */
-/* chassis_test_mode: 0停止 1前进 2后退 3左移 4右移 5顺时针 6逆时针 */
-uint8_t chassis_test_mode  = 0;
-float   chassis_test_speed = 30.0f;     /* 轮速 RPM */
+/* ================= 底盘打包变量 (Keil Watch 只看 chassis_flag/chassis_cfg/chassis_val) ================= */
+ChassisFlag_t chassis_flag = {
+    .test_mode        = 0,
+    .yaw_enable       = 1,
+    .min_omega_en     = CHASSIS_MIN_OMEGA_EN,
+    .need_sw_unlock   = 1,
+    .rot_prio_en      = CHASSIS_ROT_PRIO_EN,
+    .odom_use_autorep = CHASSIS_AUTOREP_EN,
+    .trim_enable      = 1,
+};
+ChassisCfg_t chassis_cfg = {
+    .test_speed          = 50.0f,    /* 轮速 RPM */
+    .yaw_kp              = CHASSIS_YAW_KP,   /* P (参考 yyb Kp=3.3: 0.6 太弱压不住摩擦卡死) */
+    .yaw_ki              = CHASSIS_YAW_KI,   /* I (参考为0) */
+    .yaw_kd              = CHASSIS_YAW_KD,   /* D: 锁航向不需要 */
+    .yaw_kd_rate         = CHASSIS_YAW_KD_RATE, /* 角速度阻尼 (RPM/(°/s)), 反了取负 */
+    .yaw_damp_max        = CHASSIS_YAW_DAMP_MAX,
+    .yaw_rate_dz         = CHASSIS_YAW_RATE_DZ,
+    .min_omega           = CHASSIS_MIN_OMEGA,
+    .yaw_max_out         = CHASSIS_YAW_MAX_OUT,
+    .yaw_max_i           = CHASSIS_YAW_MAX_I,
+    .yaw_deadzone        = CHASSIS_YAW_DEADZONE,
+    .yaw_iband           = CHASSIS_YAW_IBAND,
+    .yaw_invert          = CHASSIS_YAW_INVERT,
+    .yaw_rate_lpf_alpha  = 0.3f,     /* Gz 低通滤波系数, 越小越平滑但滞后越大; 1=不过滤 */
+    .rc_speed            = 60.0f,    /* 平移轮速上限 RPM */
+    .rc_rotate_rate      = 30.0f,    /* Lx 满杆旋转角速度 RPM */
+    .rc_settle_ms        = 300.0f,   /* 松杆后滑行稳定时间(ms) */
+    .rc_rx_invert        = -1,
+    .rc_ry_invert        = 1,
+    .rc_lx_invert        = 1,
+    .wheel_max           = CHASSIS_WHEEL_MAX,
+    .odom_wheel_radius_mm = 48.5f,   /* 麦轮半径 (mm): 外径97/2 */
+    .odom_gear_ratio     = 1.0f,     /* 减速比, 直驱=1 */
+    .odom_yaw_invert     = 1,
+    .odom_update_cycles  = 5,        /* 每 N 个 10ms 周期更新一次 */
+    .pos_kp              = 0.3f,     /* 位置 P (RPM/mm) */
+    .pos_max_speed       = 90.0f,    /* 定位最大轮速 (RPM) */
+    .pos_deadzone_mm     = 5.0f,    /* 到点死区 (mm) */
+    .pos_fwd_mm          = 1200.0f,  /* btn1 前进距离 (mm) */
+    .trim_gain_x         = 1.0f,
+    .trim_gain_y         = 1.0f,
+    .trim_gain_yaw       = 1.0f,
+    .qr_scan_speed       = 45.0f,    /* 扫码直行轮速 (RPM) */
+    .acc                 = 100,      /* 速度命令加速度档位 0~255 */
+};
+ChassisVal_t chassis_val = {0};   /* 运行状态: 目标/当前朝向, 里程计, 纠偏值, 电压 (全部运行时填) */
 
-/* 陀螺仪偏航修正 (平移时锁车头走直线) */
-uint8_t chassis_yaw_enable = 1;         /* 1=平移时用陀螺仪修正车头 */
-float   chassis_yaw_kp = 1.1f;          /* P (参考 yyb pid_choose=1) */
-float   chassis_yaw_ki = 0.0f;         /* I (参考为0: 死区内才不会有积分残留一直顶) */
-float   chassis_yaw_kd = 0.0f;          /* D: 锁航向不需要; 死区不挡D项, 陀螺仪噪声被放大造成直走左右抖 -> 0 */
-float   chassis_yaw_max_out = 40.0f;    /* 修正量上限 (RPM) */
-float   chassis_yaw_max_i = 30.0f;      /* 积分限幅 */
-float   chassis_yaw_deadzone = 1.5f;    /* 死区 (度): 参考舵轮转向1.0°, 大致到达就行不微调 */
-float   chassis_yaw_iband = 5.0f;       /* 积分区间 (度) */
-int8_t  chassis_yaw_invert = -1;         /* 修正方向反了改 -1 */
-float   chassis_yaw_target = 0.0f;      /* 目标朝向 (只读) */
-float   chassis_yaw_cur = 0.0f;         /* 当前朝向 (只读) */
-float   chassis_yaw_out = 0.0f;         /* 修正输出 RPM (只读) */
+/* Gz 角速度低通滤波: 原始陀螺仪角速度噪声会被 -kd_rate 阻尼项放大, 先滤再阻尼 */
+static Math_LPF_t chassis_yaw_rate_lpf;
+static uint8_t    chassis_yaw_rate_lpf_inited = 0;
+static float Chassis_YawRateFilt(void)
+{
+    if (!chassis_yaw_rate_lpf_inited)
+    {
+        Math_LPF_Init(&chassis_yaw_rate_lpf, chassis_cfg.yaw_rate_lpf_alpha);
+        chassis_yaw_rate_lpf_inited = 1;
+    }
+    chassis_yaw_rate_lpf.alpha = chassis_cfg.yaw_rate_lpf_alpha;  /* 允许 Watch 实时改 */
+    return Math_LPF_Calc(&chassis_yaw_rate_lpf, Imu_GetYawRate());
+}
 
-/* 遥控器直控底盘 (陀螺仪航向保持): sw[0]=0锁定/2解锁, Rx左右 Ry前后, Lx旋转(速率直控+松杆锁航向) */
-float   chassis_rc_speed = 60.0f;       /* 平移轮速上限 RPM */
-float   chassis_rc_rotate_rate = 60.0f; /* Lx 满杆旋转角速度 RPM (跟手: 直接比例) */
-float   chassis_rc_settle_ms = 300.0f; /* 松杆后滑行稳定时间(ms): 车自然停稳再锁航向, 防"回弹" */
-int8_t  chassis_rc_rx_invert = 1;      /* Rx 左右反了 -> 改 -1 */
-int8_t  chassis_rc_ry_invert = 1;      /* Ry 前后反了 -> 改 -1 */
-int8_t  chassis_rc_lx_invert = 1;      /* Lx 旋转反了 -> 改 -1 */
+/* 统一偏航修正 omega = P项 + 阻尼项: 拆出 P项/阻尼项供 VOFA 观测, 并维护
+   chassis_val.yaw_target = 实际传给 PID 的目标 (修遥测 bug: 原地旋转用 chassis_val.rotate_target,
+   不能留旧 chassis_val.yaw_target)。
+   ★ Chassis_YawRateFilt() 每拍只能调一次 (推进 LPF 状态), 遥测处只读 chassis_val.yaw_rate_f 副本, 不得再调。 */
+static float Chassis_YawOmega(PID_Controller_t *pid, float target, float yaw)
+{
+    float rate_f;
+    float damp;
+    float om;
 
-/* 电池电压反馈 (电机1母线电压 = 电池电压, 只读, Keil Watch 里看) */
-float   chassis_vbus = 0.0f;           /* 电池电压 (V) */
+    rate_f = Chassis_YawRateFilt();
+    chassis_val.yaw_p_term = chassis_cfg.yaw_invert * PID_Calc(pid, target, yaw);
 
-/* 麦轮里程计 (读4轮位置 + 陀螺仪 yaw 航迹推算, Keil Watch 里看) */
-float   chassis_odom_wheel_radius_mm = 48.5f;  /* 麦轮半径 (mm): 外径97/2, 5mm联轴器直连 */
-float   chassis_odom_gear_ratio = 1.0f;        /* 减速比, 直驱=1 */
-int8_t  chassis_odom_yaw_invert = 1;           /* yaw 方向反了改 -1 */
-uint16_t chassis_odom_update_cycles = 5;       /* 每 N 个 10ms 周期更新一次 */
-float   chassis_odom_x_mm = 0.0f;              /* 世界坐标 X (mm) */
-float   chassis_odom_y_mm = 0.0f;              /* 世界坐标 Y (mm) */
-float   chassis_odom_yaw_deg = 0.0f;           /* 当前航向 (度) */
-float   chassis_odom_vx_mmps = 0.0f;           /* 车体前进速度 (mm/s) */
-float   chassis_odom_vy_mmps = 0.0f;           /* 车体左移速度 (mm/s) */
+    damp = -chassis_cfg.yaw_kd_rate * rate_f;
+    if (damp >  chassis_cfg.yaw_damp_max) damp =  chassis_cfg.yaw_damp_max;
+    if (damp < -chassis_cfg.yaw_damp_max) damp = -chassis_cfg.yaw_damp_max;
+    if (fabsf(rate_f) < chassis_cfg.yaw_rate_dz) damp = 0.0f;   /* 噪声不进电机 */
 
-/* 点对点定位 (btn0回原点 / btn1往前): 用里程计闭环 P 控 + 陀螺仪锁车头 */
-uint8_t chassis_pos_active = 0;           /* 0=空闲 1=导航中 2=暂停(保留目标, 再按btn继续) */
-float   chassis_pos_target_x_mm = 0.0f;   /* 目标点 X (世界系) */
-float   chassis_pos_target_y_mm = 0.0f;   /* 目标点 Y (世界系) */
-float   chassis_pos_kp = 0.12f;           /* 位置 P (RPM/mm) */
-float   chassis_pos_max_speed = 60.0f;    /* 定位最大轮速 (RPM) */
-float   chassis_pos_deadzone_mm = 15.0f;  /* 到点死区 (mm) */
-float   chassis_pos_fwd_mm = 1200.0f;     /* btn1 前进距离 (mm) */
+    chassis_val.yaw_damp   = damp;
+    chassis_val.yaw_rate_f = rate_f;
+    chassis_val.yaw_target = target;
 
-/* 视觉底盘纠偏 (0x04/0x05): 偏了多少(err) / 要矫正多少(corr) / 是否矫正成功(within) */
-uint8_t chassis_trim_enable = 1;         /* 1=启用视觉底盘纠偏 (测试时 Watch 写 0 关掉) */
-float   chassis_trim_gain_x   = 1.0f;    /* 要矫正多少: corr_x 增益, 可负/调大小, 现场标定 */
-float   chassis_trim_gain_y   = 1.0f;    /* 要矫正多少: corr_y 增益 */
-float   chassis_trim_gain_yaw = 1.0f;    /* 要矫正多少: corr_yaw 增益 */
-float   chassis_trim_err_x   = 0.0f;     /* 偏了多少: 视觉 err_x (mm, 工位平面, 只读) */
-float   chassis_trim_err_y   = 0.0f;     /* 偏了多少: 视觉 err_y (mm) */
-float   chassis_trim_err_yaw = 0.0f;     /* 偏了多少: 视觉 dyaw (deg) */
-float   chassis_trim_corr_x   = 0.0f;    /* 要矫正多少: corr_x * 增益 (mm, 车体系, 只读) */
-float   chassis_trim_corr_y   = 0.0f;    /* 要矫正多少: corr_y * 增益 (mm) */
-float   chassis_trim_corr_yaw = 0.0f;    /* 要矫正多少: corr_yaw * 增益 (deg) */
-uint8_t chassis_trim_within   = 0;       /* 是否矫正成功: 视觉 within (1=已到位, 只读) */
-float   chassis_dock_corr_x = 0.0f;      /* 自动停靠时快照的视觉 corr_x (mm), 供塔吊卸货落点补偿 */
-float   chassis_dock_corr_y = 0.0f;      /* 自动停靠时快照的视觉 corr_y (mm), 供塔吊卸货落点补偿 */
+    /* 最小修正量(默认关): 慢速时 P 要的零点几 RPM 可能小于 EMM 量化台阶 -> 四轮拿到同一整数命令
+       -> 差速 0 -> 不修正。给 omega 一个下限, 保证"决定修就真产生差速"。只动 omega, 不动 vx/vy。 */
+    om = chassis_val.yaw_p_term + damp;
+    if (chassis_flag.min_omega_en && fabsf(om) > 0.01f && fabsf(om) < chassis_cfg.min_omega)
+        om = (om > 0.0f) ? chassis_cfg.min_omega : -chassis_cfg.min_omega;
+    return om;
+}
 
-/* 全自动流程 (mission) 用 */
-uint8_t chassis_rotate_active  = 0;      /* 1=原地旋转中 */
-float   chassis_rotate_target  = 0.0f;   /* 旋转目标 yaw (度, 世界系) */
-uint8_t chassis_qr_scan_active = 0;      /* 1=扫码直行中 */
-float   chassis_qr_scan_speed  = 40.0f;  /* 扫码直行轮速 (RPM) */
-uint8_t chassis_lock           = 0;      /* 1=锁定底盘(忽略视觉纠偏) */
+/* EMM 使能/失能: [addr,0xF3,0xAB,state,snF,0x6B]; 使能=锁轴 失能=松轴 */
+static void Emm_En(uint8_t addr, uint8_t state)
+{
+    uint8_t cmd[6];
+    cmd[0] = addr;
+    cmd[1] = 0xF3;
+    cmd[2] = 0xAB;
+    cmd[3] = state;
+    cmd[4] = 0;      /* snF */
+    cmd[5] = 0x6B;
+    can_SendCmd(cmd, 6);
+}
 
-/* 同步发送 4 轮速度: 先暂存 4 条速度命令到 MMCL 缓冲区, 再 X_V2_Multi_Motor_Cmd(0)
-   广播地址 0 一次性发出, 4 个电机同时收到同一条多机命令 -> 同步动作 */
+/* EMM 速度模式: [addr,0xF6,dir,vel_hi,vel_lo,acc,snF,0x6B]; dir 0=CW 1=CCW
+   snF: 0=立即执行, 1=缓存(暂存到电机, 等同步触发命令一起执行) */
+static void Emm_Vel(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint8_t snF)
+{
+    uint8_t cmd[8];
+    if (vel > 3000) vel = 3000;   /* EMM 速度上限 3000RPM */
+    cmd[0] = addr;
+    cmd[1] = 0xF6;
+    cmd[2] = dir;
+    cmd[3] = (uint8_t)(vel >> 8);
+    cmd[4] = (uint8_t)(vel >> 0);
+    cmd[5] = acc;
+    cmd[6] = snF;
+    cmd[7] = 0x6B;
+    can_SendCmd(cmd, 8);
+}
+
+/* EMM 同步运动触发: [0,0xFF,0x66,0x6B]; 广播地址0, 让所有缓存(snF=1)的命令同时执行 */
+static void Emm_SyncTrigger(void)
+{
+    uint8_t cmd[4];
+    cmd[0] = 0;      /* 广播地址 */
+    cmd[1] = 0xFF;
+    cmd[2] = 0x66;
+    cmd[3] = 0x6B;
+    can_SendCmd(cmd, 4);
+}
+
+/* EMM 定时主动上报位置: [addr,0x11,0x18,0x36,time_hi,time_lo,0x6B]
+   time_ms>0 = 设一次持续生效, 电机每隔 time_ms 主动发一次位置帧 (回包格式同 0x36 读取);
+   time_ms=0 = 停止上报 (手册 5.5.1 示例3)。 */
+static void Emm_AutoReturn_Pos(uint8_t addr, uint16_t time_ms)
+{
+    uint8_t cmd[7];
+    cmd[0] = addr;
+    cmd[1] = 0x11;
+    cmd[2] = 0x18;
+    cmd[3] = 0x36;
+    cmd[4] = (uint8_t)(time_ms >> 8);
+    cmd[5] = (uint8_t)(time_ms >> 0);
+    cmd[6] = 0x6B;
+    can_SendCmd(cmd, 7);
+}
+
+/* 四轮一起使能/失能 (地址 1~4) */
+static void Chassis_EnAll(uint8_t state)
+{
+    Emm_En(1, state);
+    Emm_En(2, state);
+    Emm_En(3, state);
+    Emm_En(4, state);
+}
+
+/* 发送 4 轮速度 (EMM 同步运动): 每轮一条缓存(snF=1)速度命令, 最后广播 0xFF 触发四轮同时执行,
+   起停同步性比逐条立即执行好; 回包 ACK 由中断逐个吃掉, 阻塞读前先清 rxFrameFlag 无冲突 */
 static void Chassis_SendWheels(float w_bl, float w_br, float w_fl, float w_fr)
 {
-    uint8_t dir;
+    Emm_Vel(1, (w_bl < 0) ? 1 : 0, (uint16_t)fabsf(w_bl), chassis_cfg.acc, 1);
+    Emm_Vel(2, (w_br < 0) ? 1 : 0, (uint16_t)fabsf(w_br), chassis_cfg.acc, 1);
+    Emm_Vel(3, (w_fl < 0) ? 1 : 0, (uint16_t)fabsf(w_fl), chassis_cfg.acc, 1);
+    Emm_Vel(4, (w_fr < 0) ? 1 : 0, (uint16_t)fabsf(w_fr), chassis_cfg.acc, 1);
+    Emm_SyncTrigger();
+}
 
-    dir = (w_bl < 0) ? 1 : 0; if (w_bl < 0) w_bl = -w_bl;
-    X_V2_MMCL_Vel_Control(1, dir, 300, w_bl, false);
-    dir = (w_br < 0) ? 1 : 0; if (w_br < 0) w_br = -w_br;
-    X_V2_MMCL_Vel_Control(2, dir, 300, w_br, false);
-    dir = (w_fl < 0) ? 1 : 0; if (w_fl < 0) w_fl = -w_fl;
-    X_V2_MMCL_Vel_Control(3, dir, 300, w_fl, false);
-    dir = (w_fr < 0) ? 1 : 0; if (w_fr < 0) w_fr = -w_fr;
-    X_V2_MMCL_Vel_Control(4, dir, 300, w_fr, false);
+/* 麦轮混控 + 旋转优先限幅 + 四轮同步发。
+   前进=左右反向 平移=前后反向 旋转=四轮同向 (vy 符号由 MECANUM_VY_SIGN 统一控制)。
+   旋转优先: 平移分量每轮最大 |vx|+|vy|, 旋转分量 |omega| 同号加四轮; 二者之和
+   超每轮预算 chassis_cfg.wheel_max 时等比压缩平移、保 omega 全额 —— 高速直行时
+   车头矫正始终有余量不被平移吃掉。chassis_flag.rot_prio_en=0 退回裸混控。 */
+static void Chassis_MixWheels(float vx, float vy, float omega)
+{
+    float w_bl, w_br, w_fl, w_fr;
+    float t, k;
 
-    X_V2_Multi_Motor_Cmd(0);
+    if (chassis_flag.rot_prio_en)
+    {
+        t = fabsf(vx) + fabsf(vy);
+        if (t > 0.0f && t + fabsf(omega) > chassis_cfg.wheel_max)
+        {
+            k = (chassis_cfg.wheel_max - fabsf(omega)) / t;
+            if (k < 0.0f) k = 0.0f;      /* omega 已顶满预算: 平移全让位 */
+            if (k > 1.0f) k = 1.0f;
+            vx *= k;
+            vy *= k;
+        }
+    }
+
+    w_bl =  vx - MECANUM_VY_SIGN * vy + omega;
+    w_br = -vx - MECANUM_VY_SIGN * vy + omega;
+    w_fl =  vx + MECANUM_VY_SIGN * vy + omega;
+    w_fr = -vx + MECANUM_VY_SIGN * vy + omega;
+
+    Chassis_SendWheels(w_bl, w_br, w_fl, w_fr);
 }
 
 /* 读底盘电池电压: 电机1母线电压 (=电池电压, 四轮同一条电源线)
-   回包 Data[0]=0x24, Data[1..2]=16位 mV 大端; 阻塞读一次约 1ms */
+   回包 Data[0]=0x24, Data[1..2]=16位 mV 大端; 用专用标志 can_vbus_flag 等回包 */
 static void Chassis_ReadVBus(void)
 {
-    /* 先清掉速度命令残留的回包 + 标志, 避免读到旧的 ACK 帧 */
-    while (CAN_MessagePending(CAN1, CAN_FIFO0) > 0)
-        CAN_Receive(CAN1, CAN_FIFO0, (CanRxMsg *)&can.CAN_RxMsg);
-    can.rxFrameFlag = false;
-
-    X_V2_Read_Sys_Params(1, S_VBUS);   /* 读电机1电源电压 */
-
+    uint8_t  cmd[3];
     uint32_t t = 0;
-    while (can.rxFrameFlag == false && ++t < 2000000);
-    if (can.rxFrameFlag == false) return;   /* 超时 */
 
-    can.rxFrameFlag = false;
-    if (can.CAN_RxMsg.Data[0] == 0x24)
-    {
-        uint16_t mv = ((uint16_t)can.CAN_RxMsg.Data[1] << 8) |
-                      ((uint16_t)can.CAN_RxMsg.Data[2]);
-        chassis_vbus = mv / 1000.0f;         /* mV -> V */
-    }
+    can_vbus_flag = 0;                        /* 不再清 FIFO、不再用 rxFrameFlag */
+    cmd[0] = 1; cmd[1] = 0x24; cmd[2] = 0x6B;   /* 读电机1电源电压 (EMM) */
+    can_SendCmd(cmd, 3);
+
+    while (can_vbus_flag == 0 && ++t < 2000000);
+    if (can_vbus_flag == 0) return;           /* 超时 */
+
+    chassis_val.vbus = can_vbus_mv / 1000.0f;     /* mV -> V */
 }
 
 /* ================= 麦轮里程计 (BL/BR/FL/FR = 电机 1/2/3/4) ================= */
 static uint8_t chassis_odom_inited = 0;
 static float   chassis_odom_prev_pos[4] = {0.0f, 0.0f, 0.0f, 0.0f}; /* BL BR FL FR 上周期电机角度(度) */
+static uint16_t chassis_odom_prev_cnt[4] = {0, 0, 0, 0}; /* 上一周期各轮上报帧计数 (新鲜度检查用) */
+static uint8_t  chassis_autorep_prev = 0;                 /* 上次 autorep 开关状态 (检测 1->0 跳变, 发关闭命令) */
 
-/* 阻塞读单个电机实时位置(度): 成功写 *pos_deg 返回1, 失败返回0 */
+/* 相对车头航向: 长按 key 时把当前 Imu_GetYaw() 记为车头基准 chassis_val.yaw_ref,
+   之后所有"航向/目标 yaw"都用这个相对值 (0=正前方=车头基准, CCW 为正)。 */
+float Chassis_GetHeading(void)
+{
+    return Math_NormalizeAngle(Imu_GetYaw() - chassis_val.yaw_ref);
+}
+
+/* 建立车头基准: 记录当前 yaw 为 0°, 并清里程计/定位目标, 供长按 key 启动时调用 */
+void Chassis_ResetHeading(void)
+{
+    chassis_val.yaw_ref = Imu_GetYaw();
+    chassis_val.odom_x_mm = 0.0f;
+    chassis_val.odom_y_mm = 0.0f;
+    chassis_val.odom_yaw_deg = 0.0f;
+    chassis_val.odom_vx_mmps = 0.0f;
+    chassis_val.odom_vy_mmps = 0.0f;
+    chassis_odom_inited = 0;   /* 下次里程计更新重新记基准 (prev_pos 重新采样, 不积分) */
+    chassis_val.yaw_target = 0.0f;
+}
+
+/* 工作点视觉纠偏开关: 按位图判断该点是否跳过纠偏 (bit0=物料 bit1=粗码 bit2=暂存) */
+uint8_t Chassis_TrimSkipStation(NavPointId id)
+{
+    if (id == NAV_MATERIAL) return (chassis_flag.trim_skip & 0x01) ? 1 : 0;
+    if (id == NAV_ROUGH)    return (chassis_flag.trim_skip & 0x02) ? 1 : 0;
+    if (id == NAV_STAGING)  return (chassis_flag.trim_skip & 0x04) ? 1 : 0;
+    return 0;
+}
+
+/* 阻塞读单个电机实时位置(度): 成功写 *pos_deg 返回1, 失败返回0
+   EMM 固件: 65536 计数 = 360度 (X 固件是 0.1度, 别混)
+   改为复用 CAN 中断维护的 can_pos_* 数组: 等 can_pos_cnt[addr] 变化 (签名/返回值不变)。
+   autorep 开着时 cnt 会被周期上报推进, 本函数会拿到最新的自动上报值 (预期行为)。 */
 static uint8_t Chassis_Odom_ReadPos(uint8_t addr, float *pos_deg)
 {
-    while (CAN_MessagePending(CAN1, CAN_FIFO0) > 0)
-        CAN_Receive(CAN1, CAN_FIFO0, (CanRxMsg *)&can.CAN_RxMsg);
-    can.rxFrameFlag = false;
+    uint8_t  cmd[3];
+    uint16_t c0 = can_pos_cnt[addr];
+    uint32_t t  = 0;
 
-    X_V2_Read_Sys_Params(addr, S_CPOS);
+    cmd[0] = addr; cmd[1] = 0x36; cmd[2] = 0x6B;   /* 读实时位置 (EMM) */
+    can_SendCmd(cmd, 3);
 
-    uint32_t t = 0;
-    while (can.rxFrameFlag == false && ++t < 2000000);
-    if (can.rxFrameFlag == false) return 0;   /* 超时 */
-    can.rxFrameFlag = false;
+    while (can_pos_cnt[addr] == c0 && ++t < 2000000) { }   /* 等 cnt 变化 */
+    if (can_pos_cnt[addr] == c0) return 0;                 /* 超时 */
 
-    if (can.CAN_RxMsg.Data[0] == 0x36 && can.CAN_RxMsg.DLC == 7)
-    {
-        uint32_t mag = ((uint32_t)can.CAN_RxMsg.Data[2] << 24) |
-                       ((uint32_t)can.CAN_RxMsg.Data[3] << 16) |
-                       ((uint32_t)can.CAN_RxMsg.Data[4] << 8)  |
-                       ((uint32_t)can.CAN_RxMsg.Data[5]);
-        float p = (float)mag * 0.1f;          /* 0.1度 分辨率 */
-        if (can.CAN_RxMsg.Data[1]) p = -p;    /* Data[1]=1 为负 */
-        *pos_deg = p;
-        return 1;
-    }
-    return 0;
+    *pos_deg = (float)can_pos_raw[addr] * 360.0f / 65536.0f;   /* EMM: 65536 = 360° */
+    if (can_pos_sign[addr]) *pos_deg = -*pos_deg;
+    return 1;
 }
 
 static void Chassis_Odom_Update(void)
 {
     float pos[4], new_pos, yaw_deg;
+    uint8_t fresh, k;
+    uint16_t cnt;
 
-    /* 读 4 轮位置 (电机地址和 Chassis_SendWheels 一致: 1=BL 2=BR 3=FL 4=FR; 失败保持旧值) */
-    if (Chassis_Odom_ReadPos(1, &new_pos)) pos[0] = new_pos; else pos[0] = chassis_odom_prev_pos[0];
-    if (Chassis_Odom_ReadPos(2, &new_pos)) pos[1] = new_pos; else pos[1] = chassis_odom_prev_pos[1];
-    if (Chassis_Odom_ReadPos(3, &new_pos)) pos[2] = new_pos; else pos[2] = chassis_odom_prev_pos[2];
-    if (Chassis_Odom_ReadPos(4, &new_pos)) pos[3] = new_pos; else pos[3] = chassis_odom_prev_pos[3];
+    /* autorep 1->0 跳变: 发 time_ms=0 关掉电机定时上报, 否则退回阻塞读会被上报帧干扰 */
+    if (!chassis_flag.odom_use_autorep && chassis_autorep_prev)
+    {
+        Emm_AutoReturn_Pos(1, 0);
+        Emm_AutoReturn_Pos(2, 0);
+        Emm_AutoReturn_Pos(3, 0);
+        Emm_AutoReturn_Pos(4, 0);
+    }
+    chassis_autorep_prev = chassis_flag.odom_use_autorep;
 
-    yaw_deg = Imu_GetYaw();
-    chassis_odom_yaw_deg = yaw_deg;
+    if (chassis_flag.odom_use_autorep)
+    {
+        /* 每次更新重发上膛命令(幂等): 电机上电早于本命令 / 中途掉电重启, 下一拍自动补上 */
+        Emm_AutoReturn_Pos(1, CHASSIS_AUTOREP_MS);
+        Emm_AutoReturn_Pos(2, CHASSIS_AUTOREP_MS);
+        Emm_AutoReturn_Pos(3, CHASSIS_AUTOREP_MS);
+        Emm_AutoReturn_Pos(4, CHASSIS_AUTOREP_MS);
+
+        /* 新鲜度检查: 任一轮本周期没收到新帧 -> 数据不齐, 整拍跳过不积分 (防丢帧算出假位移) */
+        fresh = 1;
+        for (k = 0; k < 4; k++)
+        {
+            cnt = can_pos_cnt[k + 1];
+            if (cnt == chassis_odom_prev_cnt[k]) fresh = 0;
+            chassis_odom_prev_cnt[k] = cnt;
+        }
+        if (!fresh) return;
+
+        for (k = 0; k < 4; k++)
+        {
+            pos[k] = (float)can_pos_raw[k + 1] * 360.0f / 65536.0f;
+            if (can_pos_sign[k + 1]) pos[k] = -pos[k];
+        }
+    }
+    else
+    {
+        /* 旧路径: 读 4 轮位置 (电机地址和 Chassis_SendWheels 一致: 1=BL 2=BR 3=FL 4=FR; 失败保持旧值) */
+        if (Chassis_Odom_ReadPos(1, &new_pos)) pos[0] = new_pos; else pos[0] = chassis_odom_prev_pos[0];
+        if (Chassis_Odom_ReadPos(2, &new_pos)) pos[1] = new_pos; else pos[1] = chassis_odom_prev_pos[1];
+        if (Chassis_Odom_ReadPos(3, &new_pos)) pos[2] = new_pos; else pos[2] = chassis_odom_prev_pos[2];
+        if (Chassis_Odom_ReadPos(4, &new_pos)) pos[3] = new_pos; else pos[3] = chassis_odom_prev_pos[3];
+    }
+
+    yaw_deg = Chassis_GetHeading();
+    chassis_val.odom_yaw_deg = yaw_deg;
 
     if (!chassis_odom_inited)
     {
@@ -175,7 +341,7 @@ static void Chassis_Odom_Update(void)
     }
 
     /* 电机角增量(度) -> 轮弧长(mm) */
-    float scale = chassis_odom_wheel_radius_mm * (MATH_PI / 180.0f) / chassis_odom_gear_ratio;
+    float scale = chassis_cfg.odom_wheel_radius_mm * (MATH_PI / 180.0f) / chassis_cfg.odom_gear_ratio;
     float d_bl = (pos[0] - chassis_odom_prev_pos[0]) * scale;
     float d_br = (pos[1] - chassis_odom_prev_pos[1]) * scale;
     float d_fl = (pos[2] - chassis_odom_prev_pos[2]) * scale;
@@ -185,21 +351,21 @@ static void Chassis_Odom_Update(void)
 
     /* 正运动学 (逆解反函数): a=BL b=BR c=FL d=FR
        vx = (a - b + c - d) / 4   前进
-       vy = (a + b + c + d) / 4   左移 */
+       vy = MECANUM_VY_SIGN * (-a - b + c + d) / 4   左移 */
     float dx_robot = (d_bl - d_br + d_fl - d_fr) / 4.0f;
-    float dy_robot = (d_bl + d_br + d_fl + d_fr) / 4.0f;
+    float dy_robot = MECANUM_VY_SIGN * (-d_bl - d_br + d_fl + d_fr) / 4.0f;
 
     /* 车体系 -> 世界系 (陀螺仪 yaw 作航向) */
-    float yaw_rad = chassis_odom_yaw_invert * yaw_deg * (MATH_PI / 180.0f);
+    float yaw_rad = chassis_cfg.odom_yaw_invert * yaw_deg * (MATH_PI / 180.0f);
     float c = cosf(yaw_rad), s = sinf(yaw_rad);
-    chassis_odom_x_mm += dx_robot * c - dy_robot * s;
-    chassis_odom_y_mm += dx_robot * s + dy_robot * c;
+    chassis_val.odom_x_mm += dx_robot * c - dy_robot * s;
+    chassis_val.odom_y_mm += dx_robot * s + dy_robot * c;
 
-    /* 车体速度 (mm/s): 周期 = chassis_odom_update_cycles * 10ms */
-    float cyc = (chassis_odom_update_cycles > 0) ? (float)chassis_odom_update_cycles : 1.0f;
+    /* 车体速度 (mm/s): 周期 = chassis_cfg.odom_update_cycles * 10ms */
+    float cyc = (chassis_cfg.odom_update_cycles > 0) ? (float)chassis_cfg.odom_update_cycles : 1.0f;
     float dt_s = (10.0f * cyc) / 1000.0f;
-    chassis_odom_vx_mmps = dx_robot / dt_s;
-    chassis_odom_vy_mmps = dy_robot / dt_s;
+    chassis_val.odom_vx_mmps = dx_robot / dt_s;
+    chassis_val.odom_vy_mmps = dy_robot / dt_s;
 }
 
 /* 底盘用懒初始化: 偏航 PID / 里程计基准在任务首次进入时自动建立, 上电无需额外动作 */
@@ -217,78 +383,77 @@ void App_Chassis_Init(void)
 void Chassis_ApplyVisionTrim(void)
 {
     /* 可观测: 偏了多少 / 要矫正多少(含增益) / 是否矫正成功 */
-    chassis_trim_err_x   = Serial_RxData.ring_err_x;
-    chassis_trim_err_y   = Serial_RxData.ring_err_y;
-    chassis_trim_err_yaw = Serial_RxData.ring_ang_err;
-    chassis_trim_corr_x   = chassis_trim_gain_x   * Serial_RxData.ring_corr_x;
-    chassis_trim_corr_y   = chassis_trim_gain_y   * Serial_RxData.ring_corr_y;
-    chassis_trim_corr_yaw = chassis_trim_gain_yaw * Serial_RxData.ring_corr_yaw;
-    chassis_trim_within   = Serial_RxData.ring_within;
+    chassis_val.trim_err_x   = Serial_RxData.ring_err_x;
+    chassis_val.trim_err_y   = Serial_RxData.ring_err_y;
+    chassis_val.trim_err_yaw = Serial_RxData.ring_ang_err;
+    chassis_val.trim_corr_x   = chassis_cfg.trim_gain_x   * Serial_RxData.ring_corr_x;
+    chassis_val.trim_corr_y   = chassis_cfg.trim_gain_y   * Serial_RxData.ring_corr_y;
+    chassis_val.trim_corr_yaw = chassis_cfg.trim_gain_yaw * Serial_RxData.ring_corr_yaw;
+    chassis_flag.trim_within   = Serial_RxData.ring_within;
 
-    if (chassis_trim_within) return;   /* 已在容差内(矫正成功), 不再纠偏 */
+    if (chassis_flag.trim_within) return;   /* 已在容差内(矫正成功), 不再纠偏 */
 
     {
-        float yaw = Imu_GetYaw();
-        float th  = chassis_odom_yaw_invert * yaw * (MATH_PI / 180.0f);
+        float yaw = Chassis_GetHeading();
+        float th  = chassis_cfg.odom_yaw_invert * yaw * (MATH_PI / 180.0f);
         float c = cosf(th), s = sinf(th);
 
         /* 视觉 corr 坐标系与里程计车体系差 90°: corr_x+ = 里程计 y+(左), corr_y+ = 里程计 x-(后)。
          * 先换成里程计车体分量(前/左), 再旋转到世界系 (与里程计车体->世界同一旋转)。 */
-        float bx = -chassis_trim_corr_y;   /* 车体前进分量 (corr_y+ -> x-) */
-        float by =  chassis_trim_corr_x;   /* 车体左移分量 (corr_x+ -> y+) */
+        float bx = -chassis_val.trim_corr_y;   /* 车体前进分量 (corr_y+ -> x-) */
+        float by =  chassis_val.trim_corr_x;   /* 车体左移分量 (corr_x+ -> y+) */
 
-        chassis_pos_target_x_mm = chassis_odom_x_mm + (bx * c - by * s);
-        chassis_pos_target_y_mm = chassis_odom_y_mm + (bx * s + by * c);
-        chassis_yaw_target      = yaw + chassis_trim_corr_yaw;
-        chassis_pos_active = 1;   /* 再定位到修正后目标 */
+        chassis_val.pos_target_x_mm = chassis_val.odom_x_mm + (bx * c - by * s);
+        chassis_val.pos_target_y_mm = chassis_val.odom_y_mm + (bx * s + by * c);
+        chassis_val.yaw_target      = yaw + chassis_val.trim_corr_yaw;
+        chassis_flag.pos_active = 1;   /* 再定位到修正后目标 */
     }
 }
 
 /**
   * @brief  原地旋转到世界系 yaw (mission 用): 设目标, 底盘任务里 PID 转到位后清 active
-  *         转完后点对点继续用该 yaw 锁车头 (chassis_yaw_target 一并更新)。
+  *         转完后点对点继续用该 yaw 锁车头 (chassis_val.yaw_target 一并更新)。
   */
 void Chassis_RotateTo(float yaw_deg)
 {
-    chassis_rotate_target = yaw_deg;
-    chassis_yaw_target    = yaw_deg;
-    chassis_rotate_active = 1;
+    chassis_val.rotate_target = yaw_deg;
+    chassis_val.yaw_target    = yaw_deg;
+    chassis_flag.rotate_active = 1;
 }
 
 /**
-  * @brief  底盘单项测试: 按 chassis_test_mode 跑 前进/后退/左右平移 + 顺逆时针旋转
+  * @brief  底盘单项测试: 按 chassis_flag.test_mode 跑 前进/后退/左右平移 + 顺逆时针旋转
   *         平移(1~4)时用陀螺仪偏航 PID 锁车头走直线
   */
 void App_Chassis_Test_Task(void)
 {
     static PID_Controller_t yaw_pid;
     static uint8_t yaw_pid_inited = 0;
-    float s = chassis_test_speed;
+    float s = chassis_cfg.test_speed;
     float vx = 0, vy = 0, base_omega = 0;
     float yaw, yaw_corr, omega;
-    float w_bl, w_br, w_fl, w_fr;
 
     yaw = Imu_GetYaw();
-    chassis_yaw_cur = yaw;
+    chassis_val.yaw_cur = yaw;
 
     /* PID 初始化(一次) + 每周期把 Watch 里的增益同步进 PID */
     if (!yaw_pid_inited)
     {
-        PID_Init(&yaw_pid, chassis_yaw_kp, chassis_yaw_ki, chassis_yaw_kd,
-                 chassis_yaw_max_out, chassis_yaw_max_i,
-                 chassis_yaw_deadzone, chassis_yaw_iband, 0.5f, 1);   /* is_angle_loop=1 */
+        PID_Init(&yaw_pid, chassis_cfg.yaw_kp, chassis_cfg.yaw_ki, chassis_cfg.yaw_kd,
+                 chassis_cfg.yaw_max_out, chassis_cfg.yaw_max_i,
+                 chassis_cfg.yaw_deadzone, chassis_cfg.yaw_iband, 0.5f, 1);   /* is_angle_loop=1 */
         yaw_pid_inited = 1;
     }
-    yaw_pid.Kp = chassis_yaw_kp;
-    yaw_pid.Ki = chassis_yaw_ki;
-    yaw_pid.Kd = chassis_yaw_kd;
-    yaw_pid.max_out = chassis_yaw_max_out;
-    yaw_pid.max_i = chassis_yaw_max_i;
-    yaw_pid.deadzone = chassis_yaw_deadzone;
-    yaw_pid.i_band = chassis_yaw_iband;
+    yaw_pid.Kp = chassis_cfg.yaw_kp;
+    yaw_pid.Ki = chassis_cfg.yaw_ki;
+    yaw_pid.Kd = chassis_cfg.yaw_kd;
+    yaw_pid.max_out = chassis_cfg.yaw_max_out;
+    yaw_pid.max_i = chassis_cfg.yaw_max_i;
+    yaw_pid.deadzone = chassis_cfg.yaw_deadzone;
+    yaw_pid.i_band = chassis_cfg.yaw_iband;
 
-    /* 速度分量 (按实测映射: 前进=左右反向, 平移=四轮同向, 旋转=前后反向) */
-    switch (chassis_test_mode)
+    /* 速度分量 (按实测映射: 前进=左右反向, 平移=前后反向, 旋转=四轮同向) */
+    switch (chassis_flag.test_mode)
     {
     case 1: vx =  s; break;            /* 前进 */
     case 2: vx = -s; break;            /* 后退 */
@@ -301,29 +466,23 @@ void App_Chassis_Test_Task(void)
     }
 
     /* 停止时锁当前朝向 + 清 PID 积分 */
-    if (chassis_test_mode == 0)
+    if (chassis_flag.test_mode == 0)
     {
-        chassis_yaw_target = yaw;
+        chassis_val.yaw_target = yaw;
         PID_Clear(&yaw_pid);
     }
 
     /* 平移(1~4)时用陀螺仪修正车头; 旋转(5/6)不修正 */
     yaw_corr = 0;
-    if (chassis_test_mode >= 1 && chassis_test_mode <= 4 && chassis_yaw_enable)
+    if (chassis_flag.test_mode >= 1 && chassis_flag.test_mode <= 4 && chassis_flag.yaw_enable)
     {
-        yaw_corr = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_yaw_target, yaw);
+        yaw_corr = chassis_cfg.yaw_invert * PID_Calc(&yaw_pid, chassis_val.yaw_target, yaw);
     }
-    chassis_yaw_out = yaw_corr;
+    chassis_val.yaw_out = yaw_corr;
 
     omega = base_omega + yaw_corr;
 
-    /* 麦轮逆运动学 (实测标定): w_bl=+vx+vy+w  w_br=-vx+vy+w  w_fl=+vx+vy-w  w_fr=-vx+vy-w */
-    w_bl =  vx + vy + omega;
-    w_br = -vx + vy + omega;
-    w_fl =  vx + vy - omega;
-    w_fr = -vx + vy - omega;
-
-    Chassis_SendWheels(w_bl, w_br, w_fl, w_fr);   /* 四轮同步发 */
+    Chassis_MixWheels(vx, vy, omega);   /* 混控 + 旋转优先限幅 + 四轮同步发 */
 }
 
 /**
@@ -338,77 +497,91 @@ void App_Chassis_Task(void)
     static uint16_t vbus_tick = 0;
     static uint8_t  qr_armed = 0;    /* 扫码直行: 首次进入捕获车头朝向 */
     static uint8_t  rot_armed = 0;   /* 原地旋转: 首次进入清 PID 积分 */
+    static uint8_t  s_en_prev = 0;       /* 初始与 chassis_flag.en 一致, 避免上电误触发 */
+    static uint16_t s_en_boot_tick = 0;
+    static uint8_t  s_en_boot_done = 0;
     float vx, vy, omega, yaw;
-    float w_bl, w_br, w_fl, w_fr;
 
-    /* 每 chassis_odom_update_cycles 个 10ms 周期更新一次里程计 (读4轮位置, 约2-4ms) */
-    if (++odom_tick >= chassis_odom_update_cycles)
+    /* 四轮使能: 上电前 1 秒每拍重发一次, 确保电机就绪后一定被使能; 之后按 chassis_flag.en 跳变发 */
+    if (!s_en_boot_done)
+    {
+        Chassis_EnAll(chassis_flag.en ? 1 : 0);
+        if (++s_en_boot_tick >= 100)
+        {
+            s_en_boot_done = 1;
+            s_en_prev = chassis_flag.en;   /* 结束重发时同步, 避免紧接着误触发一次 */
+        }
+    }
+    else if (chassis_flag.en != s_en_prev)
+    {
+        s_en_prev = chassis_flag.en;
+        Chassis_EnAll(chassis_flag.en ? 1 : 0);
+    }
+
+    /* 每 chassis_cfg.odom_update_cycles 个 10ms 周期更新一次里程计 (读4轮位置, 约2-4ms) */
+    if (++odom_tick >= chassis_cfg.odom_update_cycles)
     {
         odom_tick = 0;
         Chassis_Odom_Update();
     }
 
-    /* 读陀螺仪 */
-    yaw = Imu_GetYaw();
-    chassis_yaw_cur = yaw;
+    /* 读陀螺仪 (相对车头航向) */
+    yaw = Chassis_GetHeading();
+    chassis_val.yaw_cur = yaw;
 
     /* PID 初始化一次 + 每周期同步 Watch 增益 */
     if (!yaw_pid_inited)
     {
-        PID_Init(&yaw_pid, chassis_yaw_kp, chassis_yaw_ki, chassis_yaw_kd,
-                 chassis_yaw_max_out, chassis_yaw_max_i,
-                 chassis_yaw_deadzone, chassis_yaw_iband, 0.5f, 1);  /* is_angle_loop=1 */
-        chassis_yaw_target = yaw;
+        PID_Init(&yaw_pid, chassis_cfg.yaw_kp, chassis_cfg.yaw_ki, chassis_cfg.yaw_kd,
+                 chassis_cfg.yaw_max_out, chassis_cfg.yaw_max_i,
+                 chassis_cfg.yaw_deadzone, chassis_cfg.yaw_iband, 0.5f, 1);  /* is_angle_loop=1 */
+        chassis_val.yaw_target = yaw;
         yaw_pid_inited = 1;
     }
-    yaw_pid.Kp = chassis_yaw_kp;
-    yaw_pid.Ki = chassis_yaw_ki;
-    yaw_pid.Kd = chassis_yaw_kd;
-    yaw_pid.max_out = chassis_yaw_max_out;
-    yaw_pid.max_i = chassis_yaw_max_i;
-    yaw_pid.deadzone = chassis_yaw_deadzone;
-    yaw_pid.i_band = chassis_yaw_iband;
+    yaw_pid.Kp = chassis_cfg.yaw_kp;
+    yaw_pid.Ki = chassis_cfg.yaw_ki;
+    yaw_pid.Kd = chassis_cfg.yaw_kd;
+    yaw_pid.max_out = chassis_cfg.yaw_max_out;
+    yaw_pid.max_i = chassis_cfg.yaw_max_i;
+    yaw_pid.deadzone = chassis_cfg.yaw_deadzone;
+    yaw_pid.i_band = chassis_cfg.yaw_iband;
 
     /* 锁定: sw[0] != 2 (含中间档1) 或失联 -> 停 4 轮 + 锁当前朝向 + 清积分
        定位中则转"暂停"(保留目标): 手动定位解锁后需再按 btn0/btn1, 全程导航解锁后自动继续 */
-    if (ELRS_RC.sw[0] != 2 || !ELRS_RC.online)
+    if (chassis_flag.need_sw_unlock && (ELRS_RC.sw[0] != 2 || !ELRS_RC.online))
     {
-        if (chassis_pos_active == 1) chassis_pos_active = 2;   /* 定位 -> 暂停 */
-        chassis_yaw_target = yaw;
+        if (chassis_flag.pos_active == 1) chassis_flag.pos_active = 2;   /* 定位 -> 暂停 */
+        chassis_val.yaw_target = yaw;
         PID_Clear(&yaw_pid);
         Chassis_SendWheels(0, 0, 0, 0);
         return;
     }
 
     /* 扫码直行 (mission): 沿当前车头锁航向直行, 覆盖导航/纠偏/遥控 */
-    if (chassis_qr_scan_active)
+    if (chassis_flag.qr_scan_active)
     {
-        if (!qr_armed) { qr_armed = 1; chassis_yaw_target = yaw; PID_Clear(&yaw_pid); }
-        vx = chassis_qr_scan_speed;
+        if (!qr_armed) { qr_armed = 1; chassis_val.yaw_target = yaw; PID_Clear(&yaw_pid); }
+        vx = chassis_cfg.qr_scan_speed;
         vy = 0.0f;
-        omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_yaw_target, yaw);
-        w_bl =  vx + vy + omega;
-        w_br = -vx + vy + omega;
-        w_fl =  vx + vy - omega;
-        w_fr = -vx + vy - omega;
-        Chassis_SendWheels(w_bl, w_br, w_fl, w_fr);
+        omega = Chassis_YawOmega(&yaw_pid, chassis_val.yaw_target, yaw);
+        Chassis_MixWheels(vx, vy, omega);
         return;
     }
     qr_armed = 0;
 
     /* 原地旋转 (mission): 只转 yaw, 到位退出 (world yaw, 与 Imu 同系) */
-    if (chassis_rotate_active)
+    if (chassis_flag.rotate_active)
     {
         if (!rot_armed) { rot_armed = 1; PID_Clear(&yaw_pid); }
-        if (fabsf(chassis_rotate_target - yaw) <= chassis_yaw_deadzone)
+        if (fabsf(Math_NormalizeAngle(chassis_val.rotate_target - yaw)) <= chassis_cfg.yaw_deadzone)
         {
-            chassis_rotate_active = 0;
+            chassis_flag.rotate_active = 0;
             Chassis_SendWheels(0, 0, 0, 0);
         }
         else
         {
-            omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_rotate_target, yaw);
-            Chassis_SendWheels(omega, omega, -omega, -omega);
+            omega = Chassis_YawOmega(&yaw_pid, chassis_val.rotate_target, yaw);
+            Chassis_SendWheels(omega, omega, omega, omega);
         }
         return;
     }
@@ -418,8 +591,8 @@ void App_Chassis_Task(void)
     Nav_Update();
 
     /* 视觉底盘纠偏: 收到 0x04/0x05 帧 -> 更新偏了多少/要矫正多少/是否成功, 未到位则纠偏
-       (底盘锁定 chassis_lock=1 时忽略, 塔吊作业期间不再纠偏) */
-    if (chassis_trim_enable && !chassis_lock && !nav_test_active && Serial_ChassisTrimReady)
+       (底盘锁定 chassis_flag.lock=1 时忽略, 塔吊作业期间不再纠偏) */
+    if (chassis_flag.trim_enable && !chassis_flag.lock && !nav_test_active && !Chassis_TrimSkipStation(nav_at_point) && Serial_ChassisTrimReady)
     {
         Serial_ChassisTrimReady = 0;
         Chassis_ApplyVisionTrim();
@@ -432,110 +605,120 @@ void App_Chassis_Task(void)
 
         if (ELRS_RC.btns[0] && !last_btn0)
         {
-            chassis_pos_target_x_mm = 0.0f;
-            chassis_pos_target_y_mm = 0.0f;
-            chassis_pos_active = 1;
-            chassis_yaw_target = yaw;         /* 定位期间锁当前车头朝向 */
+            chassis_val.pos_target_x_mm = 0.0f;
+            chassis_val.pos_target_y_mm = 0.0f;
+            chassis_flag.pos_active = 1;
+            chassis_val.yaw_target = yaw;         /* 定位期间锁当前车头朝向 */
             PID_Clear(&yaw_pid);
         }
         if (ELRS_RC.btns[1] && !last_btn1)
         {
-            /* 暂停中再按 -> 恢复原目标继续; 否则新目标: 沿当前车头往前 chassis_pos_fwd_mm */
-            if (chassis_pos_active != 2)
+            /* 暂停中再按 -> 恢复原目标继续; 否则新目标: 沿当前车头往前 chassis_cfg.pos_fwd_mm */
+            if (chassis_flag.pos_active != 2)
             {
-                float th = chassis_odom_yaw_invert * yaw * (MATH_PI / 180.0f);
-                chassis_pos_target_x_mm = chassis_odom_x_mm + chassis_pos_fwd_mm * cosf(th);
-                chassis_pos_target_y_mm = chassis_odom_y_mm + chassis_pos_fwd_mm * sinf(th);
+                float th = chassis_cfg.odom_yaw_invert * yaw * (MATH_PI / 180.0f);
+                chassis_val.pos_target_x_mm = chassis_val.odom_x_mm + chassis_cfg.pos_fwd_mm * cosf(th);
+                chassis_val.pos_target_y_mm = chassis_val.odom_y_mm + chassis_cfg.pos_fwd_mm * sinf(th);
             }
-            chassis_pos_active = 1;
-            chassis_yaw_target = yaw;
+            chassis_flag.pos_active = 1;
+            chassis_val.yaw_target = yaw;
             PID_Clear(&yaw_pid);
         }
         last_btn0 = ELRS_RC.btns[0];
         last_btn1 = ELRS_RC.btns[1];
     }
 
-    if (chassis_pos_active == 1)
+    if (chassis_flag.pos_active == 1)
     {
         /* 点对点定位: 里程计闭环 P 控, 航向 PID 锁死 (世界系误差 -> 车体系) */
-        float ex = chassis_pos_target_x_mm - chassis_odom_x_mm;
-        float ey = chassis_pos_target_y_mm - chassis_odom_y_mm;
-        float th = chassis_odom_yaw_invert * yaw * (MATH_PI / 180.0f);
+        float ex = chassis_val.pos_target_x_mm - chassis_val.odom_x_mm;
+        float ey = chassis_val.pos_target_y_mm - chassis_val.odom_y_mm;
+        float th = chassis_cfg.odom_yaw_invert * yaw * (MATH_PI / 180.0f);
         float ef =  ex * cosf(th) + ey * sinf(th);   /* 前进方向误差 */
         float el = -ex * sinf(th) + ey * cosf(th);   /* 左移方向误差 */
 
-        vx = chassis_pos_kp * ef;
-        vy = chassis_pos_kp * el;
-        if (vx >  chassis_pos_max_speed) vx =  chassis_pos_max_speed;
-        if (vx < -chassis_pos_max_speed) vx = -chassis_pos_max_speed;
-        if (vy >  chassis_pos_max_speed) vy =  chassis_pos_max_speed;
-        if (vy < -chassis_pos_max_speed) vy = -chassis_pos_max_speed;
+        vx = chassis_cfg.pos_kp * ef;
+        vy = chassis_cfg.pos_kp * el;
+        if (vx >  chassis_cfg.pos_max_speed) vx =  chassis_cfg.pos_max_speed;
+        if (vx < -chassis_cfg.pos_max_speed) vx = -chassis_cfg.pos_max_speed;
+        if (vy >  chassis_cfg.pos_max_speed) vy =  chassis_cfg.pos_max_speed;
+        if (vy < -chassis_cfg.pos_max_speed) vy = -chassis_cfg.pos_max_speed;
 
         /* 到点: 前进/左移误差都进死区 -> 停 + 退出定位 */
-        if (fabsf(ef) < chassis_pos_deadzone_mm && fabsf(el) < chassis_pos_deadzone_mm)
+        if (fabsf(ef) < chassis_cfg.pos_deadzone_mm && fabsf(el) < chassis_cfg.pos_deadzone_mm)
         {
-            chassis_pos_active = 0;
-            chassis_dock_corr_x = Serial_RxData.ring_corr_x;   /* 自动停靠: 快照视觉 corr, 给塔吊卸货补进落点 */
-            chassis_dock_corr_y = Serial_RxData.ring_corr_y;
+            chassis_flag.pos_active = 0;
+            chassis_val.dock_corr_x = Serial_RxData.ring_corr_x;   /* 自动停靠: 快照视觉 corr, 给塔吊卸货补进落点 */
+            chassis_val.dock_corr_y = Serial_RxData.ring_corr_y;
             vx = 0.0f;
             vy = 0.0f;
         }
 
-        omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_yaw_target, yaw);
+        omega = Chassis_YawOmega(&yaw_pid, chassis_val.yaw_target, yaw);
     }
-    else if (chassis_lock)
+    else if (chassis_flag.lock)
     {
         /* 塔吊作业锁底盘: 忽略遥控, 停 4 轮保持原位 (防作业时误动) */
         vx = 0.0f;
         vy = 0.0f;
         omega = 0.0f;
-        chassis_yaw_target = yaw;
+        chassis_val.yaw_target = yaw;
         PID_Clear(&yaw_pid);
     }
     else
     {
-        /* 平移速度 */
-        vx = chassis_rc_ry_invert * ELRS_RC.Ry * chassis_rc_speed;   /* 前进 + */
-        vy = -chassis_rc_rx_invert * ELRS_RC.Rx * chassis_rc_speed;  /* 左移 + (Rx 右为正) */
+        /* 平移速度: 摇杆前/左先当"世界系"速度, 需要时再旋回车体系 */
+        {
+            float vx_w =  chassis_cfg.rc_ry_invert * ELRS_RC.Ry * chassis_cfg.rc_speed;  /* 世界前进 +X */
+            float vy_w = -chassis_cfg.rc_rx_invert * ELRS_RC.Rx * chassis_cfg.rc_speed;  /* 世界左移 +Y */
+            if (chassis_flag.rc_field_orient)
+            {
+                /* 世界系 -> 车体系 (与点对点定位 ef/el 同款 R(-th)):
+                   推杆向前 = 朝世界 +X 走, 不管车头朝哪; 方向反了把 chassis_cfg.odom_yaw_invert 取反 */
+                float th = chassis_cfg.odom_yaw_invert * yaw * (MATH_PI / 180.0f);
+                vx =  vx_w * cosf(th) + vy_w * sinf(th);   /* 车体前进 */
+                vy = -vx_w * sinf(th) + vy_w * cosf(th);   /* 车体左移 */
+            }
+            else
+            {
+                vx = vx_w;   /* 车体系直控 (原行为) */
+                vy = vy_w;
+            }
+        }
 
         /* Lx 旋转: 摇杆直接比例控角速度 (跟手); 松杆后先滑行停稳, 再 PID 锁航向 */
         {
-            float lx = chassis_rc_lx_invert * ELRS_RC.Lx;
+            float lx = chassis_cfg.rc_lx_invert * ELRS_RC.Lx;
             static uint16_t settle_tick = 0;
-            uint16_t settle_max = (uint16_t)(chassis_rc_settle_ms / 10.0f);
+            uint16_t settle_max = (uint16_t)(chassis_cfg.rc_settle_ms / 10.0f);
 
             if (fabsf(lx) > 0.05f)
             {
                 /* 摇杆在动: 直接速率控制 (跟手) */
                 settle_tick = 0;
-                chassis_yaw_target = yaw;
+                chassis_val.yaw_target = yaw;
                 PID_Clear(&yaw_pid);
-                omega = lx * chassis_rc_rotate_rate;
+                omega = lx * chassis_cfg.rc_rotate_rate;
             }
             else if (settle_tick < settle_max)
             {
                 /* 摇杆刚回中: 目标跟随车头滑行停稳, 不加修正 -> 不"回弹" */
                 settle_tick++;
-                chassis_yaw_target = yaw;
+                chassis_val.yaw_target = yaw;
                 PID_Clear(&yaw_pid);
                 omega = 0.0f;
             }
             else
             {
-                /* 停稳后: 陀螺仪 PID 锁住当前航向 (死区内自动停) */
-                omega = chassis_yaw_invert * PID_Calc(&yaw_pid, chassis_yaw_target, yaw);
+                /* 停稳后: 陀螺仪 PID 锁住当前航向 (P死区) + Gz 角速度阻尼 (消左右晃)
+                   阻尼项 -kd_rate*yaw_rate 反了(越修越晃/发散)就把 chassis_cfg.yaw_kd_rate 取负 */
+                omega = Chassis_YawOmega(&yaw_pid, chassis_val.yaw_target, yaw);
             }
         }
     }
-    chassis_yaw_out = omega;
+    chassis_val.yaw_out = omega;
 
-    /* 麦轮逆运动学 (实测标定): w_bl=+vx+vy+w  w_br=-vx+vy+w  w_fl=+vx+vy-w  w_fr=-vx+vy-w */
-    w_bl =  vx + vy + omega;
-    w_br = -vx + vy + omega;
-    w_fl =  vx + vy - omega;
-    w_fr = -vx + vy - omega;
-
-    Chassis_SendWheels(w_bl, w_br, w_fl, w_fr);   /* 四轮同步发 */
+    Chassis_MixWheels(vx, vy, omega);   /* 混控 + 旋转优先限幅 + 四轮同步发 */
 
     /* 每 500ms 读一次电池电压 (不每周期读, 避免和速度命令抢 CAN 总线) */
     if (++vbus_tick >= 50)
@@ -543,4 +726,19 @@ void App_Chassis_Task(void)
         vbus_tick = 0;
         Chassis_ReadVBus();
     }
+
+    /* VOFA 调试 (临时): vofa_enable=1 时把串口屏 USART6 切给 VOFA 波形
+       通道顺序: err_yaw(误差) / yaw_out(修正输出RPM) / yaw(实际航向) / aim_yaw(目标航向) / p_term(P项RPM) / rate_filt(滤波角速度) */
+    Vofa_Enable();
+    if (vofa_enable)
+    {
+        Chassis_Feedback1.aim_yaw = chassis_val.yaw_target;
+        Chassis_Feedback1.yaw     = chassis_val.yaw_cur;
+        Chassis_Feedback1.err_yaw = Math_NormalizeAngle(chassis_val.yaw_target - chassis_val.yaw_cur);
+        Chassis_Feedback1.yaw_out = chassis_val.yaw_out;
+        Chassis_Feedback1.p_term    = chassis_val.yaw_p_term;
+        Chassis_Feedback1.rate_filt = chassis_val.yaw_rate_f;
+        USART6_Send_VOFA_JustFloat1();
+    }
 }
+

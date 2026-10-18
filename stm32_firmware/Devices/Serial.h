@@ -105,6 +105,9 @@ extern volatile uint8_t Serial_ChassisTrimReady;  /* 1 = 新底盘微调(0x04/0x
 extern volatile uint8_t Serial_ColorTargetReady;  /* 1 = 新颜色目标点(0x08) 待消费 (mission 清) */
 extern volatile uint8_t Serial_QRReady;           /* 1 = 新二维码(0x06) 待解析 (mission 清) */
 
+/* 工作视觉指令(0x04/05/08/09/0C)新帧标志: 供 mission 视觉超时看门狗 (mission 清) */
+extern volatile uint8_t Serial_VisionCmd;
+
 void     Serial_Init(void);                        /* 初始化 USART1            */
 void     Serial_SendByte(uint8_t byte);            /* 阻塞发送 1 字节          */
 void     Serial_SendArray(uint8_t *array, uint16_t len);

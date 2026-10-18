@@ -17,6 +17,22 @@ typedef struct {
 
 extern __IO CAN_t can;
 
+/* EMM 定时主动上报位置快照表 (CAN 中断按电机地址填入, 任务侧只读):
+   can_pos_raw[addr] = 32位位置计数 (65536=360度), can_pos_sign[addr] = 符号,
+   can_pos_cnt[addr]  = 收到帧计数 (里程计据此判断"本周期有新数据")。
+   索引 0 不用, 1~MOTOR_ADDR_MAX 对应电机地址; 中断里只存整数, 浮点换算放任务侧。 */
+#define MOTOR_ADDR_MAX  6
+extern __IO uint32_t can_pos_raw[7];
+extern __IO uint8_t  can_pos_sign[7];
+extern __IO uint16_t can_pos_cnt[7];
+extern __IO uint32_t can_rx_drop;   /* 丢弃计数: 位置帧地址越界 */
+
+/* 底盘电机1母线电压回包 (0x24) 专用槽位: 与位置帧分流, 不再共用 rxFrameFlag, 消除撕裂读竞态。
+   中断里"先存数据、最后置 can_vbus_flag"。 */
+extern __IO uint16_t can_vbus_mv;    /* 电压原始值 (mV) */
+extern __IO uint8_t  can_vbus_flag;  /* 1 = 收到一帧新的 0x24 */
+extern __IO uint32_t can_vbus_ok;    /* 成功接收计数 (验收用) */
+
 void CAN1_Init(void);
 void can_SendCmd(__IO uint8_t *cmd, uint8_t len);
 

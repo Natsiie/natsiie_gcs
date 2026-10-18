@@ -40,6 +40,12 @@ float Imu_GetYaw(void)
     return sReg[Yaw] / 32768.0f * 180.0f;
 }
 
+float Imu_GetYawRate(void)
+{
+    /* 陀螺仪 Z 轴角速度 (Gz): 16位有符号, 默认量程 ±2000°/s -> °/s */
+    return sReg[GZ] / 32768.0f * 2000.0f;
+}
+
 static void Usart2Init(uint32_t uiBaud)
 {
     GPIO_InitTypeDef  GPIO_InitStructure;

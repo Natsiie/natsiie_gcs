@@ -2,6 +2,8 @@
 Output/
 Listings/
 Objects/
+Project/build.log
+build.log
 *.o
 *.d
 *.crf

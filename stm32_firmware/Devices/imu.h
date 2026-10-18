@@ -6,5 +6,6 @@
   */
 void  Imu_Init(void);
 float Imu_GetYaw(void);   /* 返回偏航角 (度, -180 ~ 180) */
+float Imu_GetYawRate(void); /* 返回偏航角速度 (度/秒, Gz 陀螺仪) */
 
 #endif /* __IMU_H */

@@ -11,12 +11,15 @@
 #include "tjc_screen.h"
 #include "stdio.h"
 
+extern uint8_t vofa_enable;   /* bsp_usart.c: VOFA 调试开关 (1=USART6 借给 VOFA) */
+
 /* 上电延时: 屏上电后需等 300~500ms 再发指令 (文档第6节) */
 #define SCREEN_BOOT_DELAY_TICKS   40   /* 40 x 10ms = 400ms */
 
 /* ================= 底层: 阻塞式单字节发送 ================= */
 static void TJC_SendByte(uint8_t b)
 {
+    if (vofa_enable) return;   /* VOFA 占用 USART6 时屏蔽串口屏输出 */
     while (USART_GetFlagStatus(USART6, USART_FLAG_TXE) == RESET);
     USART_SendData(USART6, b);
 }
