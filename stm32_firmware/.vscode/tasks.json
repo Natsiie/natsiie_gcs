@@ -1,0 +1,222 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "comPort",
+      "type": "promptString",
+      "description": "串口 (例如 COM3)",
+      "default": "COM3"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "Keil: Build",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\keil-build.ps1",
+        "-Mode",
+        "build"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}\\Project"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "keil",
+          "fileLocation": ["relative", "${workspaceFolder}\\Project"],
+          "pattern": {
+            "regexp": "^(.*?)\\((\\d+)\\):\\s*(fatal error|error|warning):\\s*(.*)$",
+            "file": 1,
+            "line": 2,
+            "severity": 3,
+            "message": 4
+          }
+        },
+        {
+          "owner": "keil-linker",
+          "fileLocation": ["relative", "${workspaceFolder}\\Project"],
+          "pattern": {
+            "regexp": "^(.*?\\.axf):\\s*(Error|Warning):\\s*(L\\d+[A-Z]?):\\s*(.*)$",
+            "file": 1,
+            "severity": 2,
+            "code": 3,
+            "message": 4
+          }
+        }
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "Keil: Rebuild All",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\keil-build.ps1",
+        "-Mode",
+        "rebuild"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}\\Project"
+      },
+      "problemMatcher": [
+        {
+          "owner": "keil",
+          "fileLocation": ["relative", "${workspaceFolder}\\Project"],
+          "pattern": {
+            "regexp": "^(.*?)\\((\\d+)\\):\\s*(fatal error|error|warning):\\s*(.*)$",
+            "file": 1,
+            "line": 2,
+            "severity": 3,
+            "message": 4
+          }
+        },
+        {
+          "owner": "keil-linker",
+          "fileLocation": ["relative", "${workspaceFolder}\\Project"],
+          "pattern": {
+            "regexp": "^(.*?\\.axf):\\s*(Error|Warning):\\s*(L\\d+[A-Z]?):\\s*(.*)$",
+            "file": 1,
+            "severity": 2,
+            "code": 3,
+            "message": 4
+          }
+        }
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "Keil: Clean",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\keil-build.ps1",
+        "-Mode",
+        "clean"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}\\Project"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "Debug: list connected probes",
+      "type": "shell",
+      "command": "C:\\Users\\xszx1\\.dsh\\tools\\pyocd\\Scripts\\pyocd.exe",
+      "args": [
+        "list"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "Debug: pyOCD dump target state",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tools\\pyocd\\dump.ps1",
+        "-Target",
+        "stm32f407vg"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "Debug: export symbol table (fromelf)",
+      "type": "shell",
+      "command": "D:\\Keil5\\ARM\\ARMCC\\bin\\fromelf.exe",
+      "args": [
+        "--text",
+        "-s",
+        "-o",
+        "${workspaceFolder}\\Output\\symbols.txt",
+        "${workspaceFolder}\\Output\\Objects\\ROBOCON.axf"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "联调: 串口协议监视",
+      "type": "shell",
+      "command": "C:\\Users\\xszx1\\.dsh\\tools\\pyocd\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\tools\\serial_monitor.py",
+        "--port",
+        "${input:comPort}",
+        "--log",
+        "${workspaceFolder}\\Output\\serial.log"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "联调: 串口监视(只看 0x0F/0x10)",
+      "type": "shell",
+      "command": "C:\\Users\\xszx1\\.dsh\\tools\\pyocd\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\tools\\serial_monitor.py",
+        "--port",
+        "${input:comPort}",
+        "--types",
+        "0x0F,0x10",
+        "--log",
+        "${workspaceFolder}\\Output\\serial.log"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    }
+  ]
+}

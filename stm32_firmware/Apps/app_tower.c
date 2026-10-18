@@ -13,25 +13,28 @@ static uint8_t platform_pos = 0;
 static uint8_t last_btn0 = 0, last_btn1 = 0;
 static float gimbal_cur = 0.0f;   /* 云台当前角度 (斜坡限速用) */
 
-/* 云台角度调试 (Watch 里改): 单独调角接口, 保留加减速限幅 */
-uint8_t gimbal_test_enable = 1;      /* 1=云台角度调试接管云台, 0=关闭(交还遥控/流程) */
-float   gimbal_test_angle  = 42.0f;   /* 目标角度 (0~360), Watch 里改 */
-float   gimbal_test_step   = 1.0f;   /* 加减速限幅: 每 10ms 最大转角(度), 越小越慢 */
-float   gimbal_test_cur    = 0.0f;   /* 当前角度 (只读, Watch 里看) */
+/* 舵机测试默认值在 car_config.h (GIMBAL/PLATFORM/GRIPPER_TEST_*); 这里用宏初始化,
+   现场在 Watch 里改变量即可, 调满意再回填 car_config.h 宏。
+   无独立使能开关: Test_Task 每拍把云台/平台/夹爪/电机5/6 一起跑, 目标角/位置(Watch 改)
+   等于当前值时自然不动 —— 想一起动就一起动, 不必分开使能。 */
+float   gimbal_test_angle    = GIMBAL_TEST_ANGLE;    /* 目标角度 (0~360), Watch 里改 */
+float   gimbal_test_step     = GIMBAL_TEST_STEP;     /* 加减速限幅: 每 10ms 最大转角(度), 越小越慢 */
+float   gimbal_test_cur      = 0.0f;                 /* 当前角度 (只读, Watch 里看) */
 
-/* 物料平台角度调试 (Watch 里改): 单独调角接口, 保留加减速限幅 */
-uint8_t platform_test_enable = 1;                    /* 1=平台角度调试接管平台, 0=关闭(交还遥控/流程) */
-float   platform_test_angle  = PLATFORM_ANGLE_A;     /* 目标角度 (0~270), Watch 里改 */
-float   platform_test_step   = 1.0f;                 /* 加减速限幅: 每 10ms 最大转角(度), 越小越慢 */
-float   platform_test_cur    = PLATFORM_ANGLE_A;     /* 当前角度 (只读, Watch 里看) */
+float   platform_test_angle  = PLATFORM_TEST_ANGLE;  /* 目标角度 (0~270), Watch 里改 */
+float   platform_test_step   = PLATFORM_TEST_STEP;   /* 加减速限幅: 每 10ms 最大转角(度), 越小越慢 */
+float   platform_test_cur    = PLATFORM_TEST_ANGLE;  /* 当前角度 (只读, Watch 里看) */
+
+float   gripper_test_angle   = GRIPPER_TEST_ANGLE;   /* 目标角度 (0~270), Watch 里改 */
+float   gripper_test_cur     = GRIPPER_TEST_ANGLE;   /* 当前角度 (只读, Watch 里看) */
 
 /* ================= 上电默认状态 =================
- * 上电自动执行: 云台先保持 42°, 电机5 升到放置高度 600, 电机6 同步伸长到放置长度 500;
- * 等电机5 到位后云台才转 220°(默认位)。
+ * 上电自动执行: 云台先保持 135°, 电机5 升到放置高度 600, 电机6 同步伸长到放置长度 500;
+ * 等电机5 到位后云台才转 310°(默认位)。
  */
 uint8_t boot_enable = 1;              /* 1=上电默认状态接管上层, 0=关闭 */
-float   boot_gimbal_angle1 = 42.0f;   /* 云台第一段目标角 */
-float   boot_gimbal_angle2 = 220.0f;  /* 云台默认最终角 */
+float   boot_gimbal_angle1 = 135.0f;   /* 云台第一段目标角 */
+float   boot_gimbal_angle2 = 310.0f;  /* 云台默认最终角 */
 float   boot_gimbal_step   = 1.0f;    /* 云台斜坡限速(度/10ms) */
 float   boot_gimbal_tol    = 0.5f;    /* 云台到位判定(度) */
 float   boot_hoist_height  = 600.0f;  /* 电机5 放置高度 */
@@ -45,8 +48,8 @@ uint16_t boot_extend_acc   = 100;     /* 电机6 加速 */
 uint16_t boot_extend_dec   = 100;     /* 电机6 减速 */
 float   boot_extend_vel    = 100.0f;  /* 电机6 速度 */
 
-uint8_t      boot_step = 0;            /* 只读: 0=云台42等电机5到位 1=云台去220 2=完成 */
-static float boot_gimbal_cur = 42.0f;  /* 云台当前角(斜坡用) */
+uint8_t      boot_step = 0;            /* 只读: 0=云台135等电机5到位 1=云台去310 2=完成 */
+static float boot_gimbal_cur = 135.0f;  /* 云台当前角(斜坡用) */
 
 static void Tower_SendVel(uint8_t addr, float vel, uint16_t acc)
 {
@@ -58,32 +61,22 @@ static void Tower_SendVel(uint8_t addr, float vel, uint16_t acc)
 /* 测试用: 电机5(塔吊升降)实时位置, Keil Watch 里看它 */
 float motor5_pos = 0.0f;
 
-/* 读电机5实时位置 (回包 Data[0]=0x36, DLC=7) */
+/* 读电机5实时位置 (回包 Data[0]=0x36, DLC=7): 非阻塞版。
+   只发读请求(不忙等), 回包由 CAN 中断填 can_pos_raw[5]/can_pos_cnt[5];
+   本函数取"上一次请求"的回包解析(慢一拍没关系)。绝不在任务里忙等,
+   云台舵机才能每 10ms 都按时更新, 不被读电机卡到一顿一顿。 */
 void Tower_ReadPos5(void)
 {
-    uint32_t t = 0;
+    static uint16_t last_cnt = 0;   /* 已消费的帧计数 */
 
-    X_V2_Read_Sys_Params(MOTOR_HOIST, S_CPOS);
-
-    /* 循环等回包: 每发一条位置命令, 电机会先回一条 0xFD 应答(0x02/0x9F),
-       它抢在 0x36 位置回包前面到。这里循环跳过非位置帧, 直到收到 5 号电机的
-       0x36 位置回包才解析 —— 否则 motor5_pos 永远不更新 */
-    while (++t < 2000000)
+    if (can_pos_cnt[MOTOR_HOIST] != last_cnt)
     {
-        if (!can.rxFrameFlag) continue;
-        can.rxFrameFlag = false;
-
-        if ((can.CAN_RxMsg.ExtId >> 8) != MOTOR_HOIST) continue;                 /* 不是5号电机 */
-        if (can.CAN_RxMsg.Data[0] != 0x36 || can.CAN_RxMsg.DLC != 7) continue;   /* 不是位置回包 */
-
-        uint32_t p = ((uint32_t)can.CAN_RxMsg.Data[2] << 24) |
-                     ((uint32_t)can.CAN_RxMsg.Data[3] << 16) |
-                     ((uint32_t)can.CAN_RxMsg.Data[4] << 8)  |
-                     ((uint32_t)can.CAN_RxMsg.Data[5]);
-        motor5_pos = p * 0.1f;                              /* ×0.1 = 度 */
-        if (can.CAN_RxMsg.Data[1]) motor5_pos = -motor5_pos; /* Data[1]=1 为负 */
-        return;
+        last_cnt = can_pos_cnt[MOTOR_HOIST];
+        motor5_pos = (float)can_pos_raw[MOTOR_HOIST] * 0.1f;          /* X_V2: ×0.1 = 度 */
+        if (can_pos_sign[MOTOR_HOIST]) motor5_pos = -motor5_pos;      /* Data[1]=1 为负 */
     }
+
+    X_V2_Read_Sys_Params(MOTOR_HOIST, S_CPOS);   /* 发下一个读请求(非阻塞) */
 }
 
 /* 测试用: 电机5母线电压 (V), Keil Watch 里看它 */
@@ -114,29 +107,19 @@ void Tower_ReadVBus5(void)
 /* 测试用: 电机6(塔吊伸出)实时位置, Keil Watch 里看它 */
 float motor6_pos = 0.0f;
 
-/* 读电机6实时位置 (回包 Data[0]=0x36, DLC=7) */
+/* 读电机6实时位置 (回包 Data[0]=0x36, DLC=7): 非阻塞版, 同上 */
 void Tower_ReadPos6(void)
 {
-    uint32_t t = 0;
+    static uint16_t last_cnt = 0;   /* 已消费的帧计数 */
 
-    X_V2_Read_Sys_Params(MOTOR_EXTEND, S_CPOS);
-
-    while (++t < 2000000)
+    if (can_pos_cnt[MOTOR_EXTEND] != last_cnt)
     {
-        if (!can.rxFrameFlag) continue;
-        can.rxFrameFlag = false;
-
-        if ((can.CAN_RxMsg.ExtId >> 8) != MOTOR_EXTEND) continue;
-        if (can.CAN_RxMsg.Data[0] != 0x36 || can.CAN_RxMsg.DLC != 7) continue;
-
-        uint32_t p = ((uint32_t)can.CAN_RxMsg.Data[2] << 24) |
-                     ((uint32_t)can.CAN_RxMsg.Data[3] << 16) |
-                     ((uint32_t)can.CAN_RxMsg.Data[4] << 8)  |
-                     ((uint32_t)can.CAN_RxMsg.Data[5]);
-        motor6_pos = p * 0.1f;                              /* ×0.1 = 度 */
-        if (can.CAN_RxMsg.Data[1]) motor6_pos = -motor6_pos; /* Data[1]=1 为负 */
-        return;
+        last_cnt = can_pos_cnt[MOTOR_EXTEND];
+        motor6_pos = (float)can_pos_raw[MOTOR_EXTEND] * 0.1f;        /* X_V2: ×0.1 = 度 */
+        if (can_pos_sign[MOTOR_EXTEND]) motor6_pos = -motor6_pos;    /* Data[1]=1 为负 */
     }
+
+    X_V2_Read_Sys_Params(MOTOR_EXTEND, S_CPOS);   /* 发下一个读请求(非阻塞) */
 }
 
 void App_Tower_Init(void)
@@ -146,14 +129,15 @@ void App_Tower_Init(void)
     last_btn0 = last_btn1 = 0;
     gimbal_cur = GIMBAL_MIN_ANGLE;
     gimbal_test_cur = gimbal_test_angle;
-    platform_test_cur = PLATFORM_ANGLE_A;
+    platform_test_cur = platform_test_angle;
+    gripper_test_cur = gripper_test_angle;
 
     boot_step = 0;
-    boot_gimbal_cur = boot_gimbal_angle1;   /* 上电云台先给第一段目标 42° */
+    boot_gimbal_cur = boot_gimbal_angle1;   /* 上电云台先给第一段目标 135° */
 
     Servo_SetAngle(SERVO_GRIPPER,  GRIPPER_OPEN_ANGLE);   /* 夹爪默认张开 (值在 car_config.h) */
     Servo_SetAngle(SERVO_PLATFORM, PLATFORM_ANGLE_A);     /* 物料平台默认状态1 = A (值在 car_config.h) */
-    Servo_SetAngle(SERVO_GIMBAL,   boot_gimbal_cur);   /* 上电直接给 42°, 之后由 Tower_Boot_Task 斜坡到 220° */
+    Servo_SetAngle(SERVO_GIMBAL,   boot_gimbal_cur);   /* 上电直接给 135°, 之后由 Tower_Boot_Task 斜坡到 310° */
 }
 
 void App_Tower_Task(void)
@@ -202,23 +186,16 @@ void App_Tower_Task(void)
     Servo_SetAngle(SERVO_GIMBAL, gimbal_cur);
 }
 
-/* 云台角度调试任务: 每 10ms 调一次, 保留加减速限幅(斜坡), 一点一点逼近目标角 */
+/* 云台角度调试任务: 每 10ms 调一次, 斜坡限速统一走 Servo_MoveTo */
 void Gimbal_Test_Task(void)
 {
-    if (!gimbal_test_enable) return;
-
-    float d = gimbal_test_angle - gimbal_test_cur;
-    if (d >  gimbal_test_step) d =  gimbal_test_step;
-    if (d < -gimbal_test_step) d = -gimbal_test_step;
-    gimbal_test_cur += d;
-    Servo_SetAngle(SERVO_GIMBAL, gimbal_test_cur);
+    Servo_MoveTo(SERVO_GIMBAL, gimbal_test_angle, gimbal_test_step);
+    gimbal_test_cur = Servo_GetAngle(SERVO_GIMBAL);   /* 只读回显 (Watch 看当前角) */
 }
 
 /* 物料平台角度调试任务: 每 10ms 调一次, 保留加减速限幅(斜坡), 一点一点逼近目标角 */
 void Platform_Test_Task(void)
 {
-    if (!platform_test_enable) return;
-
     float d = platform_test_angle - platform_test_cur;
     if (d >  platform_test_step) d =  platform_test_step;
     if (d < -platform_test_step) d = -platform_test_step;
@@ -226,8 +203,25 @@ void Platform_Test_Task(void)
     Servo_SetAngle(SERVO_PLATFORM, platform_test_cur);
 }
 
+/* 夹爪角度调试任务: 每 10ms 调一次, 立即到位 (夹爪无斜坡) */
+void Gripper_Test_Task(void)
+{
+    Servo_SetAngle(SERVO_GRIPPER, gripper_test_angle);
+    gripper_test_cur = Servo_GetAngle(SERVO_GRIPPER);   /* 只读回显 (Watch 看当前角) */
+}
+
+/* 集中测试入口: 每 10ms 调一次。云台/平台/夹爪/电机5/6 每拍一起跑, 无独立使能开关;
+   想只动某一路就把其它路的目标值(Watch 里改)设成当前值即可。 */
+void Test_Task(void)
+{
+    Gimbal_Test_Task();
+    Platform_Test_Task();
+    Gripper_Test_Task();
+    Motor56_Test_Task();
+}
+
 /* 上电默认状态: 只执行一次
- *   云台: 先保持 42°, 等电机5 升到放置高度 600 后再转 220°(默认位), 带斜坡限速
+ *   云台: 先保持 135°, 等电机5 升到放置高度 600 后再转 310°(默认位), 带斜坡限速
  *   电机5: 升到放置高度 600
  *   电机6: 同步伸长到放置长度 500
  */
@@ -237,7 +231,7 @@ void Tower_Boot_Task(void)
 
     if (boot_step == 0)
     {
-        /* 阶段0: 云台保持 42°, 电机5 升到放置高度, 电机6 伸长到放置长度 */
+        /* 阶段0: 云台保持 135°, 电机5 升到放置高度, 电机6 伸长到放置长度 */
         static uint8_t boot_phase = 0;   /* 0/1 交错: 发命令 / 读位置 */
 
         boot_gimbal_cur = boot_gimbal_angle1;
@@ -268,7 +262,7 @@ void Tower_Boot_Task(void)
     }
     else   /* boot_step == 1 */
     {
-        /* 阶段1: 云台 42 -> 220 斜坡限速 */
+        /* 阶段1: 云台 135 -> 310 斜坡限速 */
         float d = boot_gimbal_angle2 - boot_gimbal_cur;
         if (d >  boot_gimbal_step) d =  boot_gimbal_step;
         if (d < -boot_gimbal_step) d = -boot_gimbal_step;
@@ -284,10 +278,13 @@ void Tower_Boot_Task(void)
 }
 
 /* ================= 电机5/6 测试 (Keil Watch 里改) =================
- * 单独调电机5(升降)和电机6(伸出): 位置模式为主, 也可切速度模式。
+ * 调电机5(升降)和电机6(伸出): 位置模式为主, 也可切速度模式。
  * 在 Watch 里改目标位置/速度/方向, motor5_pos / motor6_pos 只读回显实时位置。
+ * 与云台/平台/夹爪测试同拍一起跑(见 Test_Task)。发命令和读位置交错一拍:
+ * 避免"位置命令后紧跟读请求"打断电机(同 Tower_Boot_Task, 发送侧冲突)。
+ * 读位置已改成非阻塞(见 Tower_ReadPos5/6): 只发请求+取 CAN 中断填好的专用槽
+ * can_pos_raw/can_pos_cnt, 一微秒都不忙等 —— 云台才能每 10ms 按时更新、丝滑。
  */
-uint8_t  motor56_test_enable = 1;   /* 1=测试任务接管电机5/6, 0=关闭 */
 uint8_t  motor5_test_mode = 0;      /* 0=位置模式, 1=速度模式 */
 uint8_t  motor6_test_mode = 0;
 uint8_t  motor5_test_dir = 0;       /* 位置模式方向: 0=正(升), 1=反 */
@@ -301,25 +298,32 @@ uint16_t motor6_test_acc = 100;
 
 void Motor56_Test_Task(void)
 {
-    if (!motor56_test_enable) return;
+    static uint8_t phase = 0;   /* 每拍翻转: 1=发命令 0=读位置, 命令与读错开一拍 */
 
-    /* 电机5 升降 */
-    if (motor5_test_mode == 0)
-        X_V2_Traj_Pos_Control(MOTOR_HOIST, motor5_test_dir, motor5_test_acc, motor5_test_acc,
-                              motor5_test_vel, motor5_test_pos, 1, 0);
+    phase ^= 1;
+
+    if (phase)
+    {
+        /* 电机5 升降 */
+        if (motor5_test_mode == 0)
+            X_V2_Traj_Pos_Control(MOTOR_HOIST, motor5_test_dir, motor5_test_acc, motor5_test_acc,
+                                  motor5_test_vel, motor5_test_pos, 1, 0);
+        else
+            Tower_SendVel(MOTOR_HOIST, motor5_test_vel, motor5_test_acc);
+
+        /* 电机6 伸出 */
+        if (motor6_test_mode == 0)
+            X_V2_Traj_Pos_Control(MOTOR_EXTEND, motor6_test_dir, motor6_test_acc, motor6_test_acc,
+                                  motor6_test_vel, motor6_test_pos, 1, 0);
+        else
+            Tower_SendVel(MOTOR_EXTEND, motor6_test_vel, motor6_test_acc);
+    }
     else
-        Tower_SendVel(MOTOR_HOIST, motor5_test_vel, motor5_test_acc);
-
-    /* 电机6 伸出 */
-    if (motor6_test_mode == 0)
-        X_V2_Traj_Pos_Control(MOTOR_EXTEND, motor6_test_dir, motor6_test_acc, motor6_test_acc,
-                              motor6_test_vel, motor6_test_pos, 1, 0);
-    else
-        Tower_SendVel(MOTOR_EXTEND, motor6_test_vel, motor6_test_acc);
-
-    /* 读回实时位置 (Watch 看) */
-    Tower_ReadPos5();
-    Tower_ReadPos6();
+    {
+        /* 读回实时位置 (Watch 看) */
+        Tower_ReadPos5();
+        Tower_ReadPos6();
+    }
 }
 
 /* ================= 抓取+放置流程 (全部变量, Keil Watch 里改) ================= */
@@ -338,10 +342,10 @@ uint8_t release_cmd = 0;   /* 上层写1: 卸货阶段 松开夹爪 */
 uint8_t wait_grab = 0;     /* 只读: 1=已到550, 等抓取指令 */
 uint8_t wait_release = 0;  /* 只读: 1=已到放置位, 等松开指令 */
 
-/* 云台 (SERVO_GIMBAL): 待命 220 / 抓取 42 / 放置 223 */
-float default_gimbal_angle = 220.0f;
-float grab_gimbal_angle = 42.0f;
-float release_gimbal_angle = 220.0f;
+/* 云台 (SERVO_GIMBAL): 待命 310 / 抓取 135 / 放置 310 */
+float default_gimbal_angle = 310.0f;
+float grab_gimbal_angle = 135.0f;
+float release_gimbal_angle = 310.0f;
 float gimbal_max_step = 1.0f;   /* 度/每 10ms, 越小越慢 */
 float gimbal_done_tol = 0.5f;   /* 云台到位判定(度) */
 
@@ -368,8 +372,8 @@ uint16_t gripper_delay_10ms = 50; /* 夹爪动作后等待 */
 uint8_t platform_sel = 0;
 
 /* 夹爪 (SERVO_GRIPPER): 上电张开, 由流程控制 */
-float gripper_open_angle = 80.0f;
-float gripper_close_angle = 29.0f;
+float gripper_open_angle  = GRIPPER_OPEN_ANGLE;   /* 值在 car_config.h */
+float gripper_close_angle = GRIPPER_CLOSE_ANGLE;  /* 值在 car_config.h */
 
 /* 到位判定: |cur - tgt| < tol (纯本地计算, 只用于云台斜坡) */
 static uint8_t PosDone(float cur, float tgt, float tol)
@@ -381,7 +385,7 @@ static uint8_t PosDone(float cur, float tgt, float tol)
 
 /**
   * @brief  抓取+放置流程 (每 10ms 调用一次)
-  *         待命(默认): 云台 220, 电机5 放置高度, 电机6 不动, 夹爪保持
+  *         待命(默认): 云台 310, 电机5 放置高度, 电机6 不动, 夹爪保持
   *         触发: sw[grab_sw] 从 0 拨到 1 -> 执行一次抓取+放置, 完事回默认
   *         flow_dir: 0=抓取放置(抓前面->放平台, 平台A->B->C装满);
   *                   1=放置抓取(抓平台->放前面, 平台C->B->A清空, 即动作反一下)
@@ -392,12 +396,12 @@ static uint8_t PosDone(float cur, float tgt, float tol)
   */
 void Tower_Test_Task(void)
 {
-    static float gim_cur = 220.0f;      /* 云台当前角 (与 default_gimbal_angle 一致) */
+    static float gim_cur = 310.0f;      /* 云台当前角 (与 default_gimbal_angle 一致) */
     static float gripper_angle = 80.0f; /* 夹爪当前角 */
     static uint16_t wait_tick = 0;      /* 延时计数 */
     static uint8_t last_grab_sw = 0;    /* 触发开关上次值(边沿检测) */
     static uint8_t grab_sw_ready = 0;   /* 首拍同步开关值, 防上电误触发 */
-    static float pick_gimbal = 42.0f, drop_gimbal = 220.0f;   /* 本次 抓取点/放置点 云台角 */
+    static float pick_gimbal = 135.0f, drop_gimbal = 310.0f;   /* 本次 抓取点/放置点 云台角 */
     static float pick_extend = 600.0f, drop_extend = 500.0f;  /* 本次 抓取点/放置点 伸出长 */
     static uint8_t last_flow_dir = 0xFF;   /* 方向切换检测 (首次=无效值, 保证首拍同步) */
     float hoist_pos;
@@ -575,7 +579,7 @@ void Tower_Test_Task(void)
         if (++wait_tick >= gripper_delay_10ms) { wait_tick = 0; flow_step = 9; }
         break;
 
-    case 9:   /* 回默认: 云台->220, 电机5->放置高度, 电机6停发; 等云台到位 */
+    case 9:   /* 回默认: 云台->310, 电机5->放置高度, 电机6停发; 等云台到位 */
         if (PosDone(gim_cur, default_gimbal_angle, gimbal_done_tol))
         { wait_tick = 0; flow_step = 0; }
         break;

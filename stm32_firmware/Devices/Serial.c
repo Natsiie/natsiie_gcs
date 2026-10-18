@@ -23,6 +23,7 @@ volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 组 xy) �
 volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘微调(corr) 新帧标志 */
 volatile uint8_t Serial_ColorTargetReady = 0;  /* 0x08 颜色目标点 新帧标志 */
 volatile uint8_t Serial_QRReady = 0;           /* 0x06 二维码 新帧标志 */
+volatile uint8_t Serial_VisionCmd = 0;         /* 工作视觉指令(0x04/05/08/09/0C)新帧标志, 供 mission 视觉超时看门狗 */
 
 /* RX 状态机: 0=等帧头 1=收TYPE 2=收LEN 3=收载荷 4=收CRC 5=收帧尾 */
 static uint8_t s_rx_state = 0;
@@ -73,6 +74,24 @@ void Serial_SendPlaceControlRetry(uint32_t command_id)
     char payload[20];
     uint8_t len = (uint8_t)sprintf(payload, "retry,%lu", (unsigned long)command_id);
     Serial_SendFramed(SERIAL_TYPE_PLACE_CONTROL, payload, len);
+}
+
+/* 0x0F PickDone: 抓取完成序号 (1~6)。上位机 identify_pack/scripts/pick_task.py 的
+ * Pick.sequence = batch*3 + index + 1，只有序号与其期望值一致才会推进状态机。 */
+void Serial_SendPickDone(uint8_t seq)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u", (unsigned)seq);
+    Serial_SendFramed(SERIAL_TYPE_PICK_DONE, payload, len);
+}
+
+/* 0x10 NextBatch: 第一批(前 3 次抓取)完成、回装就绪。上位机 next_batch() 只接受 payload "1"，
+ * 收到后才从 WAIT_NEXT_BATCH 放行第二批。 */
+void Serial_SendNextBatch(uint8_t batch)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u", (unsigned)batch);
+    Serial_SendFramed(SERIAL_TYPE_NEXT_BATCH, payload, len);
 }
 
 uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out)
@@ -411,6 +430,7 @@ void Serial_ProcessFrame(void)
 
             /* 通知业务层: corr=底盘微调(底盘); err 是偏移坐标, 由上层按需使用 */
             Serial_ChassisTrimReady = 1;
+            Serial_VisionCmd = 1;
         }
         break;
     }
@@ -438,7 +458,10 @@ void Serial_ProcessFrame(void)
         }
 
         if (Serial_RxData.unload_count > 0)
+        {
             Serial_UnloadCoordReady = 1;
+            Serial_VisionCmd = 1;
+        }
         break;
     }
 
@@ -465,10 +488,11 @@ void Serial_ProcessFrame(void)
             Serial_RxData.target_y_mm = y;
             Serial_RxData.target_z_mm = z;
 
-            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_grab_z_mm 定死; 等 Watch 写 kin_cmd=1 才走 */
-            kin_target_x = x;
-            kin_target_y = y;
+            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_cal.grab_z_mm 定死; 等 Watch 写 kin_flag.cmd=1 才走 */
+            kin_tgt.target_x = x;
+            kin_tgt.target_y = y;
             Serial_ColorTargetReady = 1;   /* 通知 mission: 新颜色目标点已锁存 */
+            Serial_VisionCmd = 1;
         }
         break;
     }
@@ -480,6 +504,7 @@ void Serial_ProcessFrame(void)
         {
             Serial_RxData.grab_cmd = 1;
             grab_cmd = 1;   /* 装货流程: 电机5 从550降到447 下探抓取 */
+            Serial_VisionCmd = 1;
         }
         break;
     }

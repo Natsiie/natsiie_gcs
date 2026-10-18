@@ -10,3 +10,10 @@ __pycache__/
 
 # Confirmed runtime placement progress
 place_progress.json
+
+# 鑱旇皟/鏋勫缓涓存椂浜х墿锛堟湰鍦扮敓鎴愶紝涓嶅叆搴擄級
+build.log
+*.log
+*.bak
+*.bak-*
+

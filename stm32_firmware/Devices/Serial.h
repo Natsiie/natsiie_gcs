@@ -31,6 +31,8 @@
 #define SERIAL_TYPE_PLACE_RESULT  0x0B
 #define SERIAL_TYPE_UNLOAD_COORD  0x0C   /* 卸货坐标: 3 组 x,y (3 个落点, 塔吊系绝对 mm) */
 #define SERIAL_TYPE_PLACE_CONTROL 0x0D   /* 放置阶段控制 (下位机->上位机): start,stage,batch 或 retry,command_id */
+#define SERIAL_TYPE_PICK_DONE     0x0F   /* 抓取完成序号 (下位机->上位机): ASCII 序号 1~6 */
+#define SERIAL_TYPE_NEXT_BATCH    0x10   /* 第一批 3 次抓取完成、回装就绪 (下位机->上位机): "1" */
 
 #define SERIAL_RX_PAYLOAD_MAX     128    /* Includes UUID and placement XYZ. */
 
@@ -103,6 +105,9 @@ extern volatile uint8_t Serial_ChassisTrimReady;  /* 1 = 新底盘微调(0x04/0x
 extern volatile uint8_t Serial_ColorTargetReady;  /* 1 = 新颜色目标点(0x08) 待消费 (mission 清) */
 extern volatile uint8_t Serial_QRReady;           /* 1 = 新二维码(0x06) 待解析 (mission 清) */
 
+/* 工作视觉指令(0x04/05/08/09/0C)新帧标志: 供 mission 视觉超时看门狗 (mission 清) */
+extern volatile uint8_t Serial_VisionCmd;
+
 void     Serial_Init(void);                        /* 初始化 USART1            */
 void     Serial_SendByte(uint8_t byte);            /* 阻塞发送 1 字节          */
 void     Serial_SendArray(uint8_t *array, uint16_t len);
@@ -117,5 +122,9 @@ uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out);
 void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8_t success);
 void Serial_SendPlaceControlStart(uint8_t stage, uint8_t batch);  /* 0x0D: start,<stage>,<batch> */
 void Serial_SendPlaceControlRetry(uint32_t command_id);           /* 0x0D: retry,<command_id> */
+/* 0x0F: 抓取完成序号 (1~6) -> 上位机 pick_task.complete() 依此推进抓取顺序 */
+void Serial_SendPickDone(uint8_t seq);
+/* 0x10: 第一批(前 3 次抓取)完成、可以进入第二批 -> 上位机只接受 batch=1 */
+void Serial_SendNextBatch(uint8_t batch);
 
 #endif

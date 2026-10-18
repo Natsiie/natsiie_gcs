@@ -44,6 +44,8 @@ extern uint8_t          nav_zone;                 /* 当前启动区: 1=启动�
 extern NavZoneCoord_t   nav_zone_coord[2];        /* [0]=启动区1, [1]=启动区2 */
 extern float            nav_staging_mid_dx;       /* 里程计漂移修正量 X (mm), 现场微调 */
 extern float            nav_staging_mid_dy;       /* 里程计漂移修正量 Y (mm), 现场微调 */
+extern float            nav_staging_dx;           /* 暂存区坐标偏移 X (mm, 直接加在 staging 坐标上), 现场微调 */
+extern float            nav_staging_dy;           /* 暂存区坐标偏移 Y (mm, 直接加在 staging 坐标上), 现场微调 */
 
 /* ================= 导航状态 (Keil Watch) ================= */
 extern uint8_t nav_cmd;    /* 调试: 写 1=启动, 2=中止, 3=继续; 现场用 btn3 启动 */
@@ -51,6 +53,7 @@ extern uint8_t nav_active; /* 只读: 1=导航中 */
 extern uint8_t nav_wait;   /* 只读: 1=已到工作区/中点, 停原地等「继续」指令 */
 extern int8_t  nav_step;   /* 只读: 当前路径点序号 (-1=未启动) */
 extern NavPointId nav_at_point;  /* 只读: 暂停点 ID (nav_wait==1 时有效, 否则 NAV_POINT_COUNT) */
+extern uint8_t nav_round;   /* 只读: 0=第1轮 1=第2轮 (第2次到物料区后=1) */
 
 /* ================= 导航精度测试 (无视觉, Keil Watch) ================= */
 extern uint8_t nav_test_run;     /* 写 1: 启动连续导航精度测试(不停工作区/中点, 自动关视觉纠偏, 走完全程自动清 0) */

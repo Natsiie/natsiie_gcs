@@ -17,6 +17,10 @@ uint8_t usart6_rx_buf[128];
 Chassis_Feedback_t1 Chassis_Feedback1;
 Usart6_Feedback_t  Usart6_Feedback;
 
+/* VOFA 调试 (临时): 把串口屏 USART6 借给 VOFA 波形看 PID, Watch 里 vofa_enable 写 1/0 切换 */
+uint8_t vofa_enable = 0;
+static uint8_t vofa_mode = 0;   /* 0=串口屏(9600) 1=VOFA(460800) */
+
 /* USART6 ���ͻ����� (ȫ��) */
 Usart6_Protocol_t usart6_tx_packet = {
     .header1 = 0x55,
@@ -255,9 +259,26 @@ void USART6_Send_VOFA_JustFloat1(void)
     vofa_packet.yaw_out = Chassis_Feedback1.yaw_out;
     vofa_packet.yaw     = Chassis_Feedback1.yaw;
     vofa_packet.aim_yaw = Chassis_Feedback1.aim_yaw;
+    vofa_packet.p_term    = Chassis_Feedback1.p_term;
+    vofa_packet.rate_filt = Chassis_Feedback1.rate_filt;
      
     // �����ֳɵ�ͨ�� DMA ���ͽӿ� (���ͳ���Ϊ 16�ֽ����� + 4�ֽ�֡β = 20�ֽ�)
     BSP_USART_DMA_Send(UART_6, (uint8_t *)&vofa_packet, sizeof(VOFA_JustFloat_t1));
+}
+
+/* 检测 vofa_enable 跳变, 在串口屏(9600) 与 VOFA(460800) 之间切换 USART6 */
+void Vofa_Enable(void)
+{
+    if (vofa_enable && !vofa_mode)
+    {
+        BSP_USART_Init(UART_6, 460800);   /* VOFA: 460800 + DMA 发 */
+        vofa_mode = 1;
+    }
+    else if (!vofa_enable && vofa_mode)
+    {
+        TJC_Init(9600);                   /* 切回串口屏 */
+        vofa_mode = 0;
+    }
 }
 
 

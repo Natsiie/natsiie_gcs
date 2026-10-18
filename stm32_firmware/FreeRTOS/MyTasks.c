@@ -21,7 +21,7 @@ void Chassis_Tasks(void *p_arg)
 
     while (1)
     {
-        App_Chassis_Task();   /* 底盘: 遥控直控 + 定位 + 里程计 + 视觉纠偏 + 电压 */
+        App_Chassis_Task();   /* 底盘: 遥控直控 + 定位 + 里程计 + 视觉纠偏 + 电压 (EMM 固件) */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }
@@ -33,7 +33,7 @@ void Chassis_Tasks(void *p_arg)
   */
 static void Serial_Test_Task(void)
 {
-    Serial_SendGimbalYaw(Servo_GetAngle(SERVO_GIMBAL) - 42.0f);
+    Serial_SendGimbalYaw(Servo_GetAngle(SERVO_GIMBAL) - kin_cal.gimbal_theta_offset);
 }
 
 /**
@@ -46,20 +46,20 @@ void SIGNALING_Tasks(void *p_arg)
 
     while (1)
     {
-//        Tower_Boot_Task();     /* 上电默认(只执行一次): 云台42->220, 电机5升抓取高度, 电机6不动 */
-        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
+        Servo_Tick();          /* 舵机上电门控计数: 满 SERVO_ARM_TICKS 拍才放行舵机动作 */
+//        Tower_Boot_Task();     /* 上电默认(只执行一次): 云台135->310, 电机5升600, 电机6伸500 */
+//        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
 //        Screen_SendTestLoop();  /* 连续发送: 每100ms发 "TJC_TX_OK N" (串口助手测TX用) */
-        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
-//        Gimbal_Test_Task();    /* 云台角度调试 (Watch 写 gimbal_test_angle) */
-//        Platform_Test_Task();  /* 物料平台角度调试 (Watch 写 platform_test_angle) */
+//        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
+//        Test_Task();           /* 手动测试: 云台/平台/夹爪/电机5/6 一起跑(Watch 改各自目标值); 用 Kin 时注释掉这行 */
         Serial_Test_Task();    /* 串口1 发送云台舵机角度给上位机 (natsiie GCS) */
 //        App_Tower_Task();    /* 遥控直控塔吊 */
 //        Tower_Test_Task();   /* sw[grab_sw] 0->2 触发抓取+放置, 2/3次转平台 */
-//        Motor56_Test_Task();   /* 电机5/6 测试 (Watch 写 motor5/6_test_pos/vel/mode/dir) */
         /* 接收上位机帧并解析: 0x08 点位->存 kin_target_x/y; 0x09 GrabCmd"1"=ok授权->grab_cmd 下降抓取 */
         if (Serial_RxFrameReady) { Serial_RxFrameReady = 0; Serial_ProcessFrame(); }
-        Kin_Update();        /* 正/逆解运动: Watch 写 kin_cmd=1(GotoXY, 用 kin_target_x/y) 触发; 到位点上方等 ok(0x09) 再降 */
-//        Kin_ReadGripper();     /* 只读夹爪位姿: Watch 写 kin_read_trig=1 读一次, 结果 kin_pose_* */
+        Kin_Update();        /* 正/逆解运动: Watch 写 kin_cmd=1(装货GotoXY)/6(前往坐标 kin_goto_x/y/z) 触发; 用 Kin 时注释掉 Test_Task */
+        Kin_TestRun();       /* 手动测试: Watch 写 kin_test_mode(1装货/2卸货/3回装/4暂存) + kin_test_trig=1 单次拿放; kin_test_handshake 0=手动坐标/1=等视觉 */
+//        Kin_ReadGripper();   /* 只读夹爪位姿: Watch 写 kin_read_trig=1 读一次, 结果 kin_pose_* */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }
@@ -74,9 +74,9 @@ void DATE_Tasks(void *p_arg)
 
     while (1)
     {
-		key = Key_Read();
-        ELRS_Remote_Update();
-        Mission_Update(key);   /* 全自动比赛流程 (mission_enable=1 才介入) */
+        key = Key_Read();
+        ELRS_Remote_Update();   /* 刷新 ELRS_RC: 遥控直控底盘靠这个喂数据 */
+//        Mission_Update(key);   /* 全自动比赛流程 (mission.enable=1 才介入) */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }
