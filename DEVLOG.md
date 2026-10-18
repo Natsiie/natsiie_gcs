@@ -232,3 +232,22 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - 发布 `/tracking_color/tracks`、`/tracking_color/centers_pixel`、`/tracking_color/debug_image`。待确认/丢失轨迹在 JSON 中明确区分，只有当前观测且确认的目标进入像素点云；图像超时清空目标，输出保留原图时间戳。没有接入抓取或串口指令。
 - 使用与限制见 `src/identify_pack/identify_pack/vision_identify/TRACKING_COLOR.md`。测试覆盖多目标关联、同色交叉、短时遮挡、目标移除、颜色跳变、超时与时间戳；尚未验证实机场景，色块质心仍不等同于顶面抓取中心。
 - 验证：新增 17 项测试通过，完整 `identify_pack` 测试集 142 项通过；独立临时目录中的 ROS 包构建成功。
+
+## 16. 比赛入口临时切换为颜色跟踪调试（2026-10-14）
+
+- `race_start.launch.py` 只启用 `camera_secondary` 和 `tracking_color_node`。其他功能节点注释保留，原 ROI 识别实现及配置仍保留。
+- 跟踪复用上相机话题、颜色配置和 `show` 参数，新增 `tracking_color_params_file` 指向 `config/tracking_color.yaml`；默认显示跟踪窗口。当前入口不启动主相机扫码、TF、投影、串口、到位检测或工位任务。
+
+## 17. 初赛物料顶面检测与阴影过滤（2026-10-14）
+
+- 根据比赛规则第 5 页图 5（上直径 30 mm、下直径 50 mm、高 60 mm），新增纯视觉 `scripts/material_top_detector.py`：全图灰度/亮度边缘、断点连接、圆/椭圆拟合与几何验证，通过后在缩小的顶面内部统计六色 HSV。额外检查黑色候选的边缘覆盖和周边明暗关系，过滤不规则、拖尾和软边暗区。默认使用顶面中心作为跟踪测量，不强制目标数为三个。
+- 斜拍顶面与侧面共享轮廓时，通过小范围闭运算连接交界断点，边缘覆盖仍在原始边缘上验证。可选按上下方向检查同色侧面，使用 60/30、50/30 的比例估计采样范围；默认关闭以兼容俯视。
+- `tracking_color_node` 默认 `detector_mode: material_top`；保留 `hsv_blob` 对照模式及原 ROI 识别。`race_start` 用 `tracking_detector_mode:=hsv_blob` 切换，独立入口用 `detector_mode:=hsv_blob`。新 YAML 参数均以 `top_` 开头，窗口可显示拒绝原因，JSON 增加检测来源、椭圆和形状评分及候选诊断；丢失轨迹不携带本帧椭圆。
+- 使用和调参见 `vision_identify/TRACKING_COLOR.md`。像素尺寸需要现场设置；椭圆中心未做透视中心修正或三维投影。清晰的圆形阴影/背景圆斑仍可能通过，低对比顶面、反光和遮挡会漏检，不适用于决赛可变形状，未进行实机验证。
+- 验证：完整 `identify_pack` 测试集 156 项通过，包含六色顶面、不同目标数、上下方向的六色圆台侧面、阴影干扰、尺寸/颜色拒绝、模式切换及 ROS JSON 序列化。工作区 `colcon build --packages-select identify_pack` 成功，安装后的检测模块、YAML 和两个 launch 的模式参数检查通过；未启动实机相机或控制链路。
+
+## 18. 默认恢复全图 HSV 跟踪（2026-10-14）
+
+- 用户反馈顶面检测效果不如原版，现场改用补光处理阴影。节点、YAML、`race_start` 与独立跟踪 launch 的默认检测模式统一恢复为 `hsv_blob`，多目标跟踪继续启用。
+- 顶面检测保留为显式可选模式，使用说明更新为 HSV 默认与补光后重新标定颜色的流程。
+- 验证：19 项跟踪相关测试通过，工作区构建成功，安装后的节点、YAML 与两个 launch 均确认默认 `hsv_blob`。

@@ -12,6 +12,7 @@ import numpy as np
 from std_msgs.msg import Header
 from identify_pack.scripts.color_tracking import ColorMultiTracker
 from identify_pack.scripts.color_config import build_default_color_config
+from identify_pack.scripts.material_top_detector import MaterialTopConfig
 from identify_pack.vision_identify.tracking_color_node import (
     TrackingColorNode, draw_tracks, make_centers_message,
 )
@@ -52,7 +53,8 @@ class TrackingMessageTests(unittest.TestCase):
             cv2.circle(image, (x, 200), 30, color, -1)
         logger = Mock()
         return SimpleNamespace(
-            options={'max_image_age_sec': 1., 'image_timeout_sec': 0.75},
+            options={'max_image_age_sec': 1., 'image_timeout_sec': 0.75, 'detector_mode': 'material_top'},
+            top_config=MaterialTopConfig(), shape_diagnostics=[],
             tracker=ColorMultiTracker(), color_config=build_default_color_config(),
             detection_options={}, bridge=SimpleNamespace(imgmsg_to_cv2=lambda *a, **kw: image),
             get_logger=lambda: logger,
@@ -103,6 +105,36 @@ class TrackingMessageTests(unittest.TestCase):
         TrackingColorNode.image_cb(node, message)
         self.assertFalse(node.timeout_reported)
         self.assertGreater(node.tracker.snapshot()[0]['track_id'], 3)
+
+    def test_hsv_mode_keeps_blob_centers_and_has_no_top_metadata(self):
+        node = self.fake_node()
+        node.options['detector_mode'] = 'hsv_blob'
+        message = SimpleNamespace(header=Header(frame_id='camera_optical_frame'))
+        message.header.stamp.sec = 10
+        TrackingColorNode.image_cb(node, message)
+        tracks = node.publish_results.call_args[0][1]
+        self.assertEqual(len(tracks), 3)
+        self.assertTrue(all(track['detector'] == 'hsv_blob' for track in tracks))
+        self.assertTrue(all(track['top_ellipse_px'] is None for track in tracks))
+        self.assertEqual(node.shape_diagnostics, [])
+
+    def test_shape_diagnostics_and_ellipses_serialize_in_ros_report(self):
+        node = self.fake_node()
+        message = SimpleNamespace(header=Header(frame_id='camera_optical_frame'))
+        message.header.stamp.sec = 10
+        TrackingColorNode.image_cb(node, message)
+        header, tracks, size, status, frame = node.publish_results.call_args[0]
+        node.options.update(publish_debug_image=False, show_rejected_tops=True)
+        node.show = False
+        node.track_pub, node.center_pub = Mock(), Mock()
+        TrackingColorNode.publish_results(node, header, tracks, size, status, frame)
+        report = json.loads(node.track_pub.publish.call_args[0][0].data)
+        self.assertEqual(report['detector_mode'], 'material_top')
+        self.assertTrue(report['top_candidates'])
+        self.assertTrue(all(track['top_ellipse_px'] for track in report['tracks']))
+        self.assertEqual(report['observed_confirmed_count'], 0)
+        preview = draw_tracks(frame, tracks, status, node.shape_diagnostics)
+        self.assertEqual(preview.shape, frame.shape)
 
 
 if __name__ == '__main__':

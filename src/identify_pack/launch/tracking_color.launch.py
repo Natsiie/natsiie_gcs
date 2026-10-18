@@ -18,6 +18,7 @@ def generate_launch_description():
         DeclareLaunchArgument('device', default_value='/dev/camera_upper'),
         DeclareLaunchArgument('image_topic', default_value='/camera/secondary/image_raw'),
         DeclareLaunchArgument('show', default_value='false'),
+        DeclareLaunchArgument('detector_mode', default_value='hsv_blob'),
         DeclareLaunchArgument('flip_code', default_value='0'),
         DeclareLaunchArgument('color_config', default_value=os.path.join(share, 'color_config.json')),
         DeclareLaunchArgument('params_file', default_value=os.path.join(
@@ -28,7 +29,7 @@ def generate_launch_description():
             parameters=[{
                 'device': LaunchConfiguration('device'),
                 'image_topic': LaunchConfiguration('image_topic'),
-                'width': 640, 'height': 480, 'fps': 25, 'fourcc': 'YUYV',
+                'width': 640, 'height': 480, 'fps': 25, 'fourcc': 'MJPG',
                 'flip_code': ParameterValue(LaunchConfiguration('flip_code'), value_type=int),
                 'qr_decode': False, 'show': False,
             }],
@@ -36,6 +37,7 @@ def generate_launch_description():
         Node(
             package='identify_pack', executable='tracking_color_node', name='tracking_color_node',
             output='screen', parameters=[LaunchConfiguration('params_file'), {
+                'detector_mode': LaunchConfiguration('detector_mode'),
                 'image_topic': LaunchConfiguration('image_topic'),
                 'color_config': LaunchConfiguration('color_config'),
                 'show': ParameterValue(LaunchConfiguration('show'), value_type=bool),

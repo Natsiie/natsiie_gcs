@@ -2,6 +2,7 @@
 """Full-frame multi-color tracking on independent ROS topics; no pickup control."""
 
 import copy
+from dataclasses import asdict
 import json
 from pathlib import Path
 import time
@@ -19,6 +20,7 @@ from std_msgs.msg import String
 
 from identify_pack.scripts.color_config import COLOR_DISPLAY, COLOR_NAMES, load_color_config
 from identify_pack.scripts.color_tracking import ColorMultiTracker, detect_color_objects
+from identify_pack.scripts.material_top_detector import MaterialTopConfig, detect_material_tops
 
 
 def make_centers_message(header, tracks, image_size):
@@ -46,14 +48,24 @@ def make_centers_message(header, tracks, image_size):
     return message
 
 
-def draw_tracks(frame, tracks, status):
+def draw_tracks(frame, tracks, status, diagnostics=()):
     image = frame.copy()
+    for candidate in diagnostics:
+        if candidate['accepted']:
+            continue
+        ellipse = candidate['ellipse']
+        cv2.ellipse(image, ellipse, (100, 100, 100), 1)
+        point = tuple(int(round(value)) for value in ellipse[0])
+        cv2.putText(image, candidate['reason'], point, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35, (100, 100, 100), 1)
     for track in tracks:
         color = COLOR_DISPLAY[COLOR_NAMES[track['color_id']]]
         if not track['observed']:
             color = (160, 160, 160)
         x, y, width, height = (int(round(value)) for value in track['bbox_px'])
         cv2.rectangle(image, (x, y), (x + width, y + height), color, 2)
+        if track.get('top_ellipse_px') is not None:
+            cv2.ellipse(image, track['top_ellipse_px'], color, 2)
         point = tuple(int(round(value)) for value in track['center_px'])
         cv2.drawMarker(image, point, color, cv2.MARKER_CROSS, 12, 1)
         history = np.asarray(track['history_px'], dtype=np.int32)
@@ -79,6 +91,7 @@ class TrackingColorNode(Node):
             'centers_topic': '/tracking_color/centers_pixel',
             'debug_image_topic': '/tracking_color/debug_image',
             'show': False, 'publish_debug_image': True,
+            'detector_mode': 'hsv_blob', 'show_rejected_tops': False,
             'min_blob_area': 300., 'max_blob_area_fraction': 0.15,
             'min_blob_dimension': 12, 'max_aspect_ratio': 3.,
             'min_solidity': 0.65, 'min_extent': 0.3,
@@ -90,9 +103,15 @@ class TrackingColorNode(Node):
             'stationary_speed_px_s': 8., 'stationary_frames': 5,
             'image_timeout_sec': 0.75, 'max_image_age_sec': 1.,
         }
+        defaults.update({f'top_{name}': value for name, value in asdict(MaterialTopConfig()).items()})
         for name, value in defaults.items():
             self.declare_parameter(name, value, ParameterDescriptor(read_only=True))
         self.options = {name: self.get_parameter(name).value for name in defaults}
+        if self.options['detector_mode'] not in ('material_top', 'hsv_blob'):
+            raise ValueError('detector_mode must be material_top or hsv_blob')
+        self.top_config = MaterialTopConfig(**{
+            name: self.options[f'top_{name}'] for name in asdict(MaterialTopConfig())})
+        self.shape_diagnostics = []
         tracker_names = (
             'min_confirmed_hits', 'max_missed_sec', 'max_frame_gap_sec',
             'max_match_distance_px', 'max_area_ratio', 'measurement_std_px',
@@ -118,6 +137,7 @@ class TrackingColorNode(Node):
         # Validate detector options before subscribing or opening the GUI.
         detect_color_objects(np.full((32, 32, 3), 255, np.uint8), self.color_config,
                              **self.detection_options)
+        detect_material_tops(np.full((32, 32, 3), 255, np.uint8), self.color_config, self.top_config)
         self.show = self.options['show']
         if self.show:
             from identify_pack.scripts.camera_diagnostics import require_display
@@ -137,19 +157,23 @@ class TrackingColorNode(Node):
         self.last_frame = None
         self.timeout_reported = False
         self.timeout_timer = self.create_timer(0.1, self.check_timeout)
-        self.get_logger().info(f'全图颜色跟踪订阅 {self.options["image_topic"]}；HSV 配置 {path}')
+        self.get_logger().info(f'全图颜色跟踪订阅 {self.options["image_topic"]}；'
+                               f'检测模式={self.options["detector_mode"]}；HSV 配置 {path}')
 
     def publish_results(self, header, tracks, image_size, status, frame=None):
         report = {
             'stamp': {'sec': header.stamp.sec, 'nanosec': header.stamp.nanosec},
             'frame_id': header.frame_id, 'image_size': list(image_size),
             'status': status, 'tracks': tracks,
+            'detector_mode': self.options['detector_mode'],
+            'top_candidates': self.shape_diagnostics,
             'observed_confirmed_count': sum(track['confirmed'] and track['observed'] for track in tracks),
         }
         self.track_pub.publish(String(data=json.dumps(report, ensure_ascii=False, allow_nan=False)))
         self.center_pub.publish(make_centers_message(header, tracks, image_size))
         if frame is not None and (self.show or self.options['publish_debug_image']):
-            preview = draw_tracks(frame, tracks, status)
+            diagnostics = self.shape_diagnostics if self.options['show_rejected_tops'] else []
+            preview = draw_tracks(frame, tracks, status, diagnostics)
             if self.options['publish_debug_image']:
                 debug = self.bridge.cv2_to_imgmsg(preview, encoding='bgr8')
                 debug.header = copy.deepcopy(header)
@@ -169,7 +193,12 @@ class TrackingColorNode(Node):
             return
         try:
             frame = self.bridge.imgmsg_to_cv2(message, desired_encoding='bgr8')
-            detections = detect_color_objects(frame, self.color_config, **self.detection_options)
+            self.shape_diagnostics = []
+            if self.options['detector_mode'] == 'material_top':
+                detections = detect_material_tops(frame, self.color_config, self.top_config,
+                                                  self.shape_diagnostics)
+            else:
+                detections = detect_color_objects(frame, self.color_config, **self.detection_options)
             if self.last_header is not None and message.header.frame_id != self.last_header.frame_id:
                 self.tracker.reset()
             tracks = self.tracker.update(detections, stamp_ns / 1e9, frame.shape[1::-1])
@@ -193,6 +222,7 @@ class TrackingColorNode(Node):
                 or time.monotonic() - self.last_received <= self.options['image_timeout_sec']):
             return
         self.tracker.reset()
+        self.shape_diagnostics = []
         self.last_stamp_ns = None
         self.timeout_reported = True
         # Keep the last source timestamp: never make old pixels look like new data.

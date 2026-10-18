@@ -1,16 +1,67 @@
 #!/usr/bin/env python3
 """三圆环工位参考零点标定工具（摆正工位后回写参考圆心 + px/mm 标定矩阵）。
 
-把工位摆到「零点/对正」位置：
-  - 自动检测稳定后按 S 保存；自动检测失败时，鼠标左键依次点选三环（R1/R2/R3）再按 S；
-  - 保存时用 geometry.center_spacing_mm 自动推算像素→毫米比例，写入 image_to_station_affine。
+=====================================================================
+一、标定前必须先确认的三个物理量（写在 ring_station_detector.json 的 geometry）
+=====================================================================
+  center_spacing_mm = 150.0   相邻环中心距（mm）。现场实测 15cm，2026-10 确认；
+  outer_diameter_mm =  95.0   圆环外径（mm）。依据《任务命题文档1》表3/图5：
+                              1~6 环外径为 Φ+3 / Φ1+5 / Φ2+7 / Φ3+10 /
+                              Φ4+10 / Φ5+10，Φ=物料最大直径；
+                              本物料底座 Ø50 → Φ=50 → 6 环外径 50+45 = 95mm。
+                              检测取最外圈，故配置 95。
+  ring1_side        = left    三环按图像 X 排序时，1 号环在左还是右。
+  这三个数错了，px→mm 比例和环号会整体错，先量准再跑。
 
-回写到 ring_station_detector.json 的：
-  - reference.ring_centers_px           三环参考圆心（像素）
-  - reference.station_yaw_deg           参考角度（deg）
-  - reference.image_to_station_affine   像素→毫米矩阵（2x2，对角近似，忽略相机倾斜/旋转）
+=====================================================================
+二、操作前提
+=====================================================================
+  1. 把车/云台摆到「放置物块时的参考位姿」——以后 err=0 就代表这个位姿；
+  2. 相机用 /dev/camera_upper（上相机，照圆环），分辨率 640x480，
+     fourcc 与 launch 一致用 MJPG（压缩传输，避免 USB2.0 带宽被原始画质占满卡死）；
+  3. 画面不翻转，与 launch 的 secondary_camera_flip_code:=0 一致；
+  4. 标定期间车不动、灯不动（自动检测需要连续稳定）。
 
-按键：左键点选  S 保存  R 重置点选  Q/Esc 退出
+=====================================================================
+三、运行命令（在 scripts 目录下）
+=====================================================================
+  python3 ring_station_calibrator.py \
+      --device /dev/camera_upper \
+      --width 640 --height 480 --fps 25 --fourcc MJPG \
+      --config ./ring_station_detector.json \
+      --flip-code 0
+
+  注意：脚本默认 --device 是 /dev/video0（会被系统摄像头占住），必须显式传
+        --device /dev/camera_upper；默认 --fourcc MJPG。
+
+=====================================================================
+四、界面与按键
+=====================================================================
+  自动模式：三环检出且稳定后，画面显示 auto: STABLE 与三个圆心；
+           直接按 S 保存。
+  手动模式：自动检测失败时，鼠标左键按 R1→R2→R3 顺序点三个圆心
+           （ring1_side=left 即从左到右点），点满 3 个后按 S。
+  S  保存   R  重置点选   Q/Esc 退出
+
+=====================================================================
+五、保存内容（回写 ring_station_detector.json）
+=====================================================================
+  reference.ring_centers_px           三环参考圆心（像素）
+  reference.station_yaw_deg           参考角度（deg）
+  reference.image_to_station_affine   像素→毫米 2x2 矩阵
+                                      = center_spacing_mm / 平均像素间距，对角近似
+  保存后要重启 ring_station_detect_node 才生效。
+
+=====================================================================
+六、标定后验证
+=====================================================================
+  1. 车保持该位姿，看 /ring_station：
+       err_x/err_y ≈ 0、angle_err ≈ 0、within=1；
+  2. 车沿臂方向平移一段，err 应主要沿一个方向变化（不串轴）；
+  3. 纠偏方向（corr_x/corr_y）应与误差反号，把车拉回零点；
+  4. 不通过先查 geometry 三个物理量，再查本标定，最后查底盘矩阵
+     chassis_calibrator.py（chassis_image_to_motion）。
+=====================================================================
 """
 from __future__ import annotations
 
@@ -107,7 +158,7 @@ def draw_status(frame, lines):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='标定三圆环工位参考零点与 px/mm 矩阵')
-    parser.add_argument('--device', default='/dev/video0')
+    parser.add_argument('--device', default='/dev/camera_upper')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--fps', type=float, default=25.0)

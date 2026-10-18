@@ -1,7 +1,7 @@
 place_task:
   ros__parameters:
     enabled: true
-    calibration_file: /home/lulu/gcs/camera_extrinsics_new2.json
+    calibration_file: /home/lulu/gcs/camera_extrinsics_new12.json
     checkpoint_file: /home/lulu/gcs/natsiie_gcs/place_progress.json
     base_frame: gimbal_base
     camera_frame: camera_optical_frame

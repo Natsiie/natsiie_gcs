@@ -1,11 +1,8 @@
-"""总启动入口：主/副相机、颜色识别、TF、坐标投影和统一串口桥。
+"""总启动入口（暂时用于全图颜色跟踪调试）。
 
-主相机（QR 解码）与副相机（霍夫圆/颜色识别）分开打开：
-  - 主相机发布到 /camera/main/image_raw
-  - 副相机发布到 /camera/secondary/image_raw
-
-二维码任务码控制颜色抓取顺序；颜色/工位/转盘/叠放位等识别节点均已启用。
-设备路径、串口和标定配置可用 launch 参数覆盖。
+只启用上相机 camera_secondary 与 tracking_color_node，默认显示跟踪窗口。
+原主相机、ROI 颜色识别、到位检测、TF、投影、串口和工位任务节点暂时
+注释保留，调试完成后可恢复。旧参数声明保留，但不启用对应功能。
 """
 import os
 
@@ -43,6 +40,8 @@ def generate_launch_description():
         DeclareLaunchArgument('secondary_image_topic', default_value=SECONDARY_TOPIC),
         DeclareLaunchArgument('min_consistent', default_value=min_consistent),
         DeclareLaunchArgument('show', default_value=show),
+        DeclareLaunchArgument('tracking_color_params_file', default_value=os.path.join(
+            share, 'config', 'tracking_color.yaml')),
         DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
             share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
@@ -52,7 +51,8 @@ def generate_launch_description():
         # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
         DeclareLaunchArgument('secondary_frozen_frame_timeout_sec', default_value='5.0'),
         DeclareLaunchArgument('secondary_camera_fps', default_value='25'),
-        DeclareLaunchArgument('secondary_camera_fourcc', default_value='YUYV'),
+        # 两台相机默认 MJPG：压缩传输，避免 YUYV 原始画质占满 USB2.0 带宽导致卡死。
+        DeclareLaunchArgument('secondary_camera_fourcc', default_value='MJPG'),
         # 副相机画面翻转：-1=上下颠倒(180°), 1=左右镜像, 0=不翻转。
         DeclareLaunchArgument('secondary_camera_flip_code', default_value='0'),
         # 统一串口桥使用的设备和波特率。
@@ -88,29 +88,29 @@ def generate_launch_description():
             share, 'Arrival_ROI.txt')),
 
         # 主相机节点：自己解码 QR，读到内容后发布 /QR_Decode 并关闭摄像头。
-        Node(
-            package='identify_pack',
-            executable='camera_node',
-            name='camera_main',
-            condition=IfCondition(LaunchConfiguration('start_main_camera')),
-            output='screen',
-            respawn=True,
-            respawn_delay=2.0,
-            parameters=[{
-                'device': main_camera_device,
-                'image_topic': MAIN_TOPIC,
-                'qr_decode': True,
-                'stop_after_qr': True,
-                'fourcc': 'MJPG',  # 主相机用 MJPEG，提升扫码清晰度
-                'width': ParameterValue(main_camera_width, value_type=int),
-                'height': ParameterValue(main_camera_height, value_type=int),
-                'fps': ParameterValue(main_camera_fps, value_type=int),
-                'qr_min_consistent': ParameterValue(min_consistent, value_type=int),
-                'show': ParameterValue(show, value_type=bool),
-            }],
-        ),
+        # Node(
+        #     package='identify_pack',
+        #     executable='camera_node',
+        #     name='camera_main',
+        #     condition=IfCondition(LaunchConfiguration('start_main_camera')),
+        #     output='screen',
+        #     respawn=True,
+        #     respawn_delay=2.0,
+        #     parameters=[{
+        #         'device': main_camera_device,
+        #         'image_topic': MAIN_TOPIC,
+        #         'qr_decode': True,
+        #         'stop_after_qr': True,
+        #         'fourcc': 'MJPG',  # 主相机用 MJPEG，提升扫码清晰度
+        #         'width': ParameterValue(main_camera_width, value_type=int),
+        #         'height': ParameterValue(main_camera_height, value_type=int),
+        #         'fps': ParameterValue(main_camera_fps, value_type=int),
+        #         'qr_min_consistent': ParameterValue(min_consistent, value_type=int),
+        #         'show': ParameterValue(show, value_type=bool),
+        #     }],
+        # ),
 
-        # 副相机节点：给霍夫圆/颜色识别
+        # 上相机：全图颜色跟踪图像源。
         Node(
             package='identify_pack',
             executable='camera_node',
@@ -130,6 +130,19 @@ def generate_launch_description():
                     LaunchConfiguration('secondary_frozen_frame_timeout_sec'), value_type=float),
             }],
         ),
+
+        # # 全图多物块跟踪：发布独立 /tracking_color/* 话题。
+        # Node(
+        #     package='identify_pack',
+        #     executable='tracking_color_node',
+        #     name='tracking_color_node',
+        #     output='screen',
+        #     parameters=[LaunchConfiguration('tracking_color_params_file'), {
+        #         'image_topic': secondary_image_topic,
+        #         'color_config': LaunchConfiguration('color_config'),
+        #         'show': ParameterValue(show, value_type=bool),
+        #     }],
+        # ),
 
         # 颜色识别：订阅副相机图像，读取 ROI 和 HSV 配置，发布带原图时间戳的像素中心。
         Node(
@@ -250,16 +263,16 @@ def generate_launch_description():
         # ),
 
         # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
-        Node(
-            package='identify_pack',
-            executable='turntable_detect_node',
-            name='turntable_detect_node',
-            output='screen',
-            parameters=[{
-                'image_topic': SECONDARY_TOPIC,
-                'show': True,
-            }],
-        ),
+        # Node(
+        #     package='identify_pack',
+        #     executable='turntable_detect_node',
+        #     name='turntable_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': SECONDARY_TOPIC,
+        #         'show': True,
+        #     }],
+        # ),
 
         # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         Node(
@@ -277,28 +290,28 @@ def generate_launch_description():
         ),
 
         # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        Node(
-            package='identify_pack',
-            executable='stacked_ring_detect_node',
-            name='stacked_ring_detect_node',
-            output='screen',
-            parameters=[{
-                'image_topic': secondary_image_topic,
-                'show': ParameterValue(show, value_type=bool),
-                'camera_frame': 'camera_optical_frame',
-                'centers_topic': '/stacked_ring/centers_pixel',
-            }],
-        ),
+        # Node(
+        #     package='identify_pack',
+        #     executable='stacked_ring_detect_node',
+        #     name='stacked_ring_detect_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': secondary_image_topic,
+        #         'show': ParameterValue(show, value_type=bool),
+        #         'camera_frame': 'camera_optical_frame',
+        #         'centers_topic': '/stacked_ring/centers_pixel',
+        #     }],
+        # ),
 
         # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
         # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。
-        Node(
-            package='identify_pack',
-            executable='place_task',
-            name='place_task',
-            output='screen',
-            parameters=[LaunchConfiguration('place_task_params_file')],
-        ),
+        # Node(
+        #     package='identify_pack',
+        #     executable='place_task',
+        #     name='place_task',
+        #     output='screen',
+        #     parameters=[LaunchConfiguration('place_task_params_file')],
+        # ),
 
         # ROI 叠加节点：订阅副相机（调试用）
         # Node(

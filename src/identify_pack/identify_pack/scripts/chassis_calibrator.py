@@ -45,7 +45,7 @@ def open_camera(device, width, height, fps):
     if not camera.isOpened():
         camera.release()
         raise RuntimeError(f'无法打开摄像头：{device}')
-    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
+    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     camera.set(cv2.CAP_PROP_FPS, float(fps))

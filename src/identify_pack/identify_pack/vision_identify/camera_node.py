@@ -31,7 +31,8 @@ class CameraNode(Node):
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('fps', 25)
-        self.declare_parameter('fourcc', 'YUYV')  # 实际格式/帧率由驱动协商，采集进程会打印结果。
+        # 默认 MJPG：压缩传输，避免 YUYV 原始画质占满 USB2.0 带宽导致卡死。
+        self.declare_parameter('fourcc', 'MJPG')  # 实际格式/帧率由驱动协商，采集进程会打印结果。
         self.declare_parameter('flip_code', 0)  # 0=不翻转, 1=左右镜像, -1=上下+左右(180°)
         self.declare_parameter('reconnect_timeout_sec', 3.0)  # 连续多少秒无新帧触发重连
         self.declare_parameter('frozen_frame_timeout_sec', 0.0)

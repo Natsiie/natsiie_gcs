@@ -74,6 +74,10 @@ class PixelToBaseNode(Node):
             'ring_plane_z_mm': 0.0,
             'ring_centers_topic': '/ring_station/centers_pixel',
             'ring_targets_topic': '/ring_station/targets_base',
+            # 三环几何约束：以中间环为锚点，按已知中心距重建左右两环，
+            # 消除三环各自投影误差。整体平移/旋转校正由下位机负责。
+            'ring_geometry_enforce': True,
+            'ring_center_spacing_mm': 150.0,
             'tf_wait_sec': 0.5,
             'show': True,
         }
@@ -106,6 +110,12 @@ class PixelToBaseNode(Node):
         self.mode = self.param('plane_mode')
         if self.mode not in self.planes:
             raise ValueError('Selected plane is not configured')
+        self.ring_geometry_enforce = bool(self.param('ring_geometry_enforce'))
+        self.ring_center_spacing_mm = float(self.param('ring_center_spacing_mm'))
+        if (self.ring_geometry_enforce
+                and (not math.isfinite(self.ring_center_spacing_mm)
+                     or self.ring_center_spacing_mm <= 0)):
+            raise ValueError('ring_center_spacing_mm must be finite and positive')
         self.tf_wait = self.param('tf_wait_sec')
         if not math.isfinite(self.tf_wait) or self.tf_wait <= 0:
             raise ValueError('tf_wait_sec must be finite and positive')
@@ -359,16 +369,46 @@ class PixelToBaseNode(Node):
         out = PointCloud()
         out.header.stamp = copy.deepcopy(msg.header.stamp)
         out.header.frame_id = self.base_frame
+        projected = []
         for point in msg.points:
             xyz = pixel_to_plane((point.x, point.y), self.matrix, self.distortion,
                                  base_from_camera, self.planes['ring'] / 1000.0)
-            out.points.append(Point32(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2])))
+            projected.append(np.asarray(xyz, dtype=np.float64))
             self.get_logger().info(
                 f'圆环圆心 -> ({xyz[0] * 1000.0:.1f}, {xyz[1] * 1000.0:.1f}, '
                 f'{xyz[2] * 1000.0:.1f}) mm',
                 throttle_duration_sec=1.0)
+        if self.ring_geometry_enforce and len(projected) == 3:
+            projected = self._enforce_ring_geometry(projected)
+        for xyz in projected:
+            out.points.append(Point32(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2])))
         out.channels = [ChannelFloat32(name='ring_id', values=[float(v) for v in ring_ids])]
         return out
+
+    def _enforce_ring_geometry(self, projected):
+        """以中间环为锚点，按已知中心距重建两侧环。
+
+        三环从左到右排列，取 P1->P3 方向为单位向量 u，重建：
+            P1 = P2 - S*u,  P3 = P2 + S*u
+        这样三环严格共线、严格等距，只剩整体平移/旋转误差；
+        这两项校正由下位机负责，上位机不做偏移补偿。
+        """
+        p1, p2, p3 = (np.asarray(p[:2], dtype=np.float64) for p in projected)
+        direction = p3 - p1
+        length = float(np.linalg.norm(direction))
+        if not np.isfinite(length) or length < 1e-9:
+            raise ValueError('三环圆心重合，无法确定连线方向')
+        unit = direction / length
+        spacing = self.ring_center_spacing_mm / 1000.0
+        left = p2 - spacing * unit
+        right = p2 + spacing * unit
+        z = float(projected[1][2])
+        self.get_logger().info(
+            f'三环重建（S={self.ring_center_spacing_mm:g}mm，锚点为中间环）',
+            throttle_duration_sec=5.0)
+        return [np.append(left, z),
+                np.append(p2, z),
+                np.append(right, z)]
 
     @staticmethod
     def _channel_values(msg, name):

@@ -17,6 +17,9 @@ class ColorDetection:
     bbox: tuple
     area: float
     score: float
+    ellipse: tuple | None = None
+    shape_score: float = 0.0
+    detector: str = 'hsv_blob'
 
 
 def box_overlap(first, second):
@@ -98,6 +101,9 @@ class _Track:
         self.area = detection.area
         self.score = detection.score
         self.measurement = detection.center
+        self.ellipse = detection.ellipse
+        self.shape_score = detection.shape_score
+        self.detector = detection.detector
         self.colors = deque(maxlen=color_window)
         self.colors.append((detection.color_id, max(0.05, detection.score)))
         self.history = deque(maxlen=history_length)
@@ -137,6 +143,9 @@ class _Track:
         self.bbox = tuple(float(value) for value in detection.bbox)
         self.area, self.score = detection.area, detection.score
         self.measurement = detection.center
+        self.ellipse = detection.ellipse
+        self.shape_score = detection.shape_score
+        self.detector = detection.detector
         self.last_seen = timestamp
         self.hits += 1
         self.hit_streak += 1
@@ -269,6 +278,8 @@ class ColorMultiTracker:
                 'center_px': track.state[:2].tolist(),
                 'measurement_center_px': list(track.measurement) if track.observed else None,
                 'bbox_px': list(track.bbox), 'area_px2': float(track.area),
+                'top_ellipse_px': track.ellipse if track.observed else None,
+                'shape_score': float(track.shape_score), 'detector': track.detector,
                 'velocity_px_s': track.state[2:].tolist(),
                 'position_std_px': np.sqrt(np.maximum(0., np.diag(track.covariance)[:2])).tolist(),
                 'last_seen_sec': float(track.last_seen),

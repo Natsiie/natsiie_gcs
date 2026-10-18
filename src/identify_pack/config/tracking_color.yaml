@@ -7,7 +7,35 @@ tracking_color_node:
     show: false
     publish_debug_image: true
 
-    # Full-image HSV candidates; reject clipped targets and large background blobs.
+    # Default: original full-frame HSV blobs with multi-object tracking.
+    # Optional material_top: rule figure 5, top 30mm, base 50mm, height 60mm.
+    detector_mode: hsv_blob
+    show_rejected_tops: false
+    top_min_minor_axis_px: 12.0
+    top_max_major_axis_px: 120.0
+    top_min_aspect: 0.35
+    top_canny_low: 35
+    top_canny_high: 100
+    top_edge_close_kernel_px: 5
+    top_min_contour_points: 16
+    top_max_fit_error: 0.07
+    top_min_contour_fill: 0.75
+    top_min_edge_coverage: 0.70
+    top_edge_tolerance_px: 2.0
+    top_min_boundary_contrast: 10.0
+    top_inner_ratio: 0.70
+    top_min_color_support: 0.45
+    top_min_color_margin: 0.08
+    top_black_min_edge_coverage: 0.82
+    top_black_min_dark_boundary: 0.45
+    top_black_max_outer_support: 0.55
+    top_duplicate_overlap: 0.60
+    # 0 disables side validation (safe for top-down). 1 body extends down in
+    # image, -1 up; enable only for a fixed oblique camera view after inspection.
+    top_body_direction: 0
+    top_min_body_support: 0.35
+
+    # The following detection thresholds only apply to hsv_blob mode.
     min_blob_area: 300.0
     max_blob_area_fraction: 0.15
     min_blob_dimension: 12
