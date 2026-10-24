@@ -1,0 +1,23 @@
+# systemd 服务模板：由 install_service.sh 按当前机器的用户/路径填充占位符。
+# 生成物安装到 /etc/systemd/system/race_start.service，不进入版本控制。
+[Unit]
+Description=natsiie_gcs race_start 视觉 + 串口链路
+After=systemd-udevd.service
+# 避免反复崩溃刷屏：60s 内最多重启 5 次。
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@REPO@
+# 数据/状态目录按当前用户家目录展开，两台机器一致。
+Environment=NATSIIE_DATA_DIR=%h/gcs
+Environment=NATSIIE_STATE_DIR=%h/.local/state/natsiie_gcs
+ExecStart=@REPO@/scripts/start_race.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

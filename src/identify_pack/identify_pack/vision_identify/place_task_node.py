@@ -3,7 +3,6 @@
 import copy
 import json
 import math
-from pathlib import Path
 import time
 
 import cv2
@@ -17,6 +16,7 @@ from sensor_msgs.msg import PointCloud
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from identify_pack.config_paths import data_path, state_path
 from identify_pack.scripts.camera_geometry import pixel_to_plane
 from identify_pack.scripts.ground_homography import apply_homography, load as load_ground_homography
 from identify_pack.scripts.place_task import DEFAULT_PHASES, PlaceTask, STAGES
@@ -77,8 +77,8 @@ class PlaceTaskNode(Node):
         super().__init__('place_task')
         defaults = {
             'enabled': False,
-            'calibration_file': '/home/lulu/gcs/camera_extrinsics_v2.json',
-            'checkpoint_file': '/home/lulu/gcs/natsiie_gcs/place_progress.json',
+            'calibration_file': 'camera_extrinsics_v2.json',
+            'checkpoint_file': '',
             'base_frame': 'gimbal_base', 'camera_frame': 'camera_optical_frame',
             'gimbal_frame': 'gimbal_link',
             'mapping_mode': 'pinhole', 'homography_file': '',
@@ -99,7 +99,7 @@ class PlaceTaskNode(Node):
         self.max_age = self.param('target_max_age_sec')
         if not math.isfinite(self.max_age) or self.max_age <= 0:
             raise ValueError('target_max_age_sec must be finite and positive')
-        self.path = Path(self.param('checkpoint_file')).expanduser()
+        self.path = state_path(self.param('checkpoint_file'), 'place_progress.json')
         timeout = self.param('confirmation_timeout_sec')
         phases = self.param('phase_order')
         self.task = (PlaceTask.restore(self.path, timeout, phases)
@@ -139,7 +139,8 @@ class PlaceTaskNode(Node):
         return self.get_parameter(name).value
 
     def load_calibration(self):
-        calibration = json.loads(Path(self.param('calibration_file')).read_text(encoding='utf-8'))
+        calibration = json.loads(
+            data_path(self.param('calibration_file')).read_text(encoding='utf-8'))
         if calibration['child_frame'] != self.param('camera_frame'):
             raise ValueError('Calibration camera frame does not match')
         if (not self.param('base_frame') or not self.param('camera_frame')
@@ -157,7 +158,7 @@ class PlaceTaskNode(Node):
             raise ValueError('Invalid camera calibration')
 
     def load_homography(self):
-        mapping = load_ground_homography(self.param('homography_file'))
+        mapping = load_ground_homography(data_path(self.param('homography_file')))
         if mapping['base_frame'] != self.param('base_frame'):
             raise ValueError('Homography base frame does not match')
         self.homography = mapping['homography']

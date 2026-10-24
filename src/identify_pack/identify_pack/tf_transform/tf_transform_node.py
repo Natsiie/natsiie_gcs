@@ -12,6 +12,7 @@ from sensor_msgs.msg import JointState
 from tf2_geometry_msgs import do_transform_point
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformBroadcaster, TransformListener
 
+from identify_pack.config_paths import data_path
 from identify_pack.tf_transform.transforms import (
     finite_vector, load_camera_pose, normalize_quaternion, yaw_quaternion,
 )
@@ -64,7 +65,8 @@ class TFTransformNode(Node):
         camera_pose = None
         path = self._param('camera_extrinsics_file')
         if path:
-            camera_pose = load_camera_pose(path, self.gimbal_frame, self.camera_frame)
+            camera_pose = load_camera_pose(
+                data_path(path), self.gimbal_frame, self.camera_frame)
         elif self._param('camera_transform_configured'):
             camera_pose = (
                 finite_vector(self._param('camera_translation_m'), 3, 'camera translation'),

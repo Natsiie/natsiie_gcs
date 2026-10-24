@@ -16,4 +16,7 @@ build.log
 *.log
 *.bak
 *.bak-*
+*.bak_*
 
+.vscode/settings.json
+.vscode/c_cpp_properties.json

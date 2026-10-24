@@ -1,6 +1,7 @@
 pixel_to_base:
   ros__parameters:
-    calibration_file: /home/lulu/gcs/camera_extrinsics_new12.json
+    # 相对路径相对 $NATSIIE_DATA_DIR（默认 ~/gcs），两台机器各自放数据即可。
+    calibration_file: camera_extrinsics_new12.json
     image_topic: /camera/secondary/image_raw
     base_frame: gimbal_base
     camera_frame: camera_optical_frame

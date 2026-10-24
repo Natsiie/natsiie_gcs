@@ -7,7 +7,6 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -21,6 +20,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from identify_pack.config_paths import data_path
 from identify_pack.scripts.camera_geometry import pixel_to_plane
 from identify_pack.scripts.color_config import COLOR_IDS, PICKUP_COLOR_IDS
 from identify_pack.tf_transform.transforms import normalize_quaternion
@@ -57,7 +57,7 @@ class PixelToBaseNode(Node):
     def __init__(self):
         super().__init__('pixel_to_base')
         defaults = {
-            'calibration_file': '/home/lulu/gcs/camera_extrinsics.json',
+            'calibration_file': 'camera_extrinsics.json',
             'image_topic': '/camera/image_raw',
             'base_frame': 'gimbal_base',
             'camera_frame': 'camera_optical_frame',
@@ -101,7 +101,8 @@ class PixelToBaseNode(Node):
         if (not self.base_frame or not self.camera_frame
                 or self.base_frame == self.camera_frame):
             raise ValueError('Distinct base_frame and camera_frame are required')
-        calibration = json.loads(Path(self.param('calibration_file')).read_text(encoding='utf-8'))
+        calibration = json.loads(
+            data_path(self.param('calibration_file')).read_text(encoding='utf-8'))
         if calibration['child_frame'] != self.camera_frame:
             raise ValueError('Calibration camera frame does not match camera_frame')
         self.matrix = np.asarray(calibration['camera_matrix'], dtype=np.float64)
@@ -469,7 +470,7 @@ class PixelToBaseNode(Node):
         """读取视觉系 -> 塔吊系的相似变换：D = s * R(theta) * P + t。"""
         if not path:
             return None
-        document = json.loads(Path(path).expanduser().read_text(encoding='utf-8'))
+        document = json.loads(data_path(path).read_text(encoding='utf-8'))
         if int(document.get('format_version', 0)) != 1:
             raise ValueError('ring_similarity 版本不受支持')
         scale = float(document['scale'])

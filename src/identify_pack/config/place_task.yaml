@@ -1,8 +1,10 @@
 place_task:
   ros__parameters:
     enabled: true
-    calibration_file: /home/lulu/gcs/camera_extrinsics_new12.json
-    checkpoint_file: /home/lulu/gcs/natsiie_gcs/place_progress.json
+    # 相对路径相对 $NATSIIE_DATA_DIR（默认 ~/gcs）。
+    calibration_file: camera_extrinsics_new12.json
+    # 空值 = 默认状态目录 $NATSIIE_STATE_DIR（默认 ~/.local/state/natsiie_gcs）。
+    checkpoint_file: ""
     base_frame: gimbal_base
     camera_frame: camera_optical_frame
     gimbal_frame: gimbal_link
@@ -11,7 +13,7 @@ place_task:
     #   homography 地面单应（像素直接映射到平面，用 homography_file；标定见
     #              calibrate_ground_homography.py，每点只需 x y yaw）
     mapping_mode: homography
-    homography_file: /home/lulu/gcs/ground_homography.json
+    homography_file: ground_homography.json
     confirmation_timeout_sec: 30.0
     target_max_age_sec: 0.5
     require_aligned: true

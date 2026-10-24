@@ -17,8 +17,8 @@ tf_transform:
     # Fixed rotation-centre position relative to base, metres.
     base_to_gimbal_translation_m: [0.0, 0.0, 0.0]
 
-    # Option A: absolute path to camera_extrinsics.json; takes precedence.
-    camera_extrinsics_file: /home/lulu/gcs/camera_extrinsics_new12.json
+    # Option A: 相对路径相对 $NATSIIE_DATA_DIR（默认 ~/gcs），绝对路径原样使用。
+    camera_extrinsics_file: camera_extrinsics_new12.json
 
     # Option B: fill in measured pose, then set configured=true.
     # These zeros/identity are placeholders, not the camera mounting geometry.
