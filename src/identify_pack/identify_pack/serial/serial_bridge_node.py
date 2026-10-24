@@ -57,6 +57,8 @@ class SerialBridgeNode(Node):
         self.declare_parameter('arrived_topic', '/arm/arrived')
         self.declare_parameter('ring_target_topic', '/ring_station/targets_base')
         self.declare_parameter('ring_target_type', RING_TARGET_TYPE)
+        # 三环坐标合理范围（mm，相对 gimbal_base 原点）；超出视为误检，不下发。
+        self.declare_parameter('ring_target_limit_mm', 500.0)
         self.target_topic = self.get_parameter('target_topic').value
         self.target_type = int(self.get_parameter('target_type').value)
         self.target_max_hz = float(self.get_parameter('target_max_hz').value)
@@ -336,11 +338,20 @@ class SerialBridgeNode(Node):
         if len(message.points) != 3:
             self.get_logger().warning('忽略圆环目标：圆心数不是 3 个')
             return
+        limit_mm = float(self.get_parameter('ring_target_limit_mm').value)
+        if not math.isfinite(limit_mm) or limit_mm <= 0:
+            limit_mm = 500.0
         values = []
         for point in message.points:
             xy = (point.x * 1000.0, point.y * 1000.0)
             if not all(math.isfinite(v) for v in xy):
                 self.get_logger().warning('忽略圆环目标：坐标非有限')
+                return
+            if max(abs(v) for v in xy) > limit_mm:
+                self.get_logger().warning(
+                    f'忽略圆环目标：坐标 ({xy[0]:.1f}, {xy[1]:.1f})mm '
+                    f'超出合理范围 ±{limit_mm:g}mm（疑似误检/云台未回零）',
+                    throttle_duration_sec=2.0)
                 return
             values.extend(xy)
         payload = ','.join(f'{v:.1f}' for v in values)
