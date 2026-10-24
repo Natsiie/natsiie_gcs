@@ -1,0 +1,33 @@
+pixel_to_base:
+  ros__parameters:
+    calibration_file: /home/lulu/gcs/camera_extrinsics_new12.json
+    image_topic: /camera/secondary/image_raw
+    base_frame: gimbal_base
+    camera_frame: camera_optical_frame
+    output_topic: /pixel_to_base/point
+    centers_topic: /color/centers_pixel
+    targets_topic: /color/targets_base
+    show: false
+    tf_wait_sec: 0.5
+    auto_project: true
+    min_auto_interval_sec: 0.2
+    target_max_age_sec: 1.0
+
+    # Initial check uses the measured calibration board Z from the JSON.
+    # All plane heights below are relative to gimbal_base, NOT camera distance.
+    # calibration mode assumes base/gimbal origins coincide vertically.
+    plane_mode: object
+    object_plane_configured: true
+    object_plane_z_mm: -56.0   # Relative to gimbal_base, as measured.
+    ring_plane_configured: true
+    ring_plane_z_mm: -116.0     # 圆环平面高度（相对 gimbal_base），现场量准后确认
+
+    # 三环几何约束：以中间环为锚点，按已知中心距重建左右两环。
+    # 重建后三环严格共线等距；整体平移/旋转校正由下位机负责，上位机不做补偿。
+    ring_geometry_enforce: true
+    ring_center_spacing_mm: 150.0
+    # 备选校正：视觉系与塔吊系有 yaw 偏置时，发 0x0C 前绕转轴原点旋转该角度。
+    # 正负号按实测落点方向试一次；0 = 不校正（推荐优先改下位机 gimbal_theta_offset）。
+    ring_frame_yaw_offset_deg: -4.33
+    # 径向补偿（mm）：物块整体偏内填正数、偏外填负数；只影响放置 0x0C。
+    ring_radial_offset_mm: 14.50
