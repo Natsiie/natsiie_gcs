@@ -36,6 +36,7 @@ class PixelToBaseTests(unittest.TestCase):
             matrix=self.matrix, distortion=self.distortion, image_size=(640, 480),
             planes={'object': -72.5, 'ring': -20.0}, mode='object',
             base_frame='gimbal_base', camera_frame='camera_optical_frame',
+            pair_anchor=None,
         )
 
     def test_distorted_pixel_projects_to_base_point_and_preserves_image_stamp(self):
