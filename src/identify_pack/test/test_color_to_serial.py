@@ -50,16 +50,21 @@ class ColorToSerialTests(unittest.TestCase):
             setattr(self.projector, name,
                     getattr(PixelToBaseNode, name).__get__(self.projector))
         self.projector.tf_buffer.set_transform(self.transform, 'test')
+        self.port = Mock()
+        self.port.is_open = True
+        self.port.write.side_effect = lambda frame: len(frame)
         self.bridge = SimpleNamespace(
             target_frame='gimbal_base', target_max_age=1.0, target_max_hz=5.0,
             target_topic='/color/targets_base', target_type=COLOR_TARGET_TYPE,
             _last_target_send={}, _last_target_stamp={},
             task_mode=False,
-            get_clock=lambda: self.clock, get_logger=Mock(), ser=Mock(),
+            get_clock=lambda: self.clock, get_logger=Mock(), ser=self.port,
         )
-        self.bridge.ser.is_open = True
-        self.bridge.ser.write.side_effect = lambda frame: len(frame)
         self.bridge._send = SerialBridgeNode._send.__get__(self.bridge)
+        # 测试替身：断线后恢复同一个 Mock 端口，便于验证失败/重发记账。
+        self.bridge._ensure_serial = (
+            lambda: self.bridge.ser is not None and self.bridge.ser.is_open)
+        self.bridge._close_serial = lambda: setattr(self.bridge, 'ser', self.port)
 
     def centers(self):
         msg = PointCloud()

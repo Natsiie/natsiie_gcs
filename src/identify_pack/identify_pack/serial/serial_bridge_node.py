@@ -105,6 +105,17 @@ class SerialBridgeNode(Node):
             if not math.isfinite(self.task_code_send_duration) or self.task_code_send_duration <= 0:
                 raise ValueError('task_code_send_duration_sec must be finite and positive')
             self.create_timer(resend_interval, self._resend_task_code)
+        # 串口重连：设备可能晚于节点出现，或因供电/热插拔在运行中掉线。
+        self.declare_parameter('serial_reconnect_interval_sec', 1.0)
+        self.serial_reconnect_interval = float(
+            self.get_parameter('serial_reconnect_interval_sec').value)
+        if (not math.isfinite(self.serial_reconnect_interval)
+                or self.serial_reconnect_interval <= 0):
+            raise ValueError('serial_reconnect_interval_sec must be finite and positive')
+        self.serial_port = serial_port
+        self.baud = int(baud)
+        self.serial_timeout = float(timeout)
+        self._next_serial_open = 0.0
         self.ser = None
         self.rx_buffer = bytearray()
         self.pub_joint_state = self.create_publisher(
@@ -116,16 +127,9 @@ class SerialBridgeNode(Node):
         self.declare_parameter('place_control_topic', '/arm/place_control')
         self.pub_place_control = self.create_publisher(
             String, self.get_parameter('place_control_topic').value, 10)
-        if serial is None:
-            self.get_logger().error('pyserial 未安装，无法发送串口')
-        else:
-            try:
-                self.ser = serial.Serial(port=serial_port, baudrate=int(baud),
-                                         timeout=float(timeout), write_timeout=0.1)
-                self.get_logger().info(f'已打开串口 {serial_port} @ {baud}')
-                self.rx_timer = self.create_timer(0.01, self._poll_feedback)
-            except Exception as e:
-                self.get_logger().error(f'打开串口失败: {e}')
+        # 无论当前设备是否存在，都启动轮询定时器；由 _ensure_serial 负责打开和断线重连。
+        self.rx_timer = self.create_timer(0.01, self._poll_feedback)
+        self._ensure_serial()
 
         for topic, type_byte in OUTGOING_TOPIC_TYPES.items():
             if topic == 'QR_Decode' and self.task_mode:
@@ -216,9 +220,46 @@ class SerialBridgeNode(Node):
         self.motion_stamp_ns = stamp_ns
         self.motion_receive_time = time.monotonic()
 
+    def _ensure_serial(self):
+        """确保串口已打开；设备缺失或掉线时按固定间隔重试。"""
+        if self.ser is not None and self.ser.is_open:
+            return True
+        now = time.monotonic()
+        if now < self._next_serial_open:
+            return False
+        self._next_serial_open = now + self.serial_reconnect_interval
+        if serial is None:
+            self.get_logger().error(
+                'pyserial 未安装，无法打开串口', throttle_duration_sec=30.0)
+            return False
+        try:
+            self.ser = serial.Serial(
+                port=self.serial_port, baudrate=self.baud,
+                timeout=self.serial_timeout, write_timeout=0.1)
+            self.rx_buffer = bytearray()  # 丢弃掉线前残留的半帧
+            self.get_logger().info(
+                f'已打开串口 {self.serial_port} @ {self.baud}')
+            return True
+        except Exception as error:
+            self.ser = None
+            self.get_logger().warning(
+                f'打开串口失败，{self.serial_reconnect_interval:.1f}s 后重试: {error}',
+                throttle_duration_sec=10.0)
+            return False
+
+    def _close_serial(self):
+        """关闭当前串口，并安排下一次重连。"""
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+        self._next_serial_open = time.monotonic() + self.serial_reconnect_interval
+
     def _poll_feedback(self):
         """读取并解析下位机反馈；角度载荷为 ASCII 度数，例如 ``90.0``。"""
-        if not self.ser or not self.ser.is_open:
+        if not self._ensure_serial():
             return
         try:
             waiting = self.ser.in_waiting
@@ -239,7 +280,9 @@ class SerialBridgeNode(Node):
                     throttle_duration_sec=2.0)
             self.rx_buffer = bytearray(remainder)
         except Exception as error:
-            self.get_logger().error(f'串口读取失败: {error}', throttle_duration_sec=2.0)
+            self.get_logger().error(
+                f'串口读取失败，关闭并重连: {error}', throttle_duration_sec=2.0)
+            self._close_serial()
             return
         for type_byte, payload in frames:
             if type_byte == PLACE_RESULT_TYPE:
@@ -308,18 +351,19 @@ class SerialBridgeNode(Node):
         except Exception as e:
             self.get_logger().error(f'打包失败 topic={topic}: {e}')
             return False
-        if self.ser and self.ser.is_open:
-            try:
-                written = self.ser.write(frame)
-                if written != len(frame):
-                    raise IOError(f'串口只写入 {written}/{len(frame)} 字节')
-                self.get_logger().info(
-                    f'TX {topic}(0x{type_byte:02X}) len={len(frame)}: {text!r}')
-                return True
-            except Exception as e:
-                self.get_logger().error(f'串口写入失败: {e}')
-        else:
+        if not self._ensure_serial():
             self.get_logger().info(f'(无串口) {topic}(0x{type_byte:02X}): {text!r}')
+            return False
+        try:
+            written = self.ser.write(frame)
+            if written != len(frame):
+                raise IOError(f'串口只写入 {written}/{len(frame)} 字节')
+            self.get_logger().info(
+                f'TX {topic}(0x{type_byte:02X}) len={len(frame)}: {text!r}')
+            return True
+        except Exception as e:
+            self.get_logger().error(f'串口写入失败，关闭并重连: {e}')
+            self._close_serial()
         return False
 
     def _send_ring_targets(self, message: PointCloud):

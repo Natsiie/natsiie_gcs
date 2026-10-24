@@ -21,7 +21,7 @@ class SerialFeedbackTests(unittest.TestCase):
         logger = Mock()
         clock = Mock()
         clock.now.return_value.to_msg.return_value = Time(sec=42, nanosec=123)
-        return SimpleNamespace(
+        bridge = SimpleNamespace(
             ser=port, rx_buffer=bytearray(), yaw_feedback_type=GIMBAL_YAW_TYPE,
             yaw_joint_name='gimbal_yaw_joint', pub_joint_state=Mock(),
             joint_states_topic='/gimbal/joint_states',
@@ -29,6 +29,10 @@ class SerialFeedbackTests(unittest.TestCase):
             target_frame='gimbal_base', pub_place_result=Mock(),
             pub_place_control=Mock(),
         )
+        # 测试替身：不真正打开串口，沿用上面准备好的 Mock 端口。
+        bridge._ensure_serial = lambda: bridge.ser is not None and bridge.ser.is_open
+        bridge._close_serial = lambda: None
+        return bridge
 
     def feed(self, bridge, data):
         bridge.ser.in_waiting = len(data)
