@@ -198,15 +198,24 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - 每个工位、每批的放置进度独立记录；叠料区第一批落地，第二批叠在第一批上。物料高度 60 mm，叠料地面相对 `gimbal_base` 的 Z 为 -72.5 mm。首层夹爪释放 Z 尚待测量，与地面 Z 分开配置。
 - 仅匹配任务 UUID、指令编号的成功反馈推进进度；错误/超时保留目标，重复反馈不累加层数。进度原子保存，重启后不自动重发，阶段启动和重试都需要明确控制消息。
 - 新增串口 `0x0A` 放置目标、`0x0B` 放置完成反馈，统一串口桥已接通。STM32 `Serial_TakePlaceCommand` / `Serial_CompletePlaceCommand` 提供目标读取、去重及完成回报接口，尚需接入实际放料与撤离动作；没有烧录或实机运动测试。
-- 配置 `src/identify_pack/config/place_task.yaml` 默认禁用；入口 `ros2 launch identify_pack place_task.launch.py`。完整接口和启用要求见 `src/identify_pack/PLACEMENT.md`。
+- 配置 `src/identify_pack/config/place_task.yaml` 默认cd /home/lulu/gcs/natsiie_gcs
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch identify_pack race_start.launch.py show:=true task_mode:=false
+禁用；入口 `ros2 launch identify_pack place_task.launch.py`。完整接口和启用要求见 `src/identify_pack/PLACEMENT.md`。
 - 全套 72 个测试通过，ROS 包构建通过。安装后节点启动检查受沙箱 DDS 网络限制，提权验证未执行（自动审批服务模型配置返回 404）。
 
-## 12. 上相机重复帧看门狗（2026-10-09）
+## 12. 上相机重复帧看门狗（2026-10-09）cd /home/lulu/gcs/natsiie_gcs
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch identify_pack race_start.launch.py show:=true task_mode:=false
+
 
 - 原看门狗只检测无帧超时：即使上相机重复返回同一张图，话题有频率也不会重连。
 - `race_start.launch.py` 对 `camera_secondary`（默认 `/dev/camera_upper`）启用 `secondary_frozen_frame_timeout_sec:=5.0`：连续 5 秒整帧像素完全相同触发重连。设为 `0` 可关闭；主相机仍只检查无帧超时。
 - 使用整帧严格相等判断，单个像素变化也会清零计时。不能检测带微小变化的冻结画面，也不能判断下游显示窗口是否卡住；完全静态的合成图像可能误触发。
-- 重连日志包含设备路径和话题；旧采集线程固定使用原 capture，重连后旧代帧丢弃，避免旧画面刷新看门狗。
+- 重连日志包含设备路径和话题；旧采集线程固定使用原 capture，cd /home/lulu/gcs/natsiie_gcs
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch identify_pack race_start.launch.py show:=true task_mode:=false
+重连后旧代帧丢弃，避免旧画面刷新看门狗。
 - 修改后重新 `colcon build --packages-select identify_pack` 并 `source install/setup.bash`，停止旧启动进程后再运行。
 
 ## 13. 相机采集与重启阻塞修复（2026-10-09）
@@ -231,7 +240,10 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - 保留原 ROI 识别和现有比赛 launch。新增独立 `tracking_color.launch.py`、`config/tracking_color.yaml` 和 ROS 可执行入口。默认复用 `/camera/secondary/image_raw`，可选只启动相机与跟踪，便于独立验证。
 - 发布 `/tracking_color/tracks`、`/tracking_color/centers_pixel`、`/tracking_color/debug_image`。待确认/丢失轨迹在 JSON 中明确区分，只有当前观测且确认的目标进入像素点云；图像超时清空目标，输出保留原图时间戳。没有接入抓取或串口指令。
 - 使用与限制见 `src/identify_pack/identify_pack/vision_identify/TRACKING_COLOR.md`。测试覆盖多目标关联、同色交叉、短时遮挡、目标移除、颜色跳变、超时与时间戳；尚未验证实机场景，色块质心仍不等同于顶面抓取中心。
-- 验证：新增 17 项测试通过，完整 `identify_pack` 测试集 142 项通过；独立临时目录中的 ROS 包构建成功。
+- 验证：新增 17 项测试通过，完整 `identify_pack` 测试集 1cd /home/lulu/gcs/natsiie_gcs
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch identify_pack race_start.launch.py show:=true task_mode:=false
+42 项通过；独立临时目录中的 ROS 包构建成功。
 
 ## 16. 比赛入口临时切换为颜色跟踪调试（2026-10-14）
 
@@ -245,6 +257,9 @@ python3 color_calibrator.py --device /dev/camera_upper --config color_config.jso
 - `tracking_color_node` 默认 `detector_mode: material_top`；保留 `hsv_blob` 对照模式及原 ROI 识别。`race_start` 用 `tracking_detector_mode:=hsv_blob` 切换，独立入口用 `detector_mode:=hsv_blob`。新 YAML 参数均以 `top_` 开头，窗口可显示拒绝原因，JSON 增加检测来源、椭圆和形状评分及候选诊断；丢失轨迹不携带本帧椭圆。
 - 使用和调参见 `vision_identify/TRACKING_COLOR.md`。像素尺寸需要现场设置；椭圆中心未做透视中心修正或三维投影。清晰的圆形阴影/背景圆斑仍可能通过，低对比顶面、反光和遮挡会漏检，不适用于决赛可变形状，未进行实机验证。
 - 验证：完整 `identify_pack` 测试集 156 项通过，包含六色顶面、不同目标数、上下方向的六色圆台侧面、阴影干扰、尺寸/颜色拒绝、模式切换及 ROS JSON 序列化。工作区 `colcon build --packages-select identify_pack` 成功，安装后的检测模块、YAML 和两个 launch 的模式参数检查通过；未启动实机相机或控制链路。
+cd /home/lulu/gcs/natsiie_gcs
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch identify_pack race_start.launch.py show:=true task_mode:=false
 
 ## 18. 默认恢复全图 HSV 跟踪（2026-10-14）
 

@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "description": "vision gimbal_base -> tower frame similarity (D = scale*R(theta)*P + t), mm",
+  "scale": 1.0696321339,
+  "rotation_deg": -7.870676392,
+  "translation_mm": [-2.94443343, 1.0830025722],
+  "residual_mm": [4.6, 9.0, 4.4],
+  "samples": {
+    "vision_mm": [[170.3, 158.6], [160.8, 1.7], [150.3, -162.6]],
+    "arm_mm": [[198.0, 148.8], [173.0, -29.7], [129.9, -188.8]]
+  }
+}
