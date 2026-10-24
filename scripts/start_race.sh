@@ -20,9 +20,12 @@ SERIAL_PORT=${SERIAL_PORT:-/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0}
 SERIAL_WAIT_SEC=${SERIAL_WAIT_SEC:-30}
 SHOW=${SHOW:-false}
 
+# ROS 的 setup.bash 会引用未定义变量，source 期间临时关闭 -u，否则 set -u 会直接退出。
+set +u
 # shellcheck disable=SC1090
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 source "${WORKSPACE}/install/setup.bash"
+set -u
 
 # 开机时 USB 枚举较慢，而 serial_bridge 没有 respawn，等串口出现再拉起，避免启动即崩。
 if [ ! -e "${SERIAL_PORT}" ]; then
