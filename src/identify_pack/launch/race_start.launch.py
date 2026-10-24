@@ -27,6 +27,8 @@ def generate_launch_description():
     main_camera_width = LaunchConfiguration('main_camera_width', default='640')
     main_camera_height = LaunchConfiguration('main_camera_height', default='480')
     main_camera_fps = LaunchConfiguration('main_camera_fps', default='25')
+    # 主相机格式：默认 MJPG，避免 YUYV 占满 USB2.0 带宽；相机不支持时会由驱动回退。
+    main_camera_fourcc = LaunchConfiguration('main_camera_fourcc', default='MJPG')
     min_consistent = LaunchConfiguration('min_consistent', default='3')
     show = LaunchConfiguration('show', default='true')
     secondary_image_topic = LaunchConfiguration('secondary_image_topic')
@@ -37,6 +39,7 @@ def generate_launch_description():
         DeclareLaunchArgument('main_camera_width', default_value=main_camera_width),
         DeclareLaunchArgument('main_camera_height', default_value=main_camera_height),
         DeclareLaunchArgument('main_camera_fps', default_value=main_camera_fps),
+        DeclareLaunchArgument('main_camera_fourcc', default_value=main_camera_fourcc),
         DeclareLaunchArgument('secondary_image_topic', default_value=SECONDARY_TOPIC),
         DeclareLaunchArgument('min_consistent', default_value=min_consistent),
         DeclareLaunchArgument('show', default_value=show),
@@ -88,27 +91,27 @@ def generate_launch_description():
             share, 'Arrival_ROI.txt')),
 
         # 主相机节点：自己解码 QR，读到内容后发布 /QR_Decode 并关闭摄像头。
-        # Node(
-        #     package='identify_pack',
-        #     executable='camera_node',
-        #     name='camera_main',
-        #     condition=IfCondition(LaunchConfiguration('start_main_camera')),
-        #     output='screen',
-        #     respawn=True,
-        #     respawn_delay=2.0,
-        #     parameters=[{
-        #         'device': main_camera_device,
-        #         'image_topic': MAIN_TOPIC,
-        #         'qr_decode': True,
-        #         'stop_after_qr': True,
-        #         'fourcc': 'MJPG',  # 主相机用 MJPEG，提升扫码清晰度
-        #         'width': ParameterValue(main_camera_width, value_type=int),
-        #         'height': ParameterValue(main_camera_height, value_type=int),
-        #         'fps': ParameterValue(main_camera_fps, value_type=int),
-        #         'qr_min_consistent': ParameterValue(min_consistent, value_type=int),
-        #         'show': ParameterValue(show, value_type=bool),
-        #     }],
-        # ),
+        Node(
+            package='identify_pack',
+            executable='camera_node',
+            name='camera_main',
+            condition=IfCondition(LaunchConfiguration('start_main_camera')),
+            output='screen',
+            respawn=True,
+            respawn_delay=2.0,
+            parameters=[{
+                'device': main_camera_device,
+                'image_topic': MAIN_TOPIC,
+                'qr_decode': True,
+                'stop_after_qr': True,
+                'fourcc': main_camera_fourcc,  # 主相机用 MJPEG，提升扫码清晰度
+                'width': ParameterValue(main_camera_width, value_type=int),
+                'height': ParameterValue(main_camera_height, value_type=int),
+                'fps': ParameterValue(main_camera_fps, value_type=int),
+                'qr_min_consistent': ParameterValue(min_consistent, value_type=int),
+                'show': ParameterValue(show, value_type=bool),
+            }],
+        ),
 
         # 上相机：全图颜色跟踪图像源。
         Node(
