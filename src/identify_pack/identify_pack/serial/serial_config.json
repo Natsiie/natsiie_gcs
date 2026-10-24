@@ -1,5 +1,5 @@
 {
-  "serial_port": "/dev/ttyUSB0",
+  "serial_port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
   "baud": 115200,
   "timeout": 0.1
 }

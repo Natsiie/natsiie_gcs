@@ -28,7 +28,7 @@ def generate_launch_description():
     main_camera_height = LaunchConfiguration('main_camera_height', default='480')
     main_camera_fps = LaunchConfiguration('main_camera_fps', default='25')
     min_consistent = LaunchConfiguration('min_consistent', default='3')
-    show = LaunchConfiguration('show', default='true')
+    show = LaunchConfiguration('show', default='false')
     secondary_image_topic = LaunchConfiguration('secondary_image_topic')
 
     return LaunchDescription([

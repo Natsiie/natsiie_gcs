@@ -1,18 +1,18 @@
 [Unit]
 Description=natsiie_gcs race_start 视觉 + 串口链路
 After=systemd-udevd.service
-
-[Service]
-Type=simple
-User=lulu
-Group=lulu
-WorkingDirectory=/home/lulu/gcs/natsiie_gcs
-ExecStart=/home/lulu/gcs/natsiie_gcs/scripts/start_race.sh
-Restart=always
-RestartSec=5
 # 避免反复崩溃刷屏：60s 内最多重启 5 次。
 StartLimitIntervalSec=60
 StartLimitBurst=5
+
+[Service]
+Type=simple
+User=natsiie
+Group=natsiie
+WorkingDirectory=/home/natsiie/natsiie_gcs
+ExecStart=/home/natsiie/natsiie_gcs/scripts/start_race.sh
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
