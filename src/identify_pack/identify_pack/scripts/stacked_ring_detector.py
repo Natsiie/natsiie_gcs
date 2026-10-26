@@ -74,6 +74,8 @@ class StackedRingConfig:
     line_minimum_x_span_px: float
     maximum_line_disagreement_deg: float
     search_calibration: dict | None = None
+    # 运行时是否强制上下两条基准线都有效（true=双线约束，false=单线也可）
+    require_both_lines: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,7 @@ def load_stacked_ring_config(path: Path | str) -> StackedRingConfig:
                 lines["refinement_distance_px"]
             ),
             line_minimum_edge_points=int(lines["minimum_edge_points"]),
+            require_both_lines=bool(lines.get("require_both_lines", False)),
             line_minimum_x_span_px=float(lines["minimum_x_span_px"]),
             search_calibration=raw.get("search_calibration"),
             maximum_line_disagreement_deg=float(
@@ -1056,7 +1059,8 @@ class StackedRingDetector:
         raw = detect_scaled_reference_lines(
             frame, ellipse, self.config, data["outer_diameter_mm"], data["line_offset_mm"],
             data["line_yaw_deg"], data["search_half_width_diameters"],
-            data["band_half_height_diameters"], edge_image=edges, require_both=False)
+            data["band_half_height_diameters"], edge_image=edges,
+            require_both=self.config.require_both_lines)
         raw["circle_support"] = support
         raw["confidence"] = 0.92 + 0.08 * min(support, raw["line_quality"])
         raw["centers"] = _synthesise_centers(self.ring_config, raw["middle"], raw["yaw"])
@@ -1110,7 +1114,7 @@ class StackedRingDetector:
                 self.ring_config,
                 self.config,
                 self._line_seeds,
-                require_both=False,
+                require_both=self.config.require_both_lines,
             )
         )
         centers = _synthesise_centers(self.ring_config, middle, yaw)

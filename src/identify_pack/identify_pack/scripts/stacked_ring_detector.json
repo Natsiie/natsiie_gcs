@@ -31,7 +31,8 @@
     "refinement_distance_px": 2.5,
     "minimum_edge_points": 60,
     "minimum_x_span_px": 220.0,
-    "maximum_line_disagreement_deg": 2.0
+    "maximum_line_disagreement_deg": 2.0,
+    "require_both_lines": true
   },
   "search_calibration": {
     "version": 1,
@@ -42,17 +43,17 @@
     "undistort_enabled": false,
     "camera_fingerprint": null,
     "center_px": [
-      378.9510192871094,
-      253.8102264404297
+      358.8397216796875,
+      266.05450439453125
     ],
     "outer_axes_px": [
-      100.3645248413086,
-      100.48941802978516
+      85.05912017822266,
+      85.46066284179688
     ],
-    "outer_angle_deg": 33.79863739013672,
+    "outer_angle_deg": 80.39850616455078,
     "outer_diameter_mm": 95.0,
     "line_offset_mm": 75.0,
-    "line_yaw_deg": -1.7695662813444797,
+    "line_yaw_deg": 1.5375346571393338,
     "search_half_width_diameters": 2.7,
     "band_half_height_diameters": 0.14
   }
