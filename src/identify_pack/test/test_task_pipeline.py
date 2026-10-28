@@ -229,7 +229,7 @@ class TaskPipelineTests(unittest.TestCase):
         msg = node.br.cv2_to_imgmsg(image, encoding='bgr8')
         msg.header.stamp = Stamp(sec=42)
         ready = {'state': 'READY', 'count': 15, 'required_frames': 15,
-                 'fps': 25., 'ready': True, 'missing_frames': 0}
+                 'fps': 25., 'ready': True, 'missing_frames': 0, 'reset': False}
         node.stationary.update.return_value = ready
         ColorDetectNode.image_cb(node, msg)
         node.pub_arrived.publish.assert_called_once()
@@ -239,12 +239,20 @@ class TaskPipelineTests(unittest.TestCase):
         # 物块被抓走 -> WAITING，重新武装。
         node.stationary.update.return_value = {
             'state': 'WAITING', 'count': 0, 'required_frames': 15,
-            'fps': 25., 'ready': False, 'missing_frames': 0}
+            'fps': 25., 'ready': False, 'missing_frames': 0, 'reset': True}
         ColorDetectNode.image_cb(node, msg)
         # 下一个物块停稳 -> 再发一次。
         node.stationary.update.return_value = ready
         ColorDetectNode.image_cb(node, msg)
         self.assertEqual(node.pub_arrived.publish.call_count, 2)
+        # ROI 里始终有目标、从未 WAITING 时，位置跳变（reset）也要重新武装。
+        node.stationary.update.return_value = {
+            'state': 'TRACKING', 'count': 1, 'required_frames': 15,
+            'fps': 25., 'ready': False, 'missing_frames': 0, 'reset': True}
+        ColorDetectNode.image_cb(node, msg)
+        node.stationary.update.return_value = ready
+        ColorDetectNode.image_cb(node, msg)
+        self.assertEqual(node.pub_arrived.publish.call_count, 3)
 
     def test_optical_motion_initial_stop_motion_stop_motion_and_texture_loss(self):
         rng = np.random.default_rng(5)

@@ -8,6 +8,10 @@ class RoiStationaryCounterTests(unittest.TestCase):
         counter = RoiStationaryCounter(hold_sec=0.0, hold_frames=3)
         for index in range(3):
             result = counter.update((1, 100., 100.), 10. + index * .04)
+            if index == 0:
+                self.assertTrue(result['reset'])
+            else:
+                self.assertFalse(result['reset'])
         self.assertTrue(result['ready'])
         self.assertEqual(result['state'], 'READY')
         self.assertEqual(result['count'], 3)
@@ -32,6 +36,7 @@ class RoiStationaryCounterTests(unittest.TestCase):
         result = counter.update((1, 140., 100.), 10.12)
         self.assertFalse(result['ready'])
         self.assertEqual(result['count'], 1)
+        self.assertTrue(result['reset'])
 
     def test_two_missing_frames_hold_then_third_resets(self):
         counter = RoiStationaryCounter(hold_sec=0.0, hold_frames=3, miss_frames=2)
@@ -47,6 +52,7 @@ class RoiStationaryCounterTests(unittest.TestCase):
         self.assertFalse(result['ready'])
         self.assertEqual(result['count'], 0)
         self.assertEqual(result['state'], 'WAITING')
+        self.assertTrue(result['reset'])
 
     def test_grabbed_object_resets_for_next_one(self):
         counter = RoiStationaryCounter(hold_sec=0.0, hold_frames=2, miss_frames=1)

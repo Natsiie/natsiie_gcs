@@ -63,7 +63,7 @@ class RoiStationaryCounter:
             self._fps if self._fps > 0 else 25.0)
         return max(1, int(round(self.hold_sec * fps)))
 
-    def _result(self) -> dict:
+    def _result(self, reset: bool = False) -> dict:
         required = self.required_frames
         ready = self._count >= required
         if self._anchor is None:
@@ -82,14 +82,18 @@ class RoiStationaryCounter:
             'fps': self._fps,
             'ready': ready,
             'missing_frames': self._misses,
+            # 本帧是否开启了新一轮计数（首次出现、换目标、转走或掉帧）。
+            # 上层据此重新武装“每个物块只发一次 OK”的逻辑。
+            'reset': reset,
         }
 
     def update(self, blob, timestamp: float) -> dict:
         """处理一帧；``blob`` 为 ``(color_id, cx, cy)`` 或 ``None``。"""
+        reset = False
         if not math.isfinite(timestamp) or timestamp <= 0:
             # 没有可用时间戳就无法证明连续性，直接清空。
             self.reset()
-            return self._result()
+            return self._result(reset=True)
 
         if self._last_timestamp is not None:
             interval = timestamp - self._last_timestamp
@@ -98,6 +102,7 @@ class RoiStationaryCounter:
                 self._anchor = None
                 self._count = 0
                 self._misses = 0
+                reset = True
             elif self.min_frame_interval <= interval and self.fixed_fps <= 0:
                 instant = 1.0 / interval
                 self._fps = instant if self._fps <= 0 else (
@@ -106,16 +111,18 @@ class RoiStationaryCounter:
 
         if blob is None:
             self._misses += 1
-            if self._misses > self.miss_frames:
+            if self._misses > self.miss_frames and self._anchor is not None:
                 self._anchor = None
                 self._count = 0
-            return self._result()
+                reset = True
+            return self._result(reset)
 
         color_id, cx, cy = blob
         self._misses = 0
         if self._anchor is None:
             self._anchor = (int(color_id), float(cx), float(cy))
             self._count = 1
+            reset = True
         else:
             anchor_color, anchor_x, anchor_y = self._anchor
             distance = math.hypot(float(cx) - anchor_x, float(cy) - anchor_y)
@@ -123,6 +130,7 @@ class RoiStationaryCounter:
                 # 换了物块或已经转走：以当前位置为新基准重新计数。
                 self._anchor = (int(color_id), float(cx), float(cy))
                 self._count = 1
+                reset = True
             else:
                 self._count += 1
-        return self._result()
+        return self._result(reset)

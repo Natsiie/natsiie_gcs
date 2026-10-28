@@ -224,8 +224,9 @@ class ColorDetectNode(Node):
                     self.get_logger().info(
                         f'物块停稳 {stationary["count"]}/{required} 帧，'
                         f'发送抓取 OK -> {self.arrived_topic}')
-                elif stationary['state'] == 'WAITING':
-                    # 物块转走或被夹走后重新武装，下一个物块可再次触发。
+                elif stationary.get('reset') or stationary['state'] == 'WAITING':
+                    # 首次出现、换目标、转走、被抓走或掉帧后重新武装，
+                    # 下一次停稳可再次触发 OK。
                     self._arrived_armed = True
         else:
             self.stationary.reset()
