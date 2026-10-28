@@ -48,9 +48,9 @@ def generate_launch_description():
         DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
             share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
-        DeclareLaunchArgument('start_main_camera', default_value='true'),
+        DeclareLaunchArgument('start_main_camera', default_value='false'),
         # 副相机用于颜色/工位识别，默认打开；如果已经由其他终端启动，可改为 false。
-        DeclareLaunchArgument('start_secondary_camera', default_value='false'),
+        DeclareLaunchArgument('start_secondary_camera', default_value='true'),
         # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
         DeclareLaunchArgument('secondary_frozen_frame_timeout_sec', default_value='5.0'),
         DeclareLaunchArgument('secondary_camera_fps', default_value='25'),
@@ -182,25 +182,25 @@ def generate_launch_description():
             }],
         ),
 
-        # 夹爪到位检测：粉色标记进入 arrival_roi_file（独立 ROI）连续满 min_confirm_sec 秒发布到位信号。
-        Node(
-            package='identify_pack',
-            executable='gripper_arrival',
-            name='gripper_arrival',
-            condition=IfCondition(LaunchConfiguration('start_gripper_arrival')),
-            output='screen',
-            parameters=[{
-                'image_topic': secondary_image_topic,
-                'color_config': LaunchConfiguration('color_config'),
-                'arrival_roi_file': LaunchConfiguration('arrival_roi_file'),
-                'min_blob_area': 300,
-                'min_blob_dimension': 12,
-                'min_confirm_sec': ParameterValue(
-                    LaunchConfiguration('arrive_confirm_sec'), value_type=float),
-                'publish_topic': LaunchConfiguration('arrived_topic'),
-                'show': ParameterValue(show, value_type=bool),
-            }],
-        ),
+        # # 夹爪到位检测：粉色标记进入 arrival_roi_file（独立 ROI）连续满 min_confirm_sec 秒发布到位信号。
+        # Node(
+        #     package='identify_pack',
+        #     executable='gripper_arrival',
+        #     name='gripper_arrival',
+        #     condition=IfCondition(LaunchConfiguration('start_gripper_arrival')),
+        #     output='screen',
+        #     parameters=[{
+        #         'image_topic': secondary_image_topic,
+        #         'color_config': LaunchConfiguration('color_config'),
+        #         'arrival_roi_file': LaunchConfiguration('arrival_roi_file'),
+        #         'min_blob_area': 300,
+        #         'min_blob_dimension': 12,
+        #         'min_confirm_sec': ParameterValue(
+        #             LaunchConfiguration('arrive_confirm_sec'), value_type=float),
+        #         'publish_topic': LaunchConfiguration('arrived_topic'),
+        #         'show': ParameterValue(show, value_type=bool),
+        #     }],
+        # ),
 
         # TF：加载相机外参，结合下位机反馈角度发布底座到相机的变换链。
         Node(
@@ -226,21 +226,21 @@ def generate_launch_description():
         #     }],
         # ),
 
-        # 像素投影：按图像时刻 TF 和物块顶面高度计算基座 XYZ，ROS 输出单位为米。
-        Node(
-            package='identify_pack',
-            executable='pixel_to_base',
-            name='pixel_to_base',
-            output='screen',
-            parameters=[LaunchConfiguration('pixel_params_file'), {
-                'image_topic': secondary_image_topic,
-                'show': ParameterValue(show, value_type=bool),
-                'auto_project': True,
-                'plane_mode': 'object',
-                'centers_topic': '/color/centers_pixel',
-                'targets_topic': '/color/targets_base',
-            }],
-        ),
+        # # 像素投影：按图像时刻 TF 和物块顶面高度计算基座 XYZ，ROS 输出单位为米。
+        # Node(
+        #     package='identify_pack',
+        #     executable='pixel_to_base',
+        #     name='pixel_to_base',
+        #     output='screen',
+        #     parameters=[LaunchConfiguration('pixel_params_file'), {
+        #         'image_topic': secondary_image_topic,
+        #         'show': ParameterValue(show, value_type=bool),
+        #         'auto_project': True,
+        #         'plane_mode': 'object',
+        #         'centers_topic': '/color/centers_pixel',
+        #         'targets_topic': '/color/targets_base',
+        #     }],
+        # ),
 
         # 统一串口桥：目标 XYZ 从米转为毫米，以 0x08 帧发送；接收 0x07 云台角度反馈。
         Node(
