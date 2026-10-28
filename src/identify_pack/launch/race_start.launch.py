@@ -50,7 +50,7 @@ def generate_launch_description():
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
         DeclareLaunchArgument('start_main_camera', default_value='true'),
         # 副相机用于颜色/工位识别，默认打开；如果已经由其他终端启动，可改为 false。
-        DeclareLaunchArgument('start_secondary_camera', default_value='true'),
+        DeclareLaunchArgument('start_secondary_camera', default_value='false'),
         # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
         DeclareLaunchArgument('secondary_frozen_frame_timeout_sec', default_value='5.0'),
         DeclareLaunchArgument('secondary_camera_fps', default_value='25'),
@@ -64,13 +64,19 @@ def generate_launch_description():
         # 颜色识别 ROI、HSV 配置以及 TF/像素投影参数文件。
         DeclareLaunchArgument('roi_file', default_value=os.path.join(share, 'ROI_Range.txt')),
         DeclareLaunchArgument('color_config', default_value=os.path.join(share, 'color_config.json')),
-        # 运动检测区域可单独指定；留空表示整幅图像，不等同于抓取 ROI。
-        DeclareLaunchArgument('motion_roi_file', default_value=''),
-        DeclareLaunchArgument('moving_speed_px_s', default_value='15.0'),
-        DeclareLaunchArgument('near_stop_speed_px_s', default_value='3.0'),
-        DeclareLaunchArgument('required_low_speed_frames', default_value='5'),
-        # 转盘运动检测开关；调试识别时可设为 false 跳过「先动后停」的门控。
-        DeclareLaunchArgument('motion_detect', default_value='false'),
+        # 物块停稳判定：ROI 内物块连续保持位置不变达到阈值后放行下游。
+        # hold_frames>0 时直接按帧数（便于实测调参）；0 表示按
+        # hold_sec × 实测 fps 换算，默认 0.6s 在 25fps 下约 15 帧。
+        DeclareLaunchArgument('stationary_hold_sec', default_value='0.6'),
+        DeclareLaunchArgument('stationary_hold_frames', default_value='0'),
+        DeclareLaunchArgument('stationary_max_pixel_move', default_value='10.0'),
+        DeclareLaunchArgument('stationary_miss_frames', default_value='2'),
+        # 帧率估计：0=按图像时间戳自动估计，调试时可固定成实测帧率。
+        DeclareLaunchArgument('stationary_fps', default_value='0.0'),
+        # 停稳门控开关；调试识别时可设为 false 跳过帧计数门控。
+        DeclareLaunchArgument('motion_detect', default_value='true'),
+        # 停稳后是否发抓取 OK（/arm/arrived -> 串口桥 GrabCmd 0x09）。
+        DeclareLaunchArgument('publish_arrived', default_value='true'),
         # 任务模式：true=按二维码顺序+抓取确认每个颜色只发一次；false=连续发送坐标（调试通信链路用）。
         DeclareLaunchArgument('task_mode', default_value='true'),
         DeclareLaunchArgument('tf_params_file', default_value=os.path.join(
@@ -80,8 +86,9 @@ def generate_launch_description():
         # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
         DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
             share, 'config', 'place_task.yaml')),
-        # 夹爪到位检测：复用颜色识别同一 ROI，连续识别阈值 5s，默认关闭（调试后再开）。
-        DeclareLaunchArgument('start_gripper_arrival', default_value='true'),
+        # 夹爪到位检测（粉色在 ROI 连续 5s）：已由 color_detect_node 的停稳 OK 取代，
+        # 默认关闭；需要回退到旧的粉色触发逻辑时再设为 true。
+        DeclareLaunchArgument('start_gripper_arrival', default_value='false'),
         # 到位信号话题：gripper_arrival 发布 / serial_bridge 订阅，两处共用同一参数。
         DeclareLaunchArgument('arrived_topic', default_value='/arm/arrived'),
         # 到位连续识别阈值（秒），调试时可调小加快测试。
@@ -157,16 +164,22 @@ def generate_launch_description():
                 'image_topic': secondary_image_topic,
                 'roi_file': LaunchConfiguration('roi_file'),
                 'color_config': LaunchConfiguration('color_config'),
-                'motion_roi_file': LaunchConfiguration('motion_roi_file'),
                 'motion_detect': ParameterValue(
                     LaunchConfiguration('motion_detect'), value_type=bool),
                 'require_single_roi': True,
-                'moving_speed_px_s': ParameterValue(
-                    LaunchConfiguration('moving_speed_px_s'), value_type=float),
-                'near_stop_speed_px_s': ParameterValue(
-                    LaunchConfiguration('near_stop_speed_px_s'), value_type=float),
-                'required_low_speed_frames': ParameterValue(
-                    LaunchConfiguration('required_low_speed_frames'), value_type=int),
+                'stationary_hold_sec': ParameterValue(
+                    LaunchConfiguration('stationary_hold_sec'), value_type=float),
+                'stationary_hold_frames': ParameterValue(
+                    LaunchConfiguration('stationary_hold_frames'), value_type=int),
+                'stationary_max_pixel_move': ParameterValue(
+                    LaunchConfiguration('stationary_max_pixel_move'), value_type=float),
+                'stationary_miss_frames': ParameterValue(
+                    LaunchConfiguration('stationary_miss_frames'), value_type=int),
+                'stationary_fps': ParameterValue(
+                    LaunchConfiguration('stationary_fps'), value_type=float),
+                'publish_arrived': ParameterValue(
+                    LaunchConfiguration('publish_arrived'), value_type=bool),
+                'arrived_topic': LaunchConfiguration('arrived_topic'),
                 'show': ParameterValue(show, value_type=bool),
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',

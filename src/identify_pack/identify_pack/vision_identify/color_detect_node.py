@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""ROS2 节点：六色轮廓 blob 色块定位 + 转盘转动/停稳判定（正式运行节点）。
+"""ROS2 节点：六色轮廓 blob 色块定位 + 物块停稳帧计数（正式运行节点）。
 
-订阅相机图像话题，在 ROI 内做色块检测，发布：
+订阅相机图像话题，在 ROI 内做色块检测。停稳判定直接统计「物块在 ROI 内
+连续保持位置不变」的帧数：达到阈值后才放行色块输出；物块转走、被抓走、
+消失或位置跳变时计数清零，不影响下一个进入 ROI 的物块。
+
+发布：
   - /Color       色块位置，每段 ``color_id:x,y``（1~6 六色，多段用 / 连接）
-  - /ColorMotion 转盘运动状态 ``state:speed``（如 ``READY:12.3``）
+  - /ColorMotion 停稳状态 ``state:count``（如 ``READY:15``）
+  - /arm/arrived 停稳后发一次抓取 OK（Bool，取代粉色到位 5s 的触发逻辑）
   - /color/centers_pixel 带原图时间戳的像素 PointCloud（x=u, y=v），附颜色/面积/分辨率
 
 不含数字圆环识别（那是 circle_detect_node 的职责）。
@@ -16,7 +21,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
 from geometry_msgs.msg import Point32
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from cv_bridge import CvBridge
 import cv2
 
@@ -25,11 +30,42 @@ from identify_pack.scripts.color_config import (
     build_default_color_config, find_color_blobs, load_color_config,
     load_roi_file, make_all_color_masks,
 )
-from identify_pack.scripts.turntable_motion import OpticalFlowMotion
+from identify_pack.scripts.roi_stationary import RoiStationaryCounter
+
+
+def _extract_blobs(img, color_cfg, color_roi, lock_dominant, min_blob_area,
+                   min_blob_dimension, require_single_roi):
+    """颜色掩膜 -> 色块列表；抓取色 1~6，ROI 内主色锁定。"""
+    color_masks = make_all_color_masks(img, color_cfg)
+    # 隔离标记色（粉色舵机外壳）：只处理抓取色 1~6，不参与主色锁定与
+    # 抓取目标检测，否则粉色进入 ROI 会被判为主色、盖掉物块。抓取 OK
+    # 现在由本节点的停稳计数触发，粉色不参与判定。
+    color_masks = {cid: mask for cid, mask in color_masks.items()
+                   if cid in PICKUP_COLOR_IDS}
+    if color_roi and lock_dominant:
+        # ROI 内主色锁定：面积最大的颜色锁定物块，盖住被误切的小面积颜色。
+        color_masks = apply_dominant_color(
+            color_masks, color_roi, min_area=min_blob_area)
+    blobs = find_color_blobs(
+        color_masks, min_area=min_blob_area,
+        min_dimension=min_blob_dimension, roi=color_roi)
+    if require_single_roi and blobs:
+        blobs = [max(blobs, key=lambda blob: blob[7])]
+    return blobs
+
+
+def _empty_centers(msg, camera_frame, motion_ready):
+    """构造无目标的点云，同时携带当前 ready 状态。"""
+    empty = PointCloud()
+    empty.header = copy.deepcopy(msg.header)
+    if not empty.header.frame_id:
+        empty.header.frame_id = camera_frame
+    empty.channels = [ChannelFloat32(name='motion_ready', values=[motion_ready])]
+    return empty
 
 
 class ColorDetectNode(Node):
-    """色块识别节点：ROI 内主色锁定 + 六色 blob 定位 + 转盘运动判定。"""
+    """色块识别节点：ROI 内主色锁定 + 六色 blob 定位 + 物块停稳帧计数。"""
 
     def __init__(self):
         super().__init__('color_detect_node')
@@ -40,13 +76,20 @@ class ColorDetectNode(Node):
         self.declare_parameter('min_blob_area', 300)   # 色块最小面积(px^2)
         self.declare_parameter('min_blob_dimension', 12)  # 色块最小边长(px)
         self.declare_parameter('lock_dominant_color', True)  # ROI 内主色锁定
-        self.declare_parameter('motion_detect', True)  # 转盘转动/停稳判定
-        self.declare_parameter('motion_roi_file', '')  # 运动区域独立于抓取 ROI，空为整幅图。
+        self.declare_parameter('motion_detect', True)  # 物块停稳帧计数门控
         self.declare_parameter('require_single_roi', False)
-        self.declare_parameter('moving_speed_px_s', 30.0)
-        self.declare_parameter('required_moving_frames', 2)
-        self.declare_parameter('near_stop_speed_px_s', 25.0)
-        self.declare_parameter('required_low_speed_frames', 3)
+        # 停稳判定：hold_frames>0 时直接按帧数（便于实测调参），否则按
+        # hold_sec × 实测 fps 换算。默认 0.6s，25fps 下约 15 帧。
+        self.declare_parameter('stationary_hold_sec', 0.6)
+        self.declare_parameter('stationary_hold_frames', 0)
+        self.declare_parameter('stationary_max_pixel_move', 10.0)  # 允许抖动(px)
+        self.declare_parameter('stationary_miss_frames', 2)   # 连续丢帧容忍
+        self.declare_parameter('stationary_fps', 0.0)         # 0=按时间戳自动估计
+        self.declare_parameter('stationary_max_frame_interval_sec', 0.5)
+        # 停稳后给下位机的抓取 OK：走高电平 Bool，串口桥收到 true 后发 GrabCmd(0x09)。
+        # 每个物块只触发一次，物块离开 ROI 后重新武装（与旧的粉色到位逻辑一致）。
+        self.declare_parameter('publish_arrived', True)
+        self.declare_parameter('arrived_topic', '/arm/arrived')
         self.declare_parameter('show', True)           # 是否弹窗显示
         self.declare_parameter('centers_topic', '/color/centers_pixel')
         self.declare_parameter('camera_frame', 'camera_optical_frame')
@@ -63,17 +106,18 @@ class ColorDetectNode(Node):
 
         self.color_cfg = self._load_color_config()
         self.color_roi = self._resolve_roi()
-        motion_path = self.get_parameter('motion_roi_file').value
-        motion_rois = load_roi_file(motion_path) if motion_path else None
-        if motion_path and not motion_rois:
-            raise ValueError(f'运动 ROI 文件无有效区域: {motion_path}')
-        self.motion = OpticalFlowMotion(
-            rois=motion_rois,
-            moving_speed=self.get_parameter('moving_speed_px_s').get_parameter_value().double_value,
-            required_moving_frames=self.get_parameter('required_moving_frames').get_parameter_value().integer_value,
-            near_stop_speed=self.get_parameter('near_stop_speed_px_s').get_parameter_value().double_value,
-            required_low_speed_frames=self.get_parameter('required_low_speed_frames').get_parameter_value().integer_value,
+        self.stationary_hold_sec = self.get_parameter(
+            'stationary_hold_sec').get_parameter_value().double_value
+        self.stationary = RoiStationaryCounter(
+            hold_sec=self.get_parameter('stationary_hold_sec').get_parameter_value().double_value,
+            hold_frames=self.get_parameter('stationary_hold_frames').get_parameter_value().integer_value,
+            max_pixel_move=self.get_parameter('stationary_max_pixel_move').get_parameter_value().double_value,
+            miss_frames=self.get_parameter('stationary_miss_frames').get_parameter_value().integer_value,
+            fixed_fps=self.get_parameter('stationary_fps').get_parameter_value().double_value,
+            max_frame_interval=self.get_parameter(
+                'stationary_max_frame_interval_sec').get_parameter_value().double_value,
         )
+        self._last_required_frames = None
 
         self.br = CvBridge()
         self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
@@ -81,9 +125,15 @@ class ColorDetectNode(Node):
         self.centers_topic = self.get_parameter('centers_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
         self.motion_text = ''
+        self.publish_arrived = bool(self.get_parameter('publish_arrived').value)
+        self.arrived_topic = self.get_parameter('arrived_topic').value
+        self._arrived_armed = True
         self.pub_centers = self.create_publisher(PointCloud, self.centers_topic, 10)
         self.pub_motion = self.create_publisher(String, 'ColorMotion', 10)
-        self.get_logger().info(f'色块识别订阅 {image_topic}')
+        self.pub_arrived = self.create_publisher(Bool, self.arrived_topic, 10)
+        self.get_logger().info(
+            f'色块识别订阅 {image_topic}；停稳 OK -> {self.arrived_topic}'
+            f'（{"启用" if self.publish_arrived else "关闭"}）')
         if self.require_single_roi and (not self.color_roi or len(self.color_roi) != 1):
             self.get_logger().error('任务抓取模式需要且仅允许一个 ROI；请重新圈定，当前禁止输出目标')
 
@@ -138,40 +188,72 @@ class ColorDetectNode(Node):
             self.get_logger().error(f'cv_bridge error: {error}')
             return
 
-        # 运动检测先执行，不依赖抓取 ROI 中是否出现色块。
+        roi_valid = not self.require_single_roi or (
+            self.color_roi and len(self.color_roi) == 1)
+
+        # 停稳门控：先在本帧 ROI 内检出主色块，再统计它连续不动的帧数。
+        # 物块转走/被抓走时检测为空或位置跳变，计数会自然清零。
         ready = not self.motion_detect
+        blobs = []
         if self.motion_detect:
             stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
-            motion = self.motion.update(img, stamp)
-            ready = motion['ready']
-            out_motion = String(data=f'{motion["state"]}:{motion["speed"]:.1f}')
-            self.pub_motion.publish(out_motion)
+            if roi_valid:
+                blobs = _extract_blobs(
+                    img, self.color_cfg, self.color_roi, self.lock_dominant,
+                    self.min_blob_area, self.min_blob_dimension,
+                    self.require_single_roi)
+                primary = max(blobs, key=lambda blob: blob[7]) if blobs else None
+                stationary = self.stationary.update(
+                    None if primary is None else (primary[0], primary[1], primary[2]),
+                    stamp)
+            else:
+                self.stationary.reset()
+                stationary = {'state': 'NO_ROI', 'count': 0, 'required_frames': 0,
+                              'fps': 0.0, 'ready': False, 'missing_frames': 0}
+            ready = stationary['ready']
+            required = stationary['required_frames']
+            if required != getattr(self, '_last_required_frames', None):
+                self._last_required_frames = required
+                self.get_logger().info(
+                    f'停稳阈值 {required} 帧（hold='
+                    f'{getattr(self, "stationary_hold_sec", 0.0):g}s，'
+                    f'fps≈{stationary["fps"] or 25.0:.1f}）')
+            self.motion_text = f'{stationary["state"]}:{stationary["count"]}'
+            self.pub_motion.publish(String(data=self.motion_text))
             self.get_logger().info(
-                f'Motion={motion["state"]} speed={motion["speed"]:.1f}px/s',
+                f'Stationary={stationary["state"]} '
+                f'count={stationary["count"]}/{required} '
+                f'fps={stationary["fps"]:.1f} misses={stationary["missing_frames"]}',
                 throttle_duration_sec=1.0)
-            self.motion_text = out_motion.data
-        roi_valid = not self.require_single_roi or (self.color_roi and len(self.color_roi) == 1)
+            # 停稳 -> 给下位机抓取 OK（每个物块只发一次）。
+            if getattr(self, 'publish_arrived', False):
+                if stationary['ready'] and self._arrived_armed:
+                    self.pub_arrived.publish(Bool(data=True))
+                    self._arrived_armed = False
+                    self.get_logger().info(
+                        f'物块停稳 {stationary["count"]}/{required} 帧，'
+                        f'发送抓取 OK -> {self.arrived_topic}')
+                elif stationary['state'] == 'WAITING':
+                    # 物块转走或被夹走后重新武装，下一个物块可再次触发。
+                    self._arrived_armed = True
+        elif roi_valid:
+            blobs = _extract_blobs(
+                img, self.color_cfg, self.color_roi, self.lock_dominant,
+                self.min_blob_area, self.min_blob_dimension,
+                self.require_single_roi)
+
         if not ready or not roi_valid:
-            empty = PointCloud()
-            empty.header = copy.deepcopy(msg.header)
-            if not empty.header.frame_id:
-                empty.header.frame_id = self.camera_frame
-            empty.channels = [ChannelFloat32(name='motion_ready', values=[0.0])]
-            self.pub_centers.publish(empty)
+            self.pub_centers.publish(_empty_centers(msg, self.camera_frame, 0.0))
             if self.show:
                 self.show_frame(img)
             return
 
-        color_masks = make_all_color_masks(img, self.color_cfg)
-        # 隔离标记色（粉色舵机外壳）：只处理抓取色 1~6，不参与主色锁定与
-        # 抓取目标检测，否则粉色进入 ROI 会被判为主色、盖掉物块（到位检测由
-        # gripper_arrival 节点单独负责，不经过这里）。
-        color_masks = {cid: mask for cid, mask in color_masks.items()
-                       if cid in PICKUP_COLOR_IDS}
-        if self.color_roi and self.lock_dominant:
-            # ROI 内主色锁定：面积最大的颜色锁定物块，盖住被误切的小面积颜色。
-            color_masks = apply_dominant_color(
-                color_masks, self.color_roi, min_area=self.min_blob_area)
+        if not blobs:
+            # 丢失容忍期内仍算 ready，但这一帧没有目标可发。
+            self.pub_centers.publish(_empty_centers(msg, self.camera_frame, 1.0))
+            if self.show:
+                self.show_frame(img)
+            return
 
         color_parts = []
         centers = PointCloud()
@@ -179,11 +261,6 @@ class ColorDetectNode(Node):
         if not centers.header.frame_id:
             centers.header.frame_id = self.camera_frame
         channels = {name: [] for name in ('color_id', 'area_px2', 'image_width', 'image_height')}
-        blobs = find_color_blobs(
-                color_masks, min_area=self.min_blob_area,
-                min_dimension=self.min_blob_dimension, roi=self.color_roi)
-        if self.require_single_roi and blobs:
-            blobs = [max(blobs, key=lambda blob: blob[7])]
         for (color_id, cx, cy, x, y, w, h, area) in blobs:
             name = COLOR_NAMES[color_id]
             self.get_logger().info(

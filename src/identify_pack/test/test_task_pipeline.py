@@ -177,30 +177,69 @@ class TaskPipelineTests(unittest.TestCase):
         SerialBridgeNode._send_color_targets(self.bridge, target)
         self.bridge.ser.write.assert_not_called()
 
-    def test_color_detection_only_runs_after_ready_with_exactly_one_roi(self):
+    def test_color_output_only_after_stationary_ready_with_exactly_one_roi(self):
         node = SimpleNamespace(br=CvBridge(), color_cfg=build_default_color_config(),
                                color_roi=[(0, 0, 640, 480)], lock_dominant=True,
                                min_blob_area=300., min_blob_dimension=12., show=False,
                                camera_frame='camera_optical_frame', motion_detect=True,
-                               require_single_roi=True, motion=Mock(), pub_motion=Mock(),
-                               pub_centers=Mock(), pub_color=Mock(), get_logger=Mock())
+                               require_single_roi=True, stationary=Mock(), pub_motion=Mock(),
+                               pub_centers=Mock(), pub_color=Mock(), get_logger=Mock(),
+                               pub_arrived=Mock(), publish_arrived=True,
+                               arrived_topic='/arm/arrived', _arrived_armed=True)
         image = np.full((480, 640, 3), 255, dtype=np.uint8)
         image[218:259, 268:309] = [0, 0, 255]
         msg = node.br.cv2_to_imgmsg(image, encoding='bgr8')
         msg.header.stamp = Stamp(sec=42)
-        for state in ('WAITING_FOR_MOTION', 'MOVING', 'NEAR_STOP', 'ACQUIRING'):
-            node.motion.update.return_value = {'state': state, 'ready': False, 'speed': 30.}
-            with patch('identify_pack.vision_identify.color_detect_node.make_all_color_masks') as masks:
-                ColorDetectNode.image_cb(node, msg)
-                masks.assert_not_called()
-            self.assertFalse(node.pub_centers.publish.call_args.args[0].points)
-        node.motion.update.return_value = {'state': 'READY', 'ready': True, 'speed': 0.}
+        for state, count in (('WAITING', 0), ('TRACKING', 3), ('MISSING', 14)):
+            node.stationary.update.return_value = {
+                'state': state, 'count': count, 'required_frames': 15,
+                'fps': 25., 'ready': False, 'missing_frames': 0}
+            ColorDetectNode.image_cb(node, msg)
+            node.pub_color.publish.assert_not_called()
+            published = node.pub_centers.publish.call_args.args[0]
+            self.assertFalse(published.points)
+            self.assertEqual(list(published.channels[0].values), [0.0])
+        node.stationary.update.return_value = {
+            'state': 'READY', 'count': 15, 'required_frames': 15,
+            'fps': 25., 'ready': True, 'missing_frames': 0}
         ColorDetectNode.image_cb(node, msg)
         self.assertEqual(node.pub_color.publish.call_args.args[0].data, '1:288,238')
+        node.pub_arrived.publish.assert_called_once()
         node.color_roi.append((0, 0, 100, 100))
         node.pub_color.publish.reset_mock()
         ColorDetectNode.image_cb(node, msg)
         node.pub_color.publish.assert_not_called()
+
+    def test_stationary_ok_fires_once_and_rearms_after_object_leaves(self):
+        node = SimpleNamespace(br=CvBridge(), color_cfg=build_default_color_config(),
+                               color_roi=[(0, 0, 640, 480)], lock_dominant=True,
+                               min_blob_area=300., min_blob_dimension=12., show=False,
+                               camera_frame='camera_optical_frame', motion_detect=True,
+                               require_single_roi=True, stationary=Mock(), pub_motion=Mock(),
+                               pub_centers=Mock(), pub_color=Mock(), get_logger=Mock(),
+                               pub_arrived=Mock(), publish_arrived=True,
+                               arrived_topic='/arm/arrived', _arrived_armed=True)
+        image = np.full((480, 640, 3), 255, dtype=np.uint8)
+        image[218:259, 268:309] = [0, 0, 255]
+        msg = node.br.cv2_to_imgmsg(image, encoding='bgr8')
+        msg.header.stamp = Stamp(sec=42)
+        ready = {'state': 'READY', 'count': 15, 'required_frames': 15,
+                 'fps': 25., 'ready': True, 'missing_frames': 0}
+        node.stationary.update.return_value = ready
+        ColorDetectNode.image_cb(node, msg)
+        node.pub_arrived.publish.assert_called_once()
+        # 物块继续停稳：不重复发 OK。
+        ColorDetectNode.image_cb(node, msg)
+        node.pub_arrived.publish.assert_called_once()
+        # 物块被抓走 -> WAITING，重新武装。
+        node.stationary.update.return_value = {
+            'state': 'WAITING', 'count': 0, 'required_frames': 15,
+            'fps': 25., 'ready': False, 'missing_frames': 0}
+        ColorDetectNode.image_cb(node, msg)
+        # 下一个物块停稳 -> 再发一次。
+        node.stationary.update.return_value = ready
+        ColorDetectNode.image_cb(node, msg)
+        self.assertEqual(node.pub_arrived.publish.call_count, 2)
 
     def test_optical_motion_initial_stop_motion_stop_motion_and_texture_loss(self):
         rng = np.random.default_rng(5)
