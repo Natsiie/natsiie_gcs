@@ -34,7 +34,7 @@ float   gripper_test_cur     = GRIPPER_TEST_ANGLE;   /* 当前角度 (只读, Wa
  */
 uint8_t boot_enable = 1;              /* 1=上电默认状态接管上层, 0=关闭 */
 float   boot_gimbal_angle1 = 135.0f;   /* 云台第一段目标角 */
-float   boot_gimbal_angle2 = 310.0f;  /* 云台默认最终角 */
+float   boot_gimbal_angle2 = 270.0f;  /* 云台默认最终角 */
 float   boot_gimbal_step   = 1.0f;    /* 云台斜坡限速(度/10ms) */
 float   boot_gimbal_tol    = 0.5f;    /* 云台到位判定(度) */
 float   boot_hoist_height  = 600.0f;  /* 电机5 放置高度 */
@@ -42,11 +42,13 @@ uint16_t boot_hoist_acc    = 100;     /* 电机5 加速 */
 uint16_t boot_hoist_dec    = 100;     /* 电机5 减速 */
 float   boot_hoist_vel     = 100.0f;  /* 电机5 速度 */
 float   boot_hoist_tol     = 2.0f;    /* 电机5 到位判定(度) */
-float   boot_extend_pos    = 500.0f;  /* 电机6 放置长度 */
+float   boot_extend_pos    = 550.0f;  /* 电机6 放置长度 */
 uint8_t  boot_extend_dir   = 1;       /* 电机6 方向: 1=伸出 */
 uint16_t boot_extend_acc   = 100;     /* 电机6 加速 */
 uint16_t boot_extend_dec   = 100;     /* 电机6 减速 */
 float   boot_extend_vel    = 100.0f;  /* 电机6 速度 */
+float   boot_home_height      = 20.0f;    /* 电机5 阶段1归位高度 (= HOIST_HEIGHT_GROUND 默认低位) */
+float   boot_home_skip_height = 400.0f;   /* 电机5 >= 此高度 跳过阶段1, 直接阶段2 */
 
 uint8_t      boot_step = 0;            /* 只读: 0=云台135等电机5到位 1=云台去310 2=完成 */
 static float boot_gimbal_cur = 135.0f;  /* 云台当前角(斜坡用) */
@@ -82,26 +84,18 @@ void Tower_ReadPos5(void)
 /* 测试用: 电机5母线电压 (V), Keil Watch 里看它 */
 float motor5_vbus = 0.0f;
 
-/* 读电机5电源电压 (回包 Data[0]=0x24, Data[1..2]=16位 mV 大端) */
+/* 读电机5电源电压 (走 0x24 单读总线电压, 回包 Data[1..2]=16位 mV 大端)。
+   非阻塞版, 同 Tower_ReadPos5: 只发读请求, 回包由 CAN 中断填 can_vbus_mv[5]/can_vbus_flag[5],
+   本函数取"上一次请求"的回包(慢一拍没关系), 绝不在任务里忙等。 */
 void Tower_ReadVBus5(void)
 {
-    uint32_t t = 0;
-
-    X_V2_Read_Sys_Params(MOTOR_HOIST, S_VBUS);
-
-    while (++t < 2000000)
+    if (can_vbus_flag[MOTOR_HOIST])
     {
-        if (!can.rxFrameFlag) continue;
-        can.rxFrameFlag = false;
-
-        if ((can.CAN_RxMsg.ExtId >> 8) != MOTOR_HOIST) continue;
-        if (can.CAN_RxMsg.Data[0] != 0x24) continue;
-
-        uint16_t mv = ((uint16_t)can.CAN_RxMsg.Data[1] << 8) |
-                      ((uint16_t)can.CAN_RxMsg.Data[2]);
-        motor5_vbus = mv / 1000.0f;         /* mV -> V */
-        return;
+        can_vbus_flag[MOTOR_HOIST] = 0;
+        motor5_vbus = can_vbus_mv[MOTOR_HOIST] / 1000.0f;   /* mV -> V */
     }
+
+    X_V2_Read_Sys_Params(MOTOR_HOIST, S_VBUS);   /* 0x24 单读总线电压 (非阻塞) */
 }
 
 /* 测试用: 电机6(塔吊伸出)实时位置, Keil Watch 里看它 */
@@ -186,10 +180,10 @@ void App_Tower_Task(void)
     Servo_SetAngle(SERVO_GIMBAL, gimbal_cur);
 }
 
-/* 云台角度调试任务: 每 10ms 调一次, 斜坡限速统一走 Servo_MoveTo */
+/* 云台角度调试任务: 每 10ms 调一次, 梯形加减速统一走 Servo_MoveTo */
 void Gimbal_Test_Task(void)
 {
-    Servo_MoveTo(SERVO_GIMBAL, gimbal_test_angle, gimbal_test_step);
+    Servo_MoveTo(SERVO_GIMBAL, gimbal_test_angle, gimbal_test_step, 0.05f, 0.05f);
     gimbal_test_cur = Servo_GetAngle(SERVO_GIMBAL);   /* 只读回显 (Watch 看当前角) */
 }
 
@@ -221,17 +215,64 @@ void Test_Task(void)
 }
 
 /* 上电默认状态: 只执行一次
- *   云台: 先保持 135°, 等电机5 升到放置高度 600 后再转 310°(默认位), 带斜坡限速
- *   电机5: 升到放置高度 600
- *   电机6: 同步伸长到放置长度 500
+ *   先读电机5实时位置, 判断要不要先"阶段1归位":
+ *     电机5 < boot_home_skip_height(400) -> 先归位(电机5降到20 + 电机6收到0), 再阶段2
+ *     电机5 >= 400                      -> 跳过归位, 直接阶段2
+ *   阶段2(工作姿态): 电机5 升到600 + 电机6 伸到550, 到位后云台 135 -> 270 斜坡限速
  */
 void Tower_Boot_Task(void)
 {
+    static uint8_t boot_decided = 0;     /* 0=还没读到电机5位置 1=已决定要不要先归位 */
+    static uint8_t boot_do_home = 0;     /* 1=先阶段1归位 0=跳过 */
+    static uint8_t boot_home_phase = 0;  /* 阶段1 发命令/读位置 交错 */
+
     if (!boot_enable || boot_step >= 2) return;   /* 已完成, 不再执行 */
 
+    /* 上电先读电机5实时位置, 判断要不要先阶段1归位。
+       要等 CAN 中断收到过一帧位置才算拿到真实值, 否则上电首拍 motor5_pos 还是 0,
+       会被误判成"需要归位"。决定前不发任何位置命令。 */
+    if (boot_step == 0 && !boot_decided)
+    {
+        Tower_ReadPos5();                        /* 发读请求 + 取上次回包(非阻塞) */
+        if (can_pos_cnt[MOTOR_HOIST] > 0)
+        {
+            boot_decided = 1;
+            boot_do_home = (motor5_pos < boot_home_skip_height);
+        }
+        return;
+    }
+
+    /* 阶段1归位(可选): 电机5 到归位高度20, 电机6 收到0, 云台保持135;
+       到位后进阶段2。发命令/读位置交错一拍, 和阶段2一致(防背靠背冲突)。 */
+    if (boot_step == 0 && boot_do_home)
+    {
+        boot_gimbal_cur = boot_gimbal_angle1;
+        Servo_SetAngle(SERVO_GIMBAL, boot_gimbal_cur);
+
+        boot_home_phase ^= 1;
+        if (boot_home_phase)
+        {
+            uint8_t home_dir = (motor5_pos > boot_home_height) ? 1u : 0u;  /* 高于归位高往下(1), 否则往上(0) */
+            X_V2_Traj_Pos_Control(MOTOR_HOIST, home_dir, boot_hoist_acc, boot_hoist_dec,
+                                  boot_hoist_vel, boot_home_height, 1, 0);
+            X_V2_Traj_Pos_Control(MOTOR_EXTEND, 0, boot_extend_acc, boot_extend_dec,
+                                  boot_extend_vel, 0.0f, 1, 0);              /* dir=0 收 */
+        }
+        else
+        {
+            Tower_ReadPos5();
+            {
+                float e = motor5_pos - boot_home_height;
+                if (e < 0) e = -e;
+                if (e < boot_hoist_tol) boot_do_home = 0;   /* 电机5 到归位高 -> 进阶段2 */
+            }
+        }
+        return;
+    }
+
+    /* 阶段2: 电机5 升到放置高度600, 电机6 伸到放置长度550, 到位后云台 135->270 */
     if (boot_step == 0)
     {
-        /* 阶段0: 云台保持 135°, 电机5 升到放置高度, 电机6 伸长到放置长度 */
         static uint8_t boot_phase = 0;   /* 0/1 交错: 发命令 / 读位置 */
 
         boot_gimbal_cur = boot_gimbal_angle1;
@@ -262,7 +303,7 @@ void Tower_Boot_Task(void)
     }
     else   /* boot_step == 1 */
     {
-        /* 阶段1: 云台 135 -> 310 斜坡限速 */
+        /* 云台 135 -> 270 斜坡限速 */
         float d = boot_gimbal_angle2 - boot_gimbal_cur;
         if (d >  boot_gimbal_step) d =  boot_gimbal_step;
         if (d < -boot_gimbal_step) d = -boot_gimbal_step;

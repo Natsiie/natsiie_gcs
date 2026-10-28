@@ -17,6 +17,7 @@ typedef struct {
     uint8_t  mode_reload;      /* 回装(粗加工区) 模式 */
     uint8_t  mode_stack;       /* 堆叠(暂存区) 模式 */
     uint8_t  skip_work;        /* 写1=跳过当前工作区塔吊作业直接离站, 跳完自动清0 */
+    uint8_t  mat_grab;         /* 物料区手动抓取: 写1 -> 塔吊走 kin_flag.cmd=10 固定位完整装货(不走视觉), 执行时自动清0 */
     uint8_t  work_done;        /* 手动debug完成标志: MS_WAIT_MANUAL 里等 Watch 写 1, 消费后自动清 0 */
     uint8_t  state;            /* 只读: 主状态机当前状态 (值与 enum 顺序一致) */
     uint8_t  sub;              /* 只读: 当前状态内子步/第几个 */
@@ -24,6 +25,7 @@ typedef struct {
     float    scan_goto_y;      /* 两区共用: 先去的点 Y (mm) */
     float    scan_stop_x;      /* 启动区1: 慢扫 |X| 上限 (mm); 启动区2 取 -1500 */
     uint16_t vision_timeout;   /* 工作区视觉超时(10ms/拍), 1000=10s; 超时视为当前点动作完成 */
+    uint16_t trim_wait_10ms;   /* 进站等底盘视觉微调 within 的上限(10ms/拍), 500=5s; 等不到就放行 */
     uint16_t scan_pause_10ms;  /* 扫码直行到 corner x 暂停时长(10ms/拍), 200=2s */
 } Mission_t;
 

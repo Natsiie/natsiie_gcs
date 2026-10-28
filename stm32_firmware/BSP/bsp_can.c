@@ -13,9 +13,9 @@ __IO uint8_t  can_pos_sign[7] = {0};
 __IO uint16_t can_pos_cnt[7]  = {0};
 __IO uint32_t can_rx_drop     = 0;
 
-/* 底盘电机1母线电压回包 (0x24) 专用槽位 (定义见 bsp_can.h) */
-__IO uint16_t can_vbus_mv   = 0;
-__IO uint8_t  can_vbus_flag = 0;
+/* 电机母线电压回包 (0x24 单读 / 0x43 批量读系统状态第0包) 专用槽位 (定义见 bsp_can.h) */
+__IO uint16_t can_vbus_mv[7] = {0};
+__IO uint8_t  can_vbus_flag[7] = {0};
 __IO uint32_t can_vbus_ok   = 0;
 
 static void can_nvic_init(void)
@@ -163,12 +163,17 @@ void CAN1_RX0_IRQHandler(void)
             can_rx_drop++;            /* 位置帧地址越界 (0 或 >6) */
         }
     }
-    /* 电压回包 0x24: 只收底盘电机1母线电压; 塔吊电机5的 0x24 仍走旧路径 */
-    else if (msg.Data[0] == 0x24u && msg.DLC >= 3u && addr == 1u)
+    /* 电压回包: 0x24 单读总线电压(Data[1..2]=16位mV大端) 或 0x43 批量读系统状态
+       参数第0包(Data[3..4]=16位mV大端); 底盘1/塔吊5 各取自己的槽位 */
+    else if (addr >= 1u && addr <= MOTOR_ADDR_MAX &&
+             ((msg.Data[0] == 0x24u && msg.DLC >= 3u) ||
+              (msg.Data[0] == 0x43u && (msg.ExtId & 0xFFu) == 0u && msg.DLC >= 5u)))
     {
-        can_vbus_mv   = ((uint16_t)msg.Data[1] << 8) | (uint16_t)msg.Data[2];
+        can_vbus_mv[addr]   = (msg.Data[0] == 0x24u)
+                              ? (uint16_t)(((uint16_t)msg.Data[1] << 8) | (uint16_t)msg.Data[2])
+                              : (uint16_t)(((uint16_t)msg.Data[3] << 8) | (uint16_t)msg.Data[4]);
         can_vbus_ok++;
-        can_vbus_flag = 1;            /* 最后置标志 */
+        can_vbus_flag[addr] = 1;      /* 最后置标志 */
     }
     else
     {

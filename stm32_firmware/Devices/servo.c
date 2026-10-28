@@ -1,5 +1,6 @@
 #include "servo.h"
 #include "car_config.h"
+#include <math.h>   /* sqrtf / fabsf 供 Servo_MoveTo 梯形加减速用 */
 
 /**
   * @brief  舵机驱动: TIM2 CH2/CH3/CH4 = PA1/PA2/PA3, 50 Hz
@@ -107,32 +108,60 @@ void Servo_SetAngle(Servo_ID_t id, float angle)
     }
 }
 
-/* 斜坡限速到目标角: 每 10ms 最多变化 max_deg_per_tick 度。云台 0-360 连续, 抄近路跨 0/360 */
-void Servo_MoveTo(Servo_ID_t id, float target, float max_deg_per_tick)
+/* 梯形加减速到目标角: 每 10ms 一步。极速 max_deg_per_tick 度/拍, 加速 acc_per_tick2 /
+ * 减速 dec_per_tick2 度/拍² —— 起步渐快、快到位渐慢到停(acc/dec<=0 时退化为匀速限速)。
+ * 云台为单圈360°舵机, 直走不跨 0/360 缝(跨缝=物理整圈回扫)。速度/方向状态按舵机各自记。 */
+void Servo_MoveTo(Servo_ID_t id, float target, float max_deg_per_tick, float acc_per_tick2, float dec_per_tick2)
 {
-    float cur, d;
+    static float  vel[3]      = {0.0f, 0.0f, 0.0f};  /* 各舵机当前命令速度(度/拍, 有符号) */
+    static int8_t last_dir[3] = {0, 0, 0};           /* 各舵机上一拍运动方向(+1/-1/0) */
+
+    float cur, d, dist, dir, v, v_stop, v_des;
 
     if (id > SERVO_GIMBAL) return;
 
     cur = servo_cur[id];
-    d = target - cur;
+    d = target - cur;   /* 单圈舵机: 直接差, 不按 0/360 抄近路(跨缝会物理整圈回扫) */
 
-    if (id == SERVO_GIMBAL)
+    dist = fabsf(d);
+    dir  = (d > 0.0f) ? 1.0f : (d < 0.0f) ? -1.0f : 0.0f;
+
+    /* 已到目标: 贴住并停速 */
+    if (dist < 0.01f)
     {
-        if (d >  180.0f) d -= 360.0f;
-        if (d < -180.0f) d += 360.0f;
+        vel[id] = 0.0f;
+        last_dir[id] = 0;
+        Servo_SetAngle(id, target);
+        return;
     }
 
-    if (d >  max_deg_per_tick) d =  max_deg_per_tick;
-    if (d < -max_deg_per_tick) d = -max_deg_per_tick;
+    /* 目标反向: 清速度, 避免越过目标再折返 */
+    if (last_dir[id] != 0 && (int8_t)dir != last_dir[id])
+        vel[id] = 0.0f;
+    last_dir[id] = (int8_t)dir;
 
-    cur += d;
+    /* 按减速能力算还能停下的最大速度; 无减速限制则退化为极速 */
+    v_stop = (dec_per_tick2 > 0.0f) ? sqrtf(2.0f * dec_per_tick2 * dist) : max_deg_per_tick;
+    v_des  = (v_stop < max_deg_per_tick) ? v_stop : max_deg_per_tick;
 
-    if (id == SERVO_GIMBAL)
+    /* 加速 / 减速 到期望速度 */
+    v = fabsf(vel[id]);
+    if (v < v_des)
     {
-        while (cur >= 360.0f) cur -= 360.0f;
-        while (cur <   0.0f)  cur += 360.0f;
+        if (acc_per_tick2 > 0.0f) { v += acc_per_tick2; if (v > v_des) v = v_des; }
+        else                        v  = v_des;
     }
+    else if (v > v_des)
+    {
+        if (dec_per_tick2 > 0.0f) { v -= dec_per_tick2; if (v < v_des) v = v_des; }
+        else                        v  = v_des;
+    }
+
+    /* 本拍位移不超过剩余距离, 不越过目标 */
+    if (v > dist) v = dist;
+    vel[id] = dir * v;
+
+    cur += dir * v;
 
     Servo_SetAngle(id, cur);
 }

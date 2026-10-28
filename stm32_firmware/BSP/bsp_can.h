@@ -27,11 +27,13 @@ extern __IO uint8_t  can_pos_sign[7];
 extern __IO uint16_t can_pos_cnt[7];
 extern __IO uint32_t can_rx_drop;   /* 丢弃计数: 位置帧地址越界 */
 
-/* 底盘电机1母线电压回包 (0x24) 专用槽位: 与位置帧分流, 不再共用 rxFrameFlag, 消除撕裂读竞态。
-   中断里"先存数据、最后置 can_vbus_flag"。 */
-extern __IO uint16_t can_vbus_mv;    /* 电压原始值 (mV) */
-extern __IO uint8_t  can_vbus_flag;  /* 1 = 收到一帧新的 0x24 */
-extern __IO uint32_t can_vbus_ok;    /* 成功接收计数 (验收用) */
+/* 电机母线电压回包专用槽位: 与位置帧分流, 不再共用 rxFrameFlag, 消除撕裂读竞态。
+   按电机地址索引, 中断里"先存数据、最后置 can_vbus_flag[addr]"。
+   支持两种回包: 0x24 单读总线电压(Data[1..2]) / 0x43 批量读系统状态第0包(Data[3..4]),
+   均为 16 位 mV 大端。索引 0 不用, 1~MOTOR_ADDR_MAX 对应电机地址 (底盘1 + 塔吊5 都走这里)。 */
+extern __IO uint16_t can_vbus_mv[7];    /* 各电机地址电压原始值 (mV) */
+extern __IO uint8_t  can_vbus_flag[7];  /* 1 = 收到该地址一帧新的 0x43 第0包 */
+extern __IO uint32_t can_vbus_ok;       /* 成功接收计数 (验收用) */
 
 void CAN1_Init(void);
 void can_SendCmd(__IO uint8_t *cmd, uint8_t len);

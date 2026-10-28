@@ -29,8 +29,12 @@ typedef struct {
     uint32_t rotate_active   : 1;   /* 1=原地旋转中 (只读) */
     uint32_t qr_scan_active  : 1;   /* 1=扫码直行(沿当前车头锁航向), mission 清 0 停 */
     uint32_t lock            : 1;   /* 1=锁定底盘(忽略视觉纠偏), 塔吊作业时置 1 */
+    uint32_t rc_override     : 1;   /* 1=遥控优先: 导航/视觉微调/定位/原地旋转/扫码全让路, 底盘归遥控直控 */
     uint32_t en              : 1;   /* 1=四轮使能(锁轴); 上电默认 0(松轴没力), 长按 key 置 1 */
     uint32_t trim_skip       : 3;   /* 工作点纠偏关闭位图: bit0物料 bit1粗码 bit2暂存 */
+    uint32_t trim_hold       : 1;   /* 1=暂不应用视觉纠偏 (塔吊还在摆探查姿态, 等姿态到位再放开) */
+    uint32_t trim_armed      : 1;   /* 1=本次进站已武装: 只认武装之后收到的 within, 不吃上一站残留 */
+    uint32_t trim_fresh      : 1;   /* 只读: 武装后已收到过 0x04/0x05 帧 */
 } ChassisFlag_t;
 
 /* 整定/标定参数 (现场 Watch 改) */
@@ -41,6 +45,7 @@ typedef struct {
     float    min_omega, yaw_max_out, yaw_max_i, yaw_deadzone, yaw_iband;
     int8_t   yaw_invert;
     float    yaw_rate_lpf_alpha;
+    uint16_t rot_settle_ticks;       /* 原地旋转到位稳定拍数 (10ms/拍): 进死区后连续这么拍都保持才判转完 */
     float    rc_speed, rc_rotate_rate, rc_settle_ms;
     int8_t   rc_rx_invert, rc_ry_invert, rc_lx_invert;
     float    wheel_max;
@@ -77,5 +82,15 @@ void Chassis_RotateTo(float yaw_deg);   /* 原地旋转到世界系 yaw(度, 与
 float   Chassis_GetHeading(void);        /* 相对车头航向 = Normalize(Imu_GetYaw() - chassis_val.yaw_ref) */
 void    Chassis_ResetHeading(void);      /* 记录当前 yaw 为车头基准 + 里程计清零 */
 uint8_t Chassis_TrimSkipStation(NavPointId id); /* 该工作点是否跳过视觉纠偏(bit 位图) */
+
+/* 进站视觉微调武装 (mission MS_TRIM / kin_flag.cmd=11 共用):
+   Arm -> 清 within/fresh, 挂起纠偏(姿态期间不收帧)
+   Release -> 姿态到位, 放开纠偏, 丢掉积压旧帧
+   Done -> 1 = 放开之后真的收到 within=1 的新帧
+   Disarm -> 离站/停止, 退回原来的"收到就自动纠偏" */
+void    Chassis_TrimArm(void);
+void    Chassis_TrimRelease(void);
+void    Chassis_TrimDisarm(void);
+uint8_t Chassis_TrimDone(void);
 
 #endif

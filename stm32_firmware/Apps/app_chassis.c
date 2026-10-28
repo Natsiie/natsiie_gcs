@@ -33,6 +33,7 @@ ChassisCfg_t chassis_cfg = {
     .yaw_iband           = CHASSIS_YAW_IBAND,
     .yaw_invert          = CHASSIS_YAW_INVERT,
     .yaw_rate_lpf_alpha  = 0.3f,     /* Gz 低通滤波系数, 越小越平滑但滞后越大; 1=不过滤 */
+    .rot_settle_ticks    = CHASSIS_ROT_SETTLE_TICKS,   /* 原地旋转到位稳定拍数 (10ms/拍) */
     .rc_speed            = 60.0f,    /* 平移轮速上限 RPM */
     .rc_rotate_rate      = 30.0f,    /* Lx 满杆旋转角速度 RPM */
     .rc_settle_ms        = 300.0f,   /* 松杆后滑行稳定时间(ms) */
@@ -44,9 +45,9 @@ ChassisCfg_t chassis_cfg = {
     .odom_gear_ratio     = 1.0f,     /* 减速比, 直驱=1 */
     .odom_yaw_invert     = 1,
     .odom_update_cycles  = 5,        /* 每 N 个 10ms 周期更新一次 */
-    .pos_kp              = 0.3f,     /* 位置 P (RPM/mm) */
-    .pos_max_speed       = 90.0f,    /* 定位最大轮速 (RPM) */
-    .pos_deadzone_mm     = 5.0f,    /* 到点死区 (mm) */
+    .pos_kp              = 0.2f,     /* 位置 P (RPM/mm) */
+    .pos_max_speed       = 70.0f,    /* 定位最大轮速 (RPM) */
+    .pos_deadzone_mm     = 10.0f,   /* 到点死区 (mm) */
     .pos_fwd_mm          = 1200.0f,  /* btn1 前进距离 (mm) */
     .trim_gain_x         = 1.0f,
     .trim_gain_y         = 1.0f,
@@ -209,20 +210,21 @@ static void Chassis_MixWheels(float vx, float vy, float omega)
 }
 
 /* 读底盘电池电压: 电机1母线电压 (=电池电压, 四轮同一条电源线)
-   回包 Data[0]=0x24, Data[1..2]=16位 mV 大端; 用专用标志 can_vbus_flag 等回包 */
+   走 0x24 单读总线电压 (手册 5.5.4), 回包 Data[1..2]=16位 mV 大端。
+   非阻塞: 只发读请求, 回包由 CAN 中断填 can_vbus_mv[1]/can_vbus_flag[1],
+   本函数取"上一次请求"的回包(慢一拍没关系), 绝不在任务里忙等卡死底盘。 */
 static void Chassis_ReadVBus(void)
 {
-    uint8_t  cmd[3];
-    uint32_t t = 0;
+    uint8_t cmd[3];
 
-    can_vbus_flag = 0;                        /* 不再清 FIFO、不再用 rxFrameFlag */
-    cmd[0] = 1; cmd[1] = 0x24; cmd[2] = 0x6B;   /* 读电机1电源电压 (EMM) */
-    can_SendCmd(cmd, 3);
+    if (can_vbus_flag[1])                       /* 上一拍的回包到了 */
+    {
+        can_vbus_flag[1] = 0;
+        chassis_val.vbus = can_vbus_mv[1] / 1000.0f;   /* mV -> V */
+    }
 
-    while (can_vbus_flag == 0 && ++t < 2000000);
-    if (can_vbus_flag == 0) return;           /* 超时 */
-
-    chassis_val.vbus = can_vbus_mv / 1000.0f;     /* mV -> V */
+    cmd[0] = 1; cmd[1] = 0x24; cmd[2] = 0x6B;   /* 单读电机1总线电压 (0x24) */
+    can_SendCmd(cmd, 3);                        /* 发下一个读请求(非阻塞) */
 }
 
 /* ================= 麦轮里程计 (BL/BR/FL/FR = 电机 1/2/3/4) ================= */
@@ -230,6 +232,7 @@ static uint8_t chassis_odom_inited = 0;
 static float   chassis_odom_prev_pos[4] = {0.0f, 0.0f, 0.0f, 0.0f}; /* BL BR FL FR 上周期电机角度(度) */
 static uint16_t chassis_odom_prev_cnt[4] = {0, 0, 0, 0}; /* 上一周期各轮上报帧计数 (新鲜度检查用) */
 static uint8_t  chassis_autorep_prev = 0;                 /* 上次 autorep 开关状态 (检测 1->0 跳变, 发关闭命令) */
+static uint16_t chassis_autorep_rearm = 0;                /* 上膛命令节拍: 0=本拍重发, 满 20 拍(1s)再重发 */
 
 /* 相对车头航向: 长按 key 时把当前 Imu_GetYaw() 记为车头基准 chassis_val.yaw_ref,
    之后所有"航向/目标 yaw"都用这个相对值 (0=正前方=车头基准, CCW 为正)。 */
@@ -260,6 +263,37 @@ uint8_t Chassis_TrimSkipStation(NavPointId id)
     return 0;
 }
 
+/* ---- 进站视觉微调武装 (mission MS_TRIM / kin_flag.cmd=11 共用) -------------
+   为什么需要: trim_within 只在收到 0x04/0x05 帧时被覆盖, 从不复位。若到站后
+   视觉还没发过一帧, 会拿上一站残留的 within=1 直接放行, "到探查位再微调"这一
+   步等于没做。武装后只认 Release 之后的新帧; 塔吊还在摆姿态时(hold=1)帧直接丢掉。
+   注意: 视觉若在该工作区根本不发 0x04/0x05, TrimDone 永远为 0, 调用方要自带超时。 */
+void Chassis_TrimArm(void)
+{
+    chassis_flag.trim_within = 0;
+    chassis_flag.trim_fresh  = 0;
+    chassis_flag.trim_armed  = 1;
+    chassis_flag.trim_hold   = 1;
+}
+
+void Chassis_TrimRelease(void)
+{
+    Serial_ChassisTrimReady = 0;   /* 姿态期间积压的旧帧丢掉, 只认放开之后的新帧 */
+    chassis_flag.trim_hold  = 0;
+}
+
+void Chassis_TrimDisarm(void)
+{
+    chassis_flag.trim_hold  = 0;
+    chassis_flag.trim_armed = 0;
+    chassis_flag.trim_fresh = 0;
+}
+
+uint8_t Chassis_TrimDone(void)
+{
+    return (chassis_flag.trim_armed && chassis_flag.trim_fresh && chassis_flag.trim_within) ? 1 : 0;
+}
+
 /* 阻塞读单个电机实时位置(度): 成功写 *pos_deg 返回1, 失败返回0
    EMM 固件: 65536 计数 = 360度 (X 固件是 0.1度, 别混)
    改为复用 CAN 中断维护的 can_pos_* 数组: 等 can_pos_cnt[addr] 变化 (签名/返回值不变)。
@@ -284,7 +318,7 @@ static uint8_t Chassis_Odom_ReadPos(uint8_t addr, float *pos_deg)
 static void Chassis_Odom_Update(void)
 {
     float pos[4], new_pos, yaw_deg;
-    uint8_t fresh, k;
+    uint8_t k;
     uint16_t cnt;
 
     /* autorep 1->0 跳变: 发 time_ms=0 关掉电机定时上报, 否则退回阻塞读会被上报帧干扰 */
@@ -294,31 +328,42 @@ static void Chassis_Odom_Update(void)
         Emm_AutoReturn_Pos(2, 0);
         Emm_AutoReturn_Pos(3, 0);
         Emm_AutoReturn_Pos(4, 0);
+        chassis_autorep_rearm = 0;      /* 下次重新开启时立刻上膛, 不等到节拍到点 */
     }
     chassis_autorep_prev = chassis_flag.odom_use_autorep;
 
     if (chassis_flag.odom_use_autorep)
     {
-        /* 每次更新重发上膛命令(幂等): 电机上电早于本命令 / 中途掉电重启, 下一拍自动补上 */
-        Emm_AutoReturn_Pos(1, CHASSIS_AUTOREP_MS);
-        Emm_AutoReturn_Pos(2, CHASSIS_AUTOREP_MS);
-        Emm_AutoReturn_Pos(3, CHASSIS_AUTOREP_MS);
-        Emm_AutoReturn_Pos(4, CHASSIS_AUTOREP_MS);
+        /* 上膛命令不能每拍重发: 电机内部的 20ms 定时器每收到一次 0x11/0x18 就重新计时,
+           50ms 一拍地重发 -> 回报被拖成 ~1 帧/拍, 新鲜度检查大量失败。
+           改为 1s 重发一次: 既能补上"电机上电晚于本命令/中途掉电重启", 又不会打断定时器。 */
+        if (chassis_autorep_rearm == 0)
+        {
+            Emm_AutoReturn_Pos(1, CHASSIS_AUTOREP_MS);
+            Emm_AutoReturn_Pos(2, CHASSIS_AUTOREP_MS);
+            Emm_AutoReturn_Pos(3, CHASSIS_AUTOREP_MS);
+            Emm_AutoReturn_Pos(4, CHASSIS_AUTOREP_MS);
+        }
+        if (++chassis_autorep_rearm >= 20) chassis_autorep_rearm = 0;   /* 20 拍 x 50ms = 1s */
 
-        /* 新鲜度检查: 任一轮本周期没收到新帧 -> 数据不齐, 整拍跳过不积分 (防丢帧算出假位移) */
-        fresh = 1;
+        /* 逐轮独立处理: 本拍收到新帧就用新位置, 丢帧则保持上一拍位置(该轮本拍位移记 0)。
+           不再要求 4 轮同时有新帧, 也绝不用车速外推 —— 外推+积分会重复计位移(双重积分),
+           丢帧越频繁速度被放得越大, 里程计快速虚高到几千万。丢帧只让该轮本拍位移=0,
+           整车里程计仍随其它新帧前进, P 控误差照常缩小, 不会冻住也不会冲过头。
+           首次基准见下面 !chassis_odom_inited 分支: 要等 4 轮都真收到过一帧。 */
         for (k = 0; k < 4; k++)
         {
             cnt = can_pos_cnt[k + 1];
-            if (cnt == chassis_odom_prev_cnt[k]) fresh = 0;
-            chassis_odom_prev_cnt[k] = cnt;
-        }
-        if (!fresh) return;
-
-        for (k = 0; k < 4; k++)
-        {
-            pos[k] = (float)can_pos_raw[k + 1] * 360.0f / 65536.0f;
-            if (can_pos_sign[k + 1]) pos[k] = -pos[k];
+            if (cnt != chassis_odom_prev_cnt[k])
+            {
+                pos[k] = (float)can_pos_raw[k + 1] * 360.0f / 65536.0f;
+                if (can_pos_sign[k + 1]) pos[k] = -pos[k];
+                chassis_odom_prev_cnt[k] = cnt;
+            }
+            else
+            {
+                pos[k] = chassis_odom_prev_pos[k];
+            }
         }
     }
     else
@@ -335,7 +380,13 @@ static void Chassis_Odom_Update(void)
 
     if (!chassis_odom_inited)
     {
-        for (int i = 0; i < 4; i++) chassis_odom_prev_pos[i] = pos[i];
+        /* 首次基准必须等 4 轮都收到过真实位置 (can_pos_cnt != 0)。
+           上电头几拍 can_pos_raw 还是 0, 若此时就记基准, 第一帧真实位置到达时
+           增量 = 电机绝对位置(可能是几千度) -> 里程计一步跳几米~几十米, 导航目标跟着飞。 */
+        uint8_t ok = 1;
+        for (k = 0; k < 4; k++) if (can_pos_cnt[k + 1] == 0) ok = 0;
+        if (!ok) return;                       /* 还没收齐: 本拍什么都不做, 位置保持 0 */
+        for (k = 0; k < 4; k++) chassis_odom_prev_pos[k] = pos[k];
         chassis_odom_inited = 1;
         return;   /* 首次只记录基准, 不积分 */
     }
@@ -390,6 +441,7 @@ void Chassis_ApplyVisionTrim(void)
     chassis_val.trim_corr_y   = chassis_cfg.trim_gain_y   * Serial_RxData.ring_corr_y;
     chassis_val.trim_corr_yaw = chassis_cfg.trim_gain_yaw * Serial_RxData.ring_corr_yaw;
     chassis_flag.trim_within   = Serial_RxData.ring_within;
+    if (chassis_flag.trim_armed) chassis_flag.trim_fresh = 1;   /* 标记: 武装之后收到过新帧 */
 
     if (chassis_flag.trim_within) return;   /* 已在容差内(矫正成功), 不再纠偏 */
 
@@ -497,6 +549,7 @@ void App_Chassis_Task(void)
     static uint16_t vbus_tick = 0;
     static uint8_t  qr_armed = 0;    /* 扫码直行: 首次进入捕获车头朝向 */
     static uint8_t  rot_armed = 0;   /* 原地旋转: 首次进入清 PID 积分 */
+    static uint16_t rot_stable_tick = 0;   /* 原地旋转到位稳定计数: 连续落在死区内满 rot_settle_ticks 才判转完 */
     static uint8_t  s_en_prev = 0;       /* 初始与 chassis_flag.en 一致, 避免上电误触发 */
     static uint16_t s_en_boot_tick = 0;
     static uint8_t  s_en_boot_done = 0;
@@ -558,7 +611,7 @@ void App_Chassis_Task(void)
     }
 
     /* 扫码直行 (mission): 沿当前车头锁航向直行, 覆盖导航/纠偏/遥控 */
-    if (chassis_flag.qr_scan_active)
+    if (chassis_flag.qr_scan_active && !chassis_flag.rc_override)
     {
         if (!qr_armed) { qr_armed = 1; chassis_val.yaw_target = yaw; PID_Clear(&yaw_pid); }
         vx = chassis_cfg.qr_scan_speed;
@@ -569,17 +622,29 @@ void App_Chassis_Task(void)
     }
     qr_armed = 0;
 
-    /* 原地旋转 (mission): 只转 yaw, 到位退出 (world yaw, 与 Imu 同系) */
-    if (chassis_flag.rotate_active)
+    /* 原地旋转 (mission): 只转 yaw, 到位退出 (world yaw, 与 Imu 同系)
+       ★ 到位判据加"连续稳定确认": 进死区瞬间车头可能还带惯性角速度, 立即切平移会带着没转正的车头直行。
+       连续 rot_settle_ticks 拍都落在死区内(惯性已被摩擦吃掉, 车头停稳)才判转完。 */
+    if (chassis_flag.rotate_active && !chassis_flag.rc_override)
     {
-        if (!rot_armed) { rot_armed = 1; PID_Clear(&yaw_pid); }
+        if (!rot_armed) { rot_armed = 1; rot_stable_tick = 0; PID_Clear(&yaw_pid); }
         if (fabsf(Math_NormalizeAngle(chassis_val.rotate_target - yaw)) <= chassis_cfg.yaw_deadzone)
         {
-            chassis_flag.rotate_active = 0;
-            Chassis_SendWheels(0, 0, 0, 0);
+            if (++rot_stable_tick >= chassis_cfg.rot_settle_ticks)
+            {
+                chassis_flag.rotate_active = 0;
+                rot_stable_tick = 0;
+                Chassis_SendWheels(0, 0, 0, 0);
+            }
+            else
+            {
+                /* 已进死区但未稳够: 死区内 P 输出为 0(电机停), 停轮等惯性滑停 */
+                Chassis_SendWheels(0, 0, 0, 0);
+            }
         }
         else
         {
+            rot_stable_tick = 0;
             omega = Chassis_YawOmega(&yaw_pid, chassis_val.rotate_target, yaw);
             Chassis_SendWheels(omega, omega, omega, omega);
         }
@@ -587,12 +652,13 @@ void App_Chassis_Task(void)
     }
     rot_armed = 0;
 
-    /* 全程导航状态机 (优先于手动 btn0/btn1 定位) */
-    Nav_Update();
+    /* 全程导航状态机 (优先于手动 btn0/btn1 定位); 遥控优先时让路 */
+    if (!chassis_flag.rc_override) Nav_Update();
 
     /* 视觉底盘纠偏: 收到 0x04/0x05 帧 -> 更新偏了多少/要矫正多少/是否成功, 未到位则纠偏
-       (底盘锁定 chassis_flag.lock=1 时忽略, 塔吊作业期间不再纠偏) */
-    if (chassis_flag.trim_enable && !chassis_flag.lock && !nav_test_active && !Chassis_TrimSkipStation(nav_at_point) && Serial_ChassisTrimReady)
+       (底盘锁定 chassis_flag.lock=1 时忽略, 塔吊作业期间不再纠偏;
+        塔吊还在摆探查姿态时 chassis_flag.trim_hold=1 也忽略, 帧直接丢掉, 等姿态到位再收新帧) */
+    if (chassis_flag.trim_enable && !chassis_flag.trim_hold && !chassis_flag.lock && !chassis_flag.rc_override && !nav_test_active && !Chassis_TrimSkipStation(nav_at_point) && Serial_ChassisTrimReady)
     {
         Serial_ChassisTrimReady = 0;
         Chassis_ApplyVisionTrim();
@@ -628,7 +694,7 @@ void App_Chassis_Task(void)
         last_btn1 = ELRS_RC.btns[1];
     }
 
-    if (chassis_flag.pos_active == 1)
+    if (chassis_flag.pos_active == 1 && !chassis_flag.rc_override)
     {
         /* 点对点定位: 里程计闭环 P 控, 航向 PID 锁死 (世界系误差 -> 车体系) */
         float ex = chassis_val.pos_target_x_mm - chassis_val.odom_x_mm;

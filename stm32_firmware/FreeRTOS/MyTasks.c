@@ -48,10 +48,10 @@ void SIGNALING_Tasks(void *p_arg)
     {
         Servo_Tick();          /* 舵机上电门控计数: 满 SERVO_ARM_TICKS 拍才放行舵机动作 */
 //        Tower_Boot_Task();     /* 上电默认(只执行一次): 云台135->310, 电机5升600, 电机6伸500 */
-//        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
+        Screen_Boot();          /* 串口屏: 上电延时约400ms后写一次占位内容 */
 //        Screen_SendTestLoop();  /* 连续发送: 每100ms发 "TJC_TX_OK N" (串口助手测TX用) */
-//        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
-//        Test_Task();           /* 手动测试: 云台/平台/夹爪/电机5/6 一起跑(Watch 改各自目标值); 用 Kin 时注释掉这行 */
+        Screen_Test_Task();    /* 串口屏测试: Watch 改 screen_test_*, trig 写 1 触发 */
+        Test_Task();           /* 手动测试: 云台/平台/夹爪/电机5/6 一起跑(Watch 改各自目标值); 用 Kin 时注释掉这行 */
         Serial_Test_Task();    /* 串口1 发送云台舵机角度给上位机 (natsiie GCS) */
 //        App_Tower_Task();    /* 遥控直控塔吊 */
 //        Tower_Test_Task();   /* sw[grab_sw] 0->2 触发抓取+放置, 2/3次转平台 */
@@ -76,7 +76,7 @@ void DATE_Tasks(void *p_arg)
     {
         key = Key_Read();
         ELRS_Remote_Update();   /* 刷新 ELRS_RC: 遥控直控底盘靠这个喂数据 */
-//        Mission_Update(key);   /* 全自动比赛流程 (mission.enable=1 才介入) */
+        Mission_Update(key);   /* 全自动比赛流程 (mission.enable=1 才介入) */
         vTaskDelayUntil(&xLastWakeTime, xDelay10ms);
     }
 }

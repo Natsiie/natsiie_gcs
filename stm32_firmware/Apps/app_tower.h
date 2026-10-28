@@ -15,9 +15,9 @@ void App_Tower_Task(void);   /* 10ms 周期调用: 遥控直控塔吊 */
 void Tower_Test_Task(void);  /* 10ms 周期调用: 一体化抓取/放置流程 (Watch 写 flow_cmd) */
 void Gimbal_Test_Task(void);    /* 10ms 周期调用: 云台角度调试 (Watch 写 gimbal_test_angle) */
 void Platform_Test_Task(void);  /* 10ms 周期调用: 物料平台角度调试 (Watch 写 platform_test_angle) */
-void Tower_Boot_Task(void);     /* 10ms 周期调用: 上电默认状态 (云台135->310, 电机5升600, 电机6伸500) */
+void Tower_Boot_Task(void);     /* 10ms 周期调用: 上电默认状态 (电机5<400先归位20再升600, >=400直接升600; 云台135->270, 电机6伸550) */
 extern uint8_t boot_enable;   /* 1=上电默认状态接管上层, 0=关闭 (Watch) */
-extern uint8_t boot_step;     /* 只读: 0=云台135等电机5到位 1=云台去310 2=完成 */
+extern uint8_t boot_step;     /* 只读: 0=云台135等电机5到位 1=云台去270 2=完成 */
 void Motor56_Test_Task(void);   /* 10ms 周期调用: 电机5/6 测试 (位置/速度模式) */
 void Gripper_Test_Task(void);   /* 10ms 周期调用: 夹爪角度调试 (Watch 写 gripper_test_angle) */
 void Test_Task(void);           /* 10ms 周期调用: 集中测试入口 (内部按需注释) */

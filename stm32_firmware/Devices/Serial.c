@@ -488,10 +488,14 @@ void Serial_ProcessFrame(void)
             Serial_RxData.target_y_mm = y;
             Serial_RxData.target_z_mm = z;
 
-            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_cal.grab_z_mm 定死; 等 Watch 写 kin_flag.cmd=1 才走 */
-            kin_tgt.target_x = x;
-            kin_tgt.target_y = y;
-            Serial_ColorTargetReady = 1;   /* 通知 mission: 新颜色目标点已锁存 */
+            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_cal.grab_z_mm 定死; 等 Watch 写 kin_flag.cmd=1 才走。
+               抓取执行中(kin_flag.active)拒绝新 0x08, 防视觉误识别覆盖正在用的目标坐标 */
+            if (!kin_flag.active)
+            {
+                kin_tgt.target_x = x;
+                kin_tgt.target_y = y;
+                Serial_ColorTargetReady = 1;   /* 通知 mission: 新颜色目标点已锁存 */
+            }
             Serial_VisionCmd = 1;
         }
         break;

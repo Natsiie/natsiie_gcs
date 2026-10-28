@@ -28,14 +28,14 @@ enum {
     MS_QR_ROTATE_MAT,      /* 转 material_yaw (X->转->Y) */
     MS_NAV,                /* 全程导航运行中, 等 nav_wait */
     MS_ROTATE,             /* 中点原地旋转 */
-    MS_TRIM,               /* 工作区视觉纠偏 (等 within=1 后锁底盘) */
+    MS_TRIM,               /* 工作区视觉纠偏 (姿态到位后放开, 等一帧新 within=1 或超时后锁底盘) */
     MS_WAIT_MANUAL,        /* 手动模式: 塔吊作业用 Kin_TestRun, 等 Watch 写 mission.work_done=1 */
-    MS_POSE_DEFAULT,       /* 塔吊回默认姿态 135/500/0 (清视觉视场) */
+    MS_POSE_DEFAULT,       /* 塔吊收探查姿态: 物料区 135/460/200, 其它 135/600/0 (清视觉视场) */
     MS_LOAD,               /* 装货 (物料区) */
     MS_UNLOAD,             /* 卸货 (粗加工: 平台 -> 环, 落高50, 按二维码环序) */
     MS_RELOAD,             /* 回装 (粗加工: 环 -> 平台, 按二维码环序) */
     MS_STACK,              /* 堆叠 (暂存: 平台 -> 环, 落高50/400, 按二维码环序) */
-    MS_POSE_BOOT,          /* 塔吊收默认姿态 135/500/0 (离站前) */
+    MS_POSE_BOOT,          /* 塔吊收运动姿态 310/600/500 (离站前) */
     MS_DONE,               /* 收车完成 */
 };
 
@@ -55,6 +55,7 @@ Mission_t mission = {
     .scan_goto_y      = -200.0f,            /* 两区共用: 先去的点 Y (mm) */
     .scan_stop_x      = 1500.0f,            /* 启动区1: 慢扫 |X| 上限 (mm), 到即停; 启动区2 取 -1500 */
     .vision_timeout   = 1000,               /* 工作区视觉超时(10ms/拍), 1000=10s */
+    .trim_wait_10ms   = MISSION_TRIM_WAIT_10MS,  /* 进站等底盘微调 within 上限 5s, 等不到放行 */
     .scan_pause_10ms  = 500,                /* 扫码直行到 corner x 暂停时长(10ms/拍), 200=2s */
     .state            = MS_BOOT,
 };
@@ -72,6 +73,7 @@ static uint8_t ms_qr_rings[2][3] = { {1,2,3}, {1,2,3} };   /* [轮][序号] = �
 static uint8_t ms_qr_valid = 0;
 static uint8_t ms_qr_received = 0;   /* 收到过二维码帧(0x06)标志(慢扫用); 启动/进慢扫时清 0 */
 static uint16_t ms_vision_timeout = 0;  /* 视觉超时计数(10ms/拍), 收新视觉指令清零 */
+static uint16_t ms_trim_tick = 0;       /* 进站等底盘微调 within 的计时 (10ms/拍), MS_TRIM 里累加 */
 static uint8_t  ms_ok_count  = 0;        /* 完成正确的工作区动作数 (正常走完 -> 对) */
 static uint8_t  ms_err_count = 0;        /* 视觉超时/失败的工作区动作数 (超时强制完成 -> 错) */
 #define MISSION_WORK_TOTAL 6             /* 总工作区动作数: 2 轮 x 3 区(物料/粗加工/暂存) */
@@ -148,10 +150,10 @@ static uint8_t Mission_Ring(uint8_t round, uint8_t idx)
 /* ================= 塔吊参数准备 ================= */
 static void Mission_LoadParams(void)     /* 装货: 等视觉0x09授权下探, 自动夹 */
 {
-    kin_flag.handshake_en  = 1;      /* 到抓取位上方等 0x09 ok 再降 */
-    kin_flag.auto_grip  = 1;      /* 下探到 500 后自动闭夹爪 */
+    kin_flag.handshake_en  = 1;      /* 到抓取位等 0x09 ok 再闭爪 (物料区探查已在460, 无实际下降) */
+    kin_flag.auto_grip  = 1;      /* 到位后自动闭夹爪 */
     kin_flag.auto_release = 0;
-    kin_cal.grab_z_mm         = 500.0f; /* 回转平台抓取高 */
+    kin_cal.grab_z_mm         = HOIST_HEIGHT_ROTATE; /* 回转平台抓取高 (唯一真值; 物料区探查也在同一高度)  */
     kin_cal.grab_y_offset_mm  = 0.0f;  /* 装货视觉 y 补偿 (实测 3cm) */
 }
 
@@ -259,16 +261,30 @@ void Mission_Update(uint8_t key_pressed)
     if (mission.skip_work && mission.state >= MS_TRIM && mission.state <= MS_POSE_BOOT)
     {
         mission.skip_work = 0;
-        Kin_Stop();          /* 立即停塔吊, 不再走当前作业/收姿态 */
+        Kin_Stop();          /* 立即停塔吊, 不再走当前作业/收姿态 (Kin_Stop 里会解除底盘微调武装) */
+        Chassis_TrimDisarm();
         chassis_flag.lock = 0;
         nav_cmd = 3;         /* 解锁底盘, 直接推进导航去下一点 */
         mission.state = MS_NAV;
         return;              /* 本拍不再跑 switch, 防 nav_wait 未清零时重新进入工作区 */
     }
 
+    /* 物料区手动抓取 (Watch 写 mission.mat_grab=1): 不走视觉, 塔吊摆 135/460/200 (已在抓取高, 夹爪张开)
+       -> 等执行位 -> 直接闭爪 -> 完整装货 (kin_flag.cmd=10)。
+       只在物料区、纠偏已完成(chassis_flag.lock=1, 即车身已定住)、塔吊空闲时执行;
+       不满足条件就保留标志, 等到位/空闲再抓, 抓完自动清0。 */
+    if (mission.mat_grab && nav_at_point == NAV_MATERIAL && chassis_flag.lock && !kin_flag.active &&
+        (mission.state == MS_TRIM || mission.state == MS_WAIT_MANUAL || mission.state == MS_LOAD))
+    {
+        mission.mat_grab = 0;
+        kin_flag.done = 0;           /* 清残留 done, 防上一段手动测试的完成标志被后面的状态误读 */
+        kin_flag.mat_grab_cmd = 1;   /* 执行位: 已在抓取高, 收到即直接闭爪 (无下降步) */
+        kin_flag.cmd = 10;           /* 物料区固定位完整装货 */
+    }
+
     /* 工作区视觉超时看门狗: 收新视觉指令(0x04/05/08/09/0C)即清零计数;
        塔吊作业状态(MS_TRIM~MS_STACK)超过 mission.vision_timeout 拍(默认1000=10s)
-       没收到任何视觉指令 -> 视为当前点动作已完成, 收塔吊默认姿态(135/500/0)离站。 */
+       没收到任何视觉指令 -> 视为当前点动作已完成, 收塔吊默认姿态(134/600/0)离站。 */
     if (Serial_VisionCmd)
     {
         Serial_VisionCmd = 0;
@@ -280,9 +296,10 @@ void Mission_Update(uint8_t key_pressed)
         {
             ms_vision_timeout = 0;
             Kin_Stop();              /* 停塔吊, 走收姿态 */
+            Chassis_TrimDisarm();    /* 不再等本区微调, 退回自动纠偏 */
             mission.sub = 0;
             ms_err_count++;          /* 超时强制完成 -> 记错 */
-            mission.state = MS_POSE_BOOT; /* 与正常完成同一出口: 收 135/500/0 -> 解锁离站 */
+            mission.state = MS_POSE_BOOT; /* 与正常完成同一出口: 收运动姿态 310/600/500 -> 解锁离站 */
             return;
         }
     }
@@ -400,7 +417,7 @@ void Mission_Update(uint8_t key_pressed)
         {
             ms_round = nav_round;   /* 第1轮=0 第2轮=1 (由 nav 按到物料区次数维护) */
             if (nav_at_point == NAV_MID) { Mission_RotateAtMid(); mission.state = MS_ROTATE; }
-            else                          { ms_vision_timeout = 0; mission.state = MS_POSE_DEFAULT; }  /* 到点先收默认姿态 135/500/0 */
+            else                          { ms_vision_timeout = 0; mission.state = MS_POSE_DEFAULT; }  /* 到点先摆探查姿态 (物料区 135/460/200, 其它 134/600/0) */
         }
         break;
 
@@ -409,8 +426,18 @@ void Mission_Update(uint8_t key_pressed)
         break;
 
     case MS_TRIM:
-        /* 默认姿态已就位, 再视觉纠偏: within=1(或该点关闭纠偏)后锁底盘(忽略后续纠偏), 按操作模式分派作业 */
-        if ((chassis_flag.trim_within || Chassis_TrimSkipStation(nav_at_point)) && !chassis_flag.pos_active)
+        /* 探查姿态已就位 -> 放开底盘视觉纠偏, 等一次"新的" within=1 再锁车作业。
+           物料区和粗加工/暂存走同一段: 不能靠上一站残留的 trim_within 直接放行;
+           视觉在该区根本不发 0x04/0x05 时, 等满 mission.trim_wait_10ms(默认5s) 就放行, 不卡死。 */
+        if (mission.sub == 0)
+        {
+            Chassis_TrimRelease();
+            ms_trim_tick = 0;
+            mission.sub = 1;
+        }
+        ms_trim_tick++;
+        if ((Chassis_TrimDone() || Chassis_TrimSkipStation(nav_at_point) ||
+             ms_trim_tick >= mission.trim_wait_10ms) && !chassis_flag.pos_active)
         {
             chassis_flag.lock = 1;
             mission.sub = 0;
@@ -451,8 +478,16 @@ void Mission_Update(uint8_t key_pressed)
         break;
 
     case MS_POSE_DEFAULT:
-        /* 导航到点停下 -> 先收探查姿态 135/600/0 (保持, 清出视觉视场), 到位后进视觉纠偏 */
-        if (mission.sub == 0) { kin_flag.cmd = 4; mission.sub = 1; }
+        /* 导航到点停下 -> 先摆探查姿态, 到位后进视觉纠偏;
+           物料区用专属 135/460/200 (电机6 预伸出, 夹爪张开就在抓取高), 其它工作区 134/600/0 (夹爪合上清视场)。
+           同时武装底盘微调: 姿态期间 hold=1 不收 0x04/0x05, 姿态到位后在 MS_TRIM 放开,
+           保证"先摆姿态, 再底盘微调"是新的 within, 不是上一站残留。 */
+        if (mission.sub == 0)
+        {
+            kin_flag.cmd = (nav_at_point == NAV_MATERIAL) ? 9 : 4;
+            Chassis_TrimArm();
+            mission.sub = 1;
+        }
         if (kin_flag.done)
         {
             kin_flag.done = 0;
@@ -567,7 +602,7 @@ void Mission_Update(uint8_t key_pressed)
 
     case MS_POSE_BOOT:
         /* 作业完成: 塔吊切运动姿态 310/600/500 (舵机310/电机5 600/电机6 500), 到位后解锁底盘离站 */
-        if (mission.sub == 0) { kin_flag.cmd = 5; mission.sub = 1; }
+        if (mission.sub == 0) { Chassis_TrimDisarm(); kin_flag.cmd = 5; mission.sub = 1; }
         if (kin_flag.done)
         {
             kin_flag.done = 0;
