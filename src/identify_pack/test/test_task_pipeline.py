@@ -177,11 +177,11 @@ class TaskPipelineTests(unittest.TestCase):
         SerialBridgeNode._send_color_targets(self.bridge, target)
         self.bridge.ser.write.assert_not_called()
 
-    def test_color_output_only_after_stationary_ready_with_exactly_one_roi(self):
+    def test_color_output_is_not_gated_by_stationary_state_with_one_roi(self):
         node = SimpleNamespace(br=CvBridge(), color_cfg=build_default_color_config(),
                                color_roi=[(0, 0, 640, 480)], lock_dominant=True,
                                min_blob_area=300., min_blob_dimension=12., show=False,
-                               camera_frame='camera_optical_frame', motion_detect=True,
+                               camera_frame='camera_optical_frame',
                                require_single_roi=True, stationary=Mock(), pub_motion=Mock(),
                                pub_centers=Mock(), pub_color=Mock(), get_logger=Mock(),
                                pub_arrived=Mock(), publish_arrived=True,
@@ -192,29 +192,34 @@ class TaskPipelineTests(unittest.TestCase):
         msg.header.stamp = Stamp(sec=42)
         for state, count in (('WAITING', 0), ('TRACKING', 3), ('MISSING', 14)):
             node.stationary.update.return_value = {
-                'state': state, 'count': count, 'required_frames': 15,
+                'state': state, 'count': count, 'required_frames': 25,
                 'fps': 25., 'ready': False, 'missing_frames': 0}
             ColorDetectNode.image_cb(node, msg)
-            node.pub_color.publish.assert_not_called()
+            # 未停稳也正常发布色块和坐标，只有 OK 不发。
+            self.assertEqual(node.pub_color.publish.call_args.args[0].data, '1:288,238')
             published = node.pub_centers.publish.call_args.args[0]
-            self.assertFalse(published.points)
-            self.assertEqual(list(published.channels[0].values), [0.0])
+            self.assertEqual(len(published.points), 1)
+            self.assertEqual(list(published.channels[-1].values), [1.0])
+            node.pub_arrived.publish.assert_not_called()
         node.stationary.update.return_value = {
-            'state': 'READY', 'count': 15, 'required_frames': 15,
+            'state': 'READY', 'count': 25, 'required_frames': 25,
             'fps': 25., 'ready': True, 'missing_frames': 0}
         ColorDetectNode.image_cb(node, msg)
         self.assertEqual(node.pub_color.publish.call_args.args[0].data, '1:288,238')
         node.pub_arrived.publish.assert_called_once()
+        # 多个 ROI 时仍拒绝输出目标，避免任务抓取选错物块。
         node.color_roi.append((0, 0, 100, 100))
         node.pub_color.publish.reset_mock()
         ColorDetectNode.image_cb(node, msg)
         node.pub_color.publish.assert_not_called()
+        published = node.pub_centers.publish.call_args.args[0]
+        self.assertFalse(published.points)
 
     def test_stationary_ok_fires_once_and_rearms_after_object_leaves(self):
         node = SimpleNamespace(br=CvBridge(), color_cfg=build_default_color_config(),
                                color_roi=[(0, 0, 640, 480)], lock_dominant=True,
                                min_blob_area=300., min_blob_dimension=12., show=False,
-                               camera_frame='camera_optical_frame', motion_detect=True,
+                               camera_frame='camera_optical_frame',
                                require_single_roi=True, stationary=Mock(), pub_motion=Mock(),
                                pub_centers=Mock(), pub_color=Mock(), get_logger=Mock(),
                                pub_arrived=Mock(), publish_arrived=True,

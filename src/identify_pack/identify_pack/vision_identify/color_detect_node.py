@@ -2,8 +2,8 @@
 """ROS2 节点：六色轮廓 blob 色块定位 + 物块停稳帧计数（正式运行节点）。
 
 订阅相机图像话题，在 ROI 内做色块检测。停稳判定直接统计「物块在 ROI 内
-连续保持位置不变」的帧数：达到阈值后才放行色块输出；物块转走、被抓走、
-消失或位置跳变时计数清零，不影响下一个进入 ROI 的物块。
+连续保持位置不变」的帧数：达到阈值后发一次抓取 OK；色块/坐标输出不再
+门控，物块转走、被抓走、消失或位置跳变时计数清零，不影响下一个物块。
 
 发布：
   - /Color       色块位置，每段 ``color_id:x,y``（1~6 六色，多段用 / 连接）
@@ -76,11 +76,10 @@ class ColorDetectNode(Node):
         self.declare_parameter('min_blob_area', 300)   # 色块最小面积(px^2)
         self.declare_parameter('min_blob_dimension', 12)  # 色块最小边长(px)
         self.declare_parameter('lock_dominant_color', True)  # ROI 内主色锁定
-        self.declare_parameter('motion_detect', True)  # 物块停稳帧计数门控
         self.declare_parameter('require_single_roi', False)
         # 停稳判定：hold_frames>0 时直接按帧数（便于实测调参），否则按
-        # hold_sec × 实测 fps 换算。默认 0.6s，25fps 下约 15 帧。
-        self.declare_parameter('stationary_hold_sec', 0.6)
+        # hold_sec × 实测 fps 换算。默认 1.0s，25fps 下约 25 帧。
+        self.declare_parameter('stationary_hold_sec', 1.0)
         self.declare_parameter('stationary_hold_frames', 0)
         self.declare_parameter('stationary_max_pixel_move', 10.0)  # 允许抖动(px)
         self.declare_parameter('stationary_miss_frames', 2)   # 连续丢帧容忍
@@ -100,7 +99,6 @@ class ColorDetectNode(Node):
         self.min_blob_area = float(self.get_parameter('min_blob_area').value)
         self.min_blob_dimension = float(self.get_parameter('min_blob_dimension').value)
         self.lock_dominant = self.get_parameter('lock_dominant_color').get_parameter_value().bool_value
-        self.motion_detect = self.get_parameter('motion_detect').get_parameter_value().bool_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
         self.require_single_roi = self.get_parameter('require_single_roi').value
 
@@ -191,26 +189,19 @@ class ColorDetectNode(Node):
         roi_valid = not self.require_single_roi or (
             self.color_roi and len(self.color_roi) == 1)
 
-        # 停稳门控：先在本帧 ROI 内检出主色块，再统计它连续不动的帧数。
+        # 停稳计数只用于发抓取 OK，不再门控色块/坐标输出。
         # 物块转走/被抓走时检测为空或位置跳变，计数会自然清零。
-        ready = not self.motion_detect
         blobs = []
-        if self.motion_detect:
+        if roi_valid:
+            blobs = _extract_blobs(
+                img, self.color_cfg, self.color_roi, self.lock_dominant,
+                self.min_blob_area, self.min_blob_dimension,
+                self.require_single_roi)
             stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
-            if roi_valid:
-                blobs = _extract_blobs(
-                    img, self.color_cfg, self.color_roi, self.lock_dominant,
-                    self.min_blob_area, self.min_blob_dimension,
-                    self.require_single_roi)
-                primary = max(blobs, key=lambda blob: blob[7]) if blobs else None
-                stationary = self.stationary.update(
-                    None if primary is None else (primary[0], primary[1], primary[2]),
-                    stamp)
-            else:
-                self.stationary.reset()
-                stationary = {'state': 'NO_ROI', 'count': 0, 'required_frames': 0,
-                              'fps': 0.0, 'ready': False, 'missing_frames': 0}
-            ready = stationary['ready']
+            primary = max(blobs, key=lambda blob: blob[7]) if blobs else None
+            stationary = self.stationary.update(
+                None if primary is None else (primary[0], primary[1], primary[2]),
+                stamp)
             required = stationary['required_frames']
             if required != getattr(self, '_last_required_frames', None):
                 self._last_required_frames = required
@@ -236,20 +227,11 @@ class ColorDetectNode(Node):
                 elif stationary['state'] == 'WAITING':
                     # 物块转走或被夹走后重新武装，下一个物块可再次触发。
                     self._arrived_armed = True
-        elif roi_valid:
-            blobs = _extract_blobs(
-                img, self.color_cfg, self.color_roi, self.lock_dominant,
-                self.min_blob_area, self.min_blob_dimension,
-                self.require_single_roi)
+        else:
+            self.stationary.reset()
 
-        if not ready or not roi_valid:
-            self.pub_centers.publish(_empty_centers(msg, self.camera_frame, 0.0))
-            if self.show:
-                self.show_frame(img)
-            return
-
-        if not blobs:
-            # 丢失容忍期内仍算 ready，但这一帧没有目标可发。
+        if not roi_valid or not blobs:
+            # 没有目标时仍把 motion_ready 置 1，串口桥不再用它拦目标。
             self.pub_centers.publish(_empty_centers(msg, self.camera_frame, 1.0))
             if self.show:
                 self.show_frame(img)
@@ -291,7 +273,7 @@ class ColorDetectNode(Node):
             self.show_frame(img)
 
     def show_frame(self, img):
-        if self.motion_detect:
+        if self.motion_text:
             cv2.putText(img, self.motion_text, (10, img.shape[0] - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
         for index, (x, y, w, h) in enumerate(self.color_roi or [], start=1):

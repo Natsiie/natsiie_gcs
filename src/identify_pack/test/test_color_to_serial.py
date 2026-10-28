@@ -85,10 +85,14 @@ class ColorToSerialTests(unittest.TestCase):
         detector = SimpleNamespace(
             br=CvBridge(), color_cfg=build_default_color_config(), color_roi=None,
             lock_dominant=True, min_blob_area=300., min_blob_dimension=12.,
-            show=False, camera_frame='camera_optical_frame', motion_detect=False,
-            require_single_roi=False,
+            show=False, camera_frame='camera_optical_frame',
+            require_single_roi=False, stationary=Mock(), pub_motion=Mock(),
+            publish_arrived=False,
             pub_centers=Mock(), pub_color=Mock(), get_logger=Mock(),
         )
+        detector.stationary.update.return_value = {
+            'state': 'TRACKING', 'count': 1, 'required_frames': 25,
+            'fps': 25., 'ready': False, 'missing_frames': 0}
         image = np.full((480, 640, 3), 255, dtype=np.uint8)
         image[218:259, 268:309] = [0, 0, 255]
         message = detector.br.cv2_to_imgmsg(image, encoding='bgr8')

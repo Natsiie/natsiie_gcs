@@ -64,17 +64,15 @@ def generate_launch_description():
         # 颜色识别 ROI、HSV 配置以及 TF/像素投影参数文件。
         DeclareLaunchArgument('roi_file', default_value=os.path.join(share, 'ROI_Range.txt')),
         DeclareLaunchArgument('color_config', default_value=os.path.join(share, 'color_config.json')),
-        # 物块停稳判定：ROI 内物块连续保持位置不变达到阈值后放行下游。
-        # hold_frames>0 时直接按帧数（便于实测调参）；0 表示按
-        # hold_sec × 实测 fps 换算，默认 0.6s 在 25fps 下约 15 帧。
-        DeclareLaunchArgument('stationary_hold_sec', default_value='0.6'),
+        # 物块停稳判定：ROI 内物块连续保持位置不变达到阈值后发抓取 OK；
+        # 不再门控色块/坐标输出。hold_frames>0 时直接按帧数（便于实测调参）；
+        # 0 表示按 hold_sec × 实测 fps 换算，默认 1.0s 在 25fps 下约 25 帧。
+        DeclareLaunchArgument('stationary_hold_sec', default_value='1.0'),
         DeclareLaunchArgument('stationary_hold_frames', default_value='0'),
         DeclareLaunchArgument('stationary_max_pixel_move', default_value='10.0'),
         DeclareLaunchArgument('stationary_miss_frames', default_value='2'),
         # 帧率估计：0=按图像时间戳自动估计，调试时可固定成实测帧率。
         DeclareLaunchArgument('stationary_fps', default_value='0.0'),
-        # 停稳门控开关；调试识别时可设为 false 跳过帧计数门控。
-        DeclareLaunchArgument('motion_detect', default_value='true'),
         # 停稳后是否发抓取 OK（/arm/arrived -> 串口桥 GrabCmd 0x09）。
         DeclareLaunchArgument('publish_arrived', default_value='true'),
         # 任务模式：true=按二维码顺序+抓取确认每个颜色只发一次；false=连续发送坐标（调试通信链路用）。
@@ -164,8 +162,6 @@ def generate_launch_description():
                 'image_topic': secondary_image_topic,
                 'roi_file': LaunchConfiguration('roi_file'),
                 'color_config': LaunchConfiguration('color_config'),
-                'motion_detect': ParameterValue(
-                    LaunchConfiguration('motion_detect'), value_type=bool),
                 'require_single_roi': True,
                 'stationary_hold_sec': ParameterValue(
                     LaunchConfiguration('stationary_hold_sec'), value_type=float),
