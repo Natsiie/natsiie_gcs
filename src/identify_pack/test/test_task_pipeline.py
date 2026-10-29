@@ -11,13 +11,13 @@ from cv_bridge import CvBridge
 from rclpy.time import Time
 from rclpy.clock import ClockType
 from sensor_msgs.msg import ChannelFloat32, PointCloud
-from std_msgs.msg import UInt32, String
+from std_msgs.msg import Bool, UInt32, String
 
 from identify_pack.scripts.color_config import build_default_color_config
 from identify_pack.scripts.pick_task import PickTask
 from identify_pack.scripts.turntable_motion import OpticalFlowMotion
 from identify_pack.serial.serial_bridge_node import SerialBridgeNode
-from identify_pack.serial.protocol import parse_frame
+from identify_pack.serial.protocol import GRAB_CMD_TYPE, make_frame, parse_frame
 from identify_pack.tf_transform.pixel_to_base_node import PixelToBaseNode
 from identify_pack.vision_identify.color_detect_node import ColorDetectNode
 import test_color_to_serial as pipeline_fixture
@@ -36,6 +36,7 @@ class TaskPipelineTests(unittest.TestCase):
         self.bridge.pub_task_status = Mock()
         self.bridge._publish_task_status = SerialBridgeNode._publish_task_status.__get__(self.bridge)
         self.bridge.motion_stamp_ns = 0
+        self.bridge.grab_cmd_sent = False
         self.bridge.ready_since_ns = 0
         self.bridge.motion_ready = False
         self.bridge.motion_receive_time = -float('inf')
@@ -72,6 +73,18 @@ class TaskPipelineTests(unittest.TestCase):
         self.assertEqual(self.bridge.task.expected.color, 5)
         SerialBridgeNode._send_color_targets(self.bridge, target)
         self.bridge.ser.write.assert_called_once()
+
+    def test_arrived_after_matching_color_sends_grab_command(self):
+        SerialBridgeNode._on_task(self.bridge, String(data='156+123+516+231'))
+        self.fixture.clock.now.return_value = Time(seconds=42.2, clock_type=ClockType.ROS_TIME)
+        center = self.centers(True)
+        SerialBridgeNode._on_motion(self.bridge, center)
+        target = self.target(center)
+        SerialBridgeNode._send_color_targets(self.bridge, target)
+        self.assertEqual(self.bridge.task.state, 'WAIT_PICK_DONE')
+        self.bridge.ser.write.reset_mock()
+        SerialBridgeNode._on_arrived(self.bridge, Bool(data=True))
+        self.bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
 
     def test_moving_or_unknown_blocks_delayed_target_and_clears_projection_queue(self):
         self.bridge.task.load('156+123+516+231', 1)

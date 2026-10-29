@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from builtin_interfaces.msg import Time
 from std_msgs.msg import Bool, String
 
+from identify_pack.scripts.pick_task import PickTask
 from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, make_frame,
     PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE, parse_frame,
@@ -27,7 +28,7 @@ class SerialFeedbackTests(unittest.TestCase):
             joint_states_topic='/gimbal/joint_states',
             get_clock=lambda: clock, get_logger=lambda: logger,
             target_frame='gimbal_base', pub_place_result=Mock(),
-            pub_place_control=Mock(),
+            pub_place_control=Mock(), task_mode=False, grab_cmd_sent=False,
         )
         # 测试替身：不真正打开串口，沿用上面准备好的 Mock 端口。
         bridge._ensure_serial = lambda: bridge.ser is not None and bridge.ser.is_open
@@ -85,6 +86,30 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
         bridge.ser.write.reset_mock()
         SerialBridgeNode._on_arrived(bridge, Bool(data=False))
+        bridge.ser.write.assert_not_called()
+
+    def test_arrived_requires_matching_color_sequence(self):
+        bridge = self.make_bridge()
+        bridge.task_mode = True
+        bridge.grab_cmd_sent = False
+        bridge.task = PickTask()
+        bridge.task.load('123+123+456+123', 0)
+        bridge._send = SerialBridgeNode._send.__get__(bridge)
+        bridge.ser.write.side_effect = lambda frame: len(frame)
+
+        # 还没通过 _send_color_targets 接受「当前期望颜色」的目标
+        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        bridge.ser.write.assert_not_called()
+
+        # 模拟颜色目标已匹配并成功发送：任务进入 WAIT_PICK_DONE
+        bridge.task.sent(10)
+        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
+        self.assertTrue(bridge.grab_cmd_sent)
+
+        # 同一个序号重复到位，不应重复下发
+        bridge.ser.write.reset_mock()
+        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
         bridge.ser.write.assert_not_called()
 
     def test_placement_feedback_and_invalid_results(self):

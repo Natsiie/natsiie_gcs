@@ -88,6 +88,7 @@ class SerialBridgeNode(Node):
         self.task_code_sent = False
         self.task_code = None
         self.task_code_send_deadline = None
+        self.grab_cmd_sent = False
         self.pub_task_status = self.create_publisher(
             String, '/arm/task_status', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         if self.task_mode:
@@ -176,6 +177,7 @@ class SerialBridgeNode(Node):
                 self.task_code_sent = self._send(
                     OUTGOING_TOPIC_TYPES['QR_Decode'], 'QR_Decode', code)
             if changed:
+                self.grab_cmd_sent = False
                 self._publish_task_status()
         except ValueError as error:
             self.get_logger().warning(f'任务码拒绝: {error}', throttle_duration_sec=2.0)
@@ -195,12 +197,14 @@ class SerialBridgeNode(Node):
 
     def _on_pick_done(self, msg):
         if self.task.complete(msg.data, self.get_clock().now().nanoseconds):
+            self.grab_cmd_sent = False
             self._publish_task_status()
         else:
             self.get_logger().warning(f'忽略抓取完成序号 {msg.data}：当前状态或序号不符')
 
     def _on_next_batch(self, msg):
         if self.task.next_batch(msg.data, self.get_clock().now().nanoseconds):
+            self.grab_cmd_sent = False
             self._publish_task_status()
         else:
             self.get_logger().warning('忽略批次通知：需要第一批三个抓取确认后发送 data=1')
@@ -417,11 +421,34 @@ class SerialBridgeNode(Node):
             self.get_logger().warning(f'Invalid placement command: {error}')
 
     def _on_arrived(self, msg):
-        """收到夹爪到位信号 -> 下发下降抓取授权帧（GrabCmd，payload "1"）。"""
+        """收到夹爪到位信号 -> 确认颜色顺序匹配后再下发 GrabCmd。"""
         if not msg.data:
             return
-        self.get_logger().warning('收到夹爪到位信号，下发下降抓取授权')
-        self._send(GRAB_CMD_TYPE, 'GrabCmd', '1')
+        if self.task_mode:
+            expected = self.task.expected
+            # WAIT_PICK_DONE 只会在 _send_color_targets 接受了「当前期望颜色」
+            # 并成功发出目标坐标后由 task.sent() 置位；这里再发抓取授权，
+            # 就保证了 GrabCmd 一定对应解码顺序里的当前颜色。
+            if self.task.state != 'WAIT_PICK_DONE' or expected is None:
+                self.get_logger().warning(
+                    f'收到夹爪到位，但任务状态为 {self.task.state}，'
+                    '尚未发送匹配颜色的目标，忽略 GrabCmd',
+                    throttle_duration_sec=2.0)
+                return
+            if self.grab_cmd_sent:
+                self.get_logger().warning(
+                    f'序号 {expected.sequence} 已发送过 GrabCmd，忽略重复到位信号',
+                    throttle_duration_sec=2.0)
+                return
+        if not self._send(GRAB_CMD_TYPE, 'GrabCmd', '1'):
+            return
+        if self.task_mode:
+            self.grab_cmd_sent = True
+            self.get_logger().warning(
+                f'颜色顺序匹配：序号 {expected.sequence} 颜色 {expected.color}，'
+                '已下发 GrabCmd')
+        else:
+            self.get_logger().warning('收到夹爪到位信号，下发下降抓取授权')
 
     def _send_color_targets(self, message: PointCloud):
         """Send base-frame target coordinates in millimetres.
@@ -471,6 +498,12 @@ class SerialBridgeNode(Node):
                 continue
             color_id = int(values[0])
             if self.task_mode and not self.task.accepts(color_id, stamp_ns):
+                expected = self.task.expected
+                self.get_logger().warning(
+                    f'颜色 {color_id} 与当前期望 '
+                    f'{expected.color if expected else None} 不符'
+                    f'（state={self.task.state}），跳过该目标',
+                    throttle_duration_sec=2.0)
                 continue
             if stamp_ns <= self._last_target_stamp.get(color_id, 0):
                 continue
@@ -482,6 +515,7 @@ class SerialBridgeNode(Node):
                 self._last_target_stamp[color_id] = stamp_ns
                 if self.task_mode:
                     self.task.sent(stamp_ns)
+                    self.grab_cmd_sent = False
                     self._publish_task_status()
                     break
 
