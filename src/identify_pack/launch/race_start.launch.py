@@ -51,7 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
             share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
-        DeclareLaunchArgument('start_main_camera', default_value='false'),
+        DeclareLaunchArgument('start_main_camera', default_value='true'),
         # 副相机用于颜色/工位识别，默认打开；如果已经由其他终端启动，可改为 false。
         DeclareLaunchArgument('start_secondary_camera', default_value='true'),
         # 仅副相机启用重复帧看门狗；0 表示关闭，避免固定图像源误触发。
