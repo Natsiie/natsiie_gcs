@@ -358,8 +358,12 @@ class SerialBridgeNode(Node):
             written = self.ser.write(frame)
             if written != len(frame):
                 raise IOError(f'串口只写入 {written}/{len(frame)} 字节')
-            self.get_logger().info(
-                f'TX {topic}(0x{type_byte:02X}) len={len(frame)}: {text!r}')
+            message = f'TX {topic}(0x{type_byte:02X}) len={len(frame)}: {text!r}'
+            if type_byte == GRAB_CMD_TYPE:
+                # 抓取授权单独用黄色（WARN）显示，方便在滚动日志里定位。
+                self.get_logger().warning(message)
+            else:
+                self.get_logger().info(message)
             return True
         except Exception as e:
             self.get_logger().error(f'串口写入失败，关闭并重连: {e}')
@@ -416,7 +420,7 @@ class SerialBridgeNode(Node):
         """收到夹爪到位信号 -> 下发下降抓取授权帧（GrabCmd，payload "1"）。"""
         if not msg.data:
             return
-        self.get_logger().info('收到夹爪到位信号，下发下降抓取授权')
+        self.get_logger().warning('收到夹爪到位信号，下发下降抓取授权')
         self._send(GRAB_CMD_TYPE, 'GrabCmd', '1')
 
     def _send_color_targets(self, message: PointCloud):

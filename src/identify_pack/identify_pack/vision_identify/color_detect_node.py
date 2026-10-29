@@ -221,7 +221,7 @@ class ColorDetectNode(Node):
                 if stationary['ready'] and self._arrived_armed:
                     self.pub_arrived.publish(Bool(data=True))
                     self._arrived_armed = False
-                    self.get_logger().info(
+                    self.get_logger().warning(
                         f'物块停稳 {stationary["count"]}/{required} 帧，'
                         f'发送抓取 OK -> {self.arrived_topic}')
                 elif stationary.get('reset') or stationary['state'] == 'WAITING':
