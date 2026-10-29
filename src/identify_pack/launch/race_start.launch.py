@@ -8,7 +8,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -34,6 +34,9 @@ def generate_launch_description():
     secondary_image_topic = LaunchConfiguration('secondary_image_topic')
 
     return LaunchDescription([
+        # ros2 launch 会用管道接管子节点输出，rcutils 检测到非 TTY 会关闭颜色；
+        # 显式打开，WARN 才会显示为黄色、ERROR 为红色。
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
         DeclareLaunchArgument('main_camera_device', default_value=main_camera_device),
         DeclareLaunchArgument('secondary_camera_device', default_value=secondary_camera_device),
         DeclareLaunchArgument('main_camera_width', default_value=main_camera_width),
@@ -81,6 +84,8 @@ def generate_launch_description():
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
             share, 'config', 'pixel_to_base.yaml')),
+        # pixel_to_base 的调试窗口默认关闭，无图形环境下也能正常运行。
+        DeclareLaunchArgument('pixel_show', default_value='false'),
         # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
         DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
             share, 'config', 'place_task.yaml')),
@@ -226,21 +231,22 @@ def generate_launch_description():
         #     }],
         # ),
 
-        # # 像素投影：按图像时刻 TF 和物块顶面高度计算基座 XYZ，ROS 输出单位为米。
-        # Node(
-        #     package='identify_pack',
-        #     executable='pixel_to_base',
-        #     name='pixel_to_base',
-        #     output='screen',
-        #     parameters=[LaunchConfiguration('pixel_params_file'), {
-        #         'image_topic': secondary_image_topic,
-        #         'show': ParameterValue(show, value_type=bool),
-        #         'auto_project': True,
-        #         'plane_mode': 'object',
-        #         'centers_topic': '/color/centers_pixel',
-        #         'targets_topic': '/color/targets_base',
-        #     }],
-        # ),
+        # 像素投影：按图像时刻 TF 和物块顶面高度计算基座 XYZ，ROS 输出单位为米。
+        Node(
+            package='identify_pack',
+            executable='pixel_to_base',
+            name='pixel_to_base',
+            output='screen',
+            parameters=[LaunchConfiguration('pixel_params_file'), {
+                'image_topic': secondary_image_topic,
+                'show': ParameterValue(
+                    LaunchConfiguration('pixel_show'), value_type=bool),
+                'auto_project': True,
+                'plane_mode': 'object',
+                'centers_topic': '/color/centers_pixel',
+                'targets_topic': '/color/targets_base',
+            }],
+        ),
 
         # 统一串口桥：目标 XYZ 从米转为毫米，以 0x08 帧发送；接收 0x07 云台角度反馈。
         Node(
