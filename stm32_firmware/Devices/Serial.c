@@ -21,6 +21,7 @@ Serial_RxFrame_t  Serial_RxFrame;
 Serial_RxData_t   Serial_RxData;
 volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 组 xy) 新帧标志 */
 volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘微调(corr) 新帧标志 */
+volatile uint8_t Serial_TurntableTrimReady = 0;/* 0x0E 转盘纠偏(corr) 新帧标志 */
 volatile uint8_t Serial_ColorTargetReady = 0;  /* 0x08 颜色目标点 新帧标志 */
 volatile uint8_t Serial_QRReady = 0;           /* 0x06 二维码 新帧标志 */
 volatile uint8_t Serial_VisionCmd = 0;         /* 工作视觉指令(0x04/05/08/09/0C)新帧标志, 供 mission 视觉超时看门狗 */
@@ -441,6 +442,31 @@ void Serial_ProcessFrame(void)
 
             /* 通知业务层: corr=底盘微调(底盘); err 是偏移坐标, 由上层按需使用 */
             Serial_ChassisTrimReady = 1;
+            Serial_VisionCmd = 1;
+        }
+        break;
+    }
+
+    case SERIAL_TYPE_TURNTABLE_ALIGN:   /* 0x0E: corr_x,corr_y,within (物料区转盘, 无 err/无 yaw) */
+    {
+        float cx, cy; int w;
+        if (Serial_ParseFloatTok(&p, &cx) && Serial_Expect(&p, ',') &&
+            Serial_ParseFloatTok(&p, &cy) && Serial_Expect(&p, ',') &&
+            Serial_ParseIntTok(&p, &w))
+        {
+            /* 复用 ring_* 槽位: 下游 Chassis_ApplyVisionTrim 只认这一组 corr。
+               转盘帧没有 err 和 yaw, 必须显式清 0, 否则会留着上一条 0x04/0x05 的旧值
+               (yaw 残留会让底盘按旧的 corr_yaw 转过头)。 */
+            Serial_RxData.ring_err_x    = 0.0f;
+            Serial_RxData.ring_err_y    = 0.0f;
+            Serial_RxData.ring_ang_err  = 0.0f;
+            Serial_RxData.ring_corr_x   = cx;
+            Serial_RxData.ring_corr_y   = cy;
+            Serial_RxData.ring_corr_yaw = 0.0f;
+            Serial_RxData.ring_within   = (uint8_t)w;
+
+            /* 单独标志: 转盘节点常开, 由底盘侧配合 chassis_flag.trim_armed 才收 */
+            Serial_TurntableTrimReady = 1;
             Serial_VisionCmd = 1;
         }
         break;

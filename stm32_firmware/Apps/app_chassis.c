@@ -278,7 +278,8 @@ void Chassis_TrimArm(void)
 
 void Chassis_TrimRelease(void)
 {
-    Serial_ChassisTrimReady = 0;   /* 姿态期间积压的旧帧丢掉, 只认放开之后的新帧 */
+    Serial_ChassisTrimReady   = 0;   /* 姿态期间积压的旧帧丢掉, 只认放开之后的新帧 */
+    Serial_TurntableTrimReady = 0;   /* 0x0E 同理: 摆姿态时收到的转盘帧一律作废 */
     chassis_flag.trim_hold  = 0;
 }
 
@@ -657,10 +658,15 @@ void App_Chassis_Task(void)
 
     /* 视觉底盘纠偏: 收到 0x04/0x05 帧 -> 更新偏了多少/要矫正多少/是否成功, 未到位则纠偏
        (底盘锁定 chassis_flag.lock=1 时忽略, 塔吊作业期间不再纠偏;
-        塔吊还在摆探查姿态时 chassis_flag.trim_hold=1 也忽略, 帧直接丢掉, 等姿态到位再收新帧) */
-    if (chassis_flag.trim_enable && !chassis_flag.trim_hold && !chassis_flag.lock && !chassis_flag.rc_override && !nav_test_active && !Chassis_TrimSkipStation(nav_at_point) && Serial_ChassisTrimReady)
+        塔吊还在摆探查姿态时 chassis_flag.trim_hold=1 也忽略, 帧直接丢掉, 等姿态到位再收新帧)
+       0x0E 转盘纠偏多一道门控: 发送方(物料区转盘节点)是常开的, 行车途中也在发,
+       不要求武装的话一帧进来就会把 pos_active 拉起来劫持导航(Nav_Update 优先级更低),
+       所以只认 Chassis_TrimArm 之后、Chassis_TrimDisarm 之前的帧。 */
+    if (chassis_flag.trim_enable && !chassis_flag.trim_hold && !chassis_flag.lock && !chassis_flag.rc_override && !nav_test_active && !Chassis_TrimSkipStation(nav_at_point) &&
+        (Serial_ChassisTrimReady || (chassis_flag.trim_armed && Serial_TurntableTrimReady)))
     {
-        Serial_ChassisTrimReady = 0;
+        Serial_ChassisTrimReady   = 0;
+        Serial_TurntableTrimReady = 0;
         Chassis_ApplyVisionTrim();
     }
 

@@ -31,6 +31,12 @@
 #define SERIAL_TYPE_PLACE_RESULT  0x0B
 #define SERIAL_TYPE_UNLOAD_COORD  0x0C   /* 卸货坐标: 3 组 x,y (3 个落点, 塔吊系绝对 mm) */
 #define SERIAL_TYPE_PLACE_CONTROL 0x0D   /* 放置阶段控制 (下位机->上位机): start,stage,batch 或 retry,command_id */
+#define SERIAL_TYPE_TURNTABLE_ALIGN 0x0E /* 转盘圆心对齐 (上位机->下位机): corr_x,corr_y,within */
+                                         /* 物料区底盘微调: 只有 3 个字段, 无 err/无 yaw。
+                                          * 轴向与 0x04/0x05 的 corr 完全一致 (同一张 chassis_image_to_motion
+                                          * 矩阵算出来的), corr_yaw 恒为 0 -> 底盘锁当前航向不转。
+                                          * 转盘节点是常开的, 行车途中也会发, 所以单独用
+                                          * Serial_TurntableTrimReady + trim_armed 门控, 只在站上武装后才收。 */
 #define SERIAL_TYPE_PICK_DONE     0x0F   /* 抓取完成序号 (下位机->上位机): ASCII 序号 1~6 */
 #define SERIAL_TYPE_NEXT_BATCH    0x10   /* 第一批 3 次抓取完成、回装就绪 (下位机->上位机): "1" */
 #define SERIAL_TYPE_PICK_COLOR    0x11   /* 本件抓取颜色号 (下位机->上位机): ASCII 颜色 1~6 */
@@ -104,6 +110,10 @@ extern Serial_RxData_t   Serial_RxData;
  * 每收到对应帧置 1, 由业务层消费后清 0 (Kin 清 UnloadCoord, 底盘清 ChassisTrim)。 */
 extern volatile uint8_t Serial_UnloadCoordReady;  /* 1 = 新卸货坐标(0x0C 3 组 xy) 待消费 */
 extern volatile uint8_t Serial_ChassisTrimReady;  /* 1 = 新底盘微调(0x04/0x05 corr) 待消费 */
+extern volatile uint8_t Serial_TurntableTrimReady;/* 1 = 新转盘纠偏(0x0E corr) 待消费 */
+                                                  /* 与 0x04/0x05 分开一个标志: 0x0E 的发送方(转盘节点)
+                                                   * 是常开的, 行车途中也发帧, 必须配合 trim_armed 才收;
+                                                   * 0x04/0x05 保持原行为不受影响。 */
 
 /* 0x08 颜色目标点 / 0x06 二维码: 供全自动流程(mission) 消费 */
 extern volatile uint8_t Serial_ColorTargetReady;  /* 1 = 新颜色目标点(0x08) 待消费 (mission 清) */
