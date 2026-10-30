@@ -108,6 +108,10 @@
    等一次新的 within=1; 视觉在该工作区不发 0x04/0x05 时就等这么长时间后放行, 不卡死流程。 */
 #define MISSION_TRIM_WAIT_10MS  500
 
+/* 物料区连抓 (kin_flag.cmd=12): 放完一件回探查姿态后继续等下一个 0x09, 一共连抓这么多个。
+   只给原地/手动测试用 —— mission 的物品节拍是"0x08 给一件 -> 抓 -> 0x0F 报一件", 不要用 cmd=12。 */
+#define MATERIAL_CHAIN_GRABS    3
+
 /* ================= 舵机 ================= */
 /* 各舵机角度行程 (度), CCR = angle/range*2000+500 */
 #define SERVO_GRIPPER_RANGE   270.0f

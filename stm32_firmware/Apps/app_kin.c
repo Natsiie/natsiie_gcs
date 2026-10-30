@@ -170,6 +170,18 @@ static float   s_kin_test_servo = 0.0f; /* 直接角度模式的云台目标 */
 static float   s_kin_test_m6    = 0.0f; /* 直接角度模式的电机6目标 */
 static uint8_t s_kin_single_cycle = 0;  /* 1=单次拿放: 卸货放1个就回探查姿态 */
 
+/* cmd=12 连抓: 还剩几次"回探查姿态后继续等 0x09"。0=放完就结束 (cmd=10 的默认行为) */
+static uint8_t s_mat_chain_left = 0;
+
+/* 物料区一件"抓->放->回探查位"走完待上报 0x0F (PickDone)。
+   不能在放完那一刻就发: 上位机收到 0x0F 会马上发下一个 0x08, 而 Serial.c 在 kin_flag.active 时
+   丢掉 0x08 的目标点, 这一件的坐标就没了。所以在回探查姿态到位(塔吊空闲、车不动)那拍才发。 */
+static uint8_t s_pick_pending_report = 0;
+
+/* 本件颜色号: 闭夹爪那一刻从 Serial_RxData.target_color_id 锁存 (就是视觉 0x08 发来的那个数),
+   回位上报 0x0F 时原样带回给上位机。闭爪之后再来 0x08 也不影响已锁存的值。 */
+static uint8_t s_pick_color = 0;
+
 /* 卸货落点/夹爪/运动参数/状态 全部打包进上方 kin_flag/kin_cal/kin_motion/kin_tgt */
 
 /* ================= 单位换算 ================= */
@@ -443,14 +455,16 @@ static uint8_t Kin_AtMaterialPose(void)
             fabsf(fabsf(motor6_pos) - kin_cal.pose_material_extend_deg) <= kin_motion.pos_tol_mm * 2.0f) ? 1 : 0;
 }
 
-/* 物料区固定位完整装货 (kin_flag.cmd=10):
+/* 物料区固定位完整装货 (kin_flag.cmd=10, cmd=12 复用):
    摆物料区探查姿态 135/460/200 (夹爪张开, 电机5 就站在抓取高) ->
    等授权 (kin_flag.mat_grab_cmd 或视觉 0x09 ok) -> 直接闭夹爪 ->
    升640清障 -> 云台放置角+电机6 放置伸出 -> 降到600 -> 松夹爪 -> 平台下一档 -> 回物料区探查姿态。
-   cmd=9 只摆姿态不抓, 可单步验证。 */
+   cmd=9 只摆姿态不抓, 可单步验证; cmd=12 = 同一条链, 但回探查姿态后接着等下一个 0x09, 连抓
+   MATERIAL_CHAIN_GRABS 件 (见 PLACE_RELEASE 里的 s_mat_chain_left)。 */
 void Kin_MaterialGrabStart(void)
 {
     s_probe_is_material = 1;
+    s_mat_chain_left    = 0;   /* 默认单件: 放完就结束。cmd=12 在调用本函数之后再置连抓次数 */
 
     /* 已经站在物料区探查姿态(135/460/200)时不重走"升640->云台+电机6->降460"安全顺序,
        直接进等授权: 收到指令就闭爪升上去 (mission 里 cmd=9 摆完姿态再来的就是这种情况,
@@ -545,6 +559,8 @@ void Kin_Stop(void)
     kin_flag.done   = 0;
     kin_flag.step   = KIN_STEP_IDLE;
     s_pose_after = 0;            /* 取消"姿态到位后续走"链 */
+    s_mat_chain_left = 0;        /* 取消 cmd=12 连抓: 停止后不再自动进下一件 */
+    s_pick_pending_report = 0;   /* 停止: 不补报没发出去的 0x0F (下一场从 mission_pick_seq 重新对) */
     s_trim_released = 0;
     s_trim_owned    = 0;
     Chassis_TrimDisarm();        /* 手动停止: 解除底盘微调武装, 退回自动纠偏 */
@@ -560,7 +576,8 @@ void Kin_Stop(void)
   *                    6=前往坐标(kin_tgt.goto_x/y/z, 纯到位不夹取); 7=回装; 8=堆垛(码垛高);
   *                    9=物料区探查姿态 135/460/200 (只摆姿态); 10=物料区固定位完整装货
   *                    (摆姿态(即在抓取高) -> 等 mat_grab_cmd/0x09 -> 闭爪 -> 放置 -> 回物料区探查姿态);
-  *                    11=物料区探查姿态 + 底盘微调 (姿态到位放开纠偏, 等 within=1 后完成)
+  *                    11=物料区探查姿态 + 底盘微调 (姿态到位放开纠偏, 等 within=1 后完成);
+  *                    12=物料区连抓 MATERIAL_CHAIN_GRABS 件 (每件等一个新的 0x09, 放完回探查位继续)
   *                    处理后回 0。
   *         - 抓取顺序: 云台+电机6 先到(θ,r) -> 电机5 降到抓取高度 -> 张夹爪 -> 等ok -> 闭夹爪
   *         - 电机5/6 发命令与读位置交替, 防"位置命令+读位置"背靠背冲突
@@ -568,13 +585,17 @@ void Kin_Stop(void)
   */
 void Kin_Update(void)
 {
+    /* 房务: 处理 Watch 写的 mission_color.clr=1 (清空物料颜色记录, 手动测试重开一场用) */
+    Mission_ColorTick();
+
     /* 探查姿态: 通用(cmd=4) 夹爪闭合 (清视觉视场); 物料区(cmd=9/11) 夹爪张开,
        就在抓取高等指令, 收到授权(0x09 / mat_grab_cmd)才闭合。 */
     if (kin_flag.cmd == 4)
         Servo_SetAngle(SERVO_GRIPPER, kin_cal.gripper_close_angle);
     else if (kin_flag.cmd == 1 || kin_flag.cmd == 3 || kin_flag.cmd == 5 ||
              kin_flag.cmd == 6 || kin_flag.cmd == 7 || kin_flag.cmd == 8 ||
-             kin_flag.cmd == 9 || kin_flag.cmd == 10 || kin_flag.cmd == 11)
+             kin_flag.cmd == 9 || kin_flag.cmd == 10 || kin_flag.cmd == 11 ||
+             kin_flag.cmd == 12)
         Servo_SetAngle(SERVO_GRIPPER, kin_cal.gripper_open_angle);
 
     /* cmd=11 等底盘微调期间被别的命令打断: 必须交还底盘纠偏, 否则 trim_hold 会一直卡 1 */
@@ -601,6 +622,9 @@ void Kin_Update(void)
     else if (kin_flag.cmd == 9) { kin_flag.cmd = 0; Kin_GoMaterialProbe(); }     /* 物料区探查姿态 135/460/200 (只摆姿态) */
     else if (kin_flag.cmd == 10){ kin_flag.cmd = 0; Kin_MaterialGrabStart(); }   /* 物料区固定位完整装货 */
     else if (kin_flag.cmd == 11){ kin_flag.cmd = 0; Kin_MaterialProbeTrimStart(); } /* 物料区探查姿态 + 等底盘微调 */
+    /* 物料区连抓: 同 cmd=10, 但每放完一件回探查姿态后继续等下一个 0x09, 共 MATERIAL_CHAIN_GRABS 件。
+       必须写在 Kin_MaterialGrabStart() 之后: 该函数开头会把 s_mat_chain_left 清 0 (单次语义)。 */
+    else if (kin_flag.cmd == 12){ kin_flag.cmd = 0; Kin_MaterialGrabStart(); s_mat_chain_left = MATERIAL_CHAIN_GRABS - 1; }
 
     /* 0x0C 卸货坐标: 未锁定时持续用最新帧更新; 回去夹东西后锁定不再更新
      * (若还没拿到过坐标, 仍接受第一帧, 避免夹完却无坐标可用卡死) */
@@ -683,6 +707,7 @@ void Kin_Update(void)
         if (grab_cmd || kin_flag.descend_cmd || kin_flag.mat_grab_cmd)
         {
             grab_cmd = 0;
+            Serial_RxData.grab_cmd = 0;   /* Watch: 授权已被消费, 不再挂 1 (grab_cmd_cnt 仍保留到达次数) */
             kin_flag.descend_cmd = 0;
             kin_flag.mat_grab_cmd = 0;
             kin_flag.step = KIN_STEP_WAIT_GRIP;
@@ -696,6 +721,8 @@ void Kin_Update(void)
         if (kin_flag.auto_grip || kin_flag.grip_cmd)
         {
             kin_flag.grip_cmd = 0;
+            Mission_NoteGrabColor(Serial_RxData.target_color_id);   /* 拿到一件物料: 记颜色 (手动/自动都记) */
+            s_pick_color = Serial_RxData.target_color_id;           /* 锁存本件颜色, 回位上报 0x0F 用 */
             Servo_SetAngle(SERVO_GRIPPER, kin_cal.gripper_close_angle);   /* 闭夹爪抓取 */
             kin_flag.step = KIN_STEP_PLACE_HOIST_UP; kin_flag.need_send = 1; kin_motion.keepalive = 0;  /* 先升电机5 到640清障 */
         }
@@ -711,6 +738,9 @@ void Kin_Update(void)
         {
             kin_flag.mat_grab_cmd = 0;
             grab_cmd = 0;
+            Serial_RxData.grab_cmd = 0;   /* Watch: 授权已被消费, 不再挂 1 (grab_cmd_cnt 仍保留到达次数) */
+            Mission_NoteGrabColor(Serial_RxData.target_color_id);   /* 拿到一件物料: 记颜色 (cmd=10/12 连抓也记) */
+            s_pick_color = Serial_RxData.target_color_id;           /* 锁存本件颜色, 回位上报 0x0F 用 */
             Servo_SetAngle(SERVO_GRIPPER, kin_cal.gripper_close_angle);   /* 直接闭夹爪抓取 */
             kin_flag.step = KIN_STEP_PLACE_HOIST_UP;   /* 先升电机5 到640清障, 再放置 */
             kin_flag.need_send = 1;
@@ -827,8 +857,19 @@ void Kin_Update(void)
                            kin_flag.platform_sel == 0 ? PLATFORM_ANGLE_A :
                            kin_flag.platform_sel == 1 ? PLATFORM_ANGLE_B : PLATFORM_ANGLE_C);
             /* 放完 -> 回本工作区探查姿态: 物料区 135/460/200, 其它 135/600/0 */
-            if (s_probe_is_material) Kin_GoMaterialProbe();
-            else                     Kin_GoDefault();
+            /* 这一件物料(抓->放)结束: 挂上"待上报 0x0F", 等回位那拍再发 (见 POSE_HOIST)。
+               cmd=1 装货(mission 推广)、cmd=10 单抓、cmd=12 连抓 都走这条放完路径。 */
+            s_pick_pending_report = 1;
+            if (s_probe_is_material)
+            {
+                Kin_GoMaterialProbe();
+                if (s_mat_chain_left)   /* cmd=12 连抓: 回到探查位继续等下一个 0x09 (必须在上面之后, GotoPosture 会清 s_pose_after) */
+                {
+                    s_mat_chain_left--;
+                    s_pose_after = KIN_STEP_MAT_WAIT_GRAB;
+                }
+            }
+            else Kin_GoDefault();
         }
         return;
     }
@@ -954,6 +995,14 @@ void Kin_Update(void)
             Tower_ReadPos5();
             if (fabsf(fabsf(motor5_pos) - s_pose_m5) <= kin_motion.pos_tol_mm)
             {
+                /* 物料区一件「抓->放->回位」整条链走完, 塔吊已回位且空闲:
+                   此时才上报 0x0F (抓取完成 + 本件颜色), 上位机据此把"期望颜色"推进到下一件。
+                   (放完就发会提前触发下一个 0x08, 那一件会被 kin_flag.active 挡掉丢掉) */
+                if (s_pick_pending_report)
+                {
+                    s_pick_pending_report = 0;
+                    Mission_ReportPickDone(s_pick_color);
+                }
                 if (s_pose_after)   /* 姿态到位后还有下一段 (物料区抓取: 等授权 / cmd=11: 等底盘微调) */
                 {
                     kin_flag.step = s_pose_after;

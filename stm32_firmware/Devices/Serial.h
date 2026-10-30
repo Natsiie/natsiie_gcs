@@ -33,6 +33,9 @@
 #define SERIAL_TYPE_PLACE_CONTROL 0x0D   /* 放置阶段控制 (下位机->上位机): start,stage,batch 或 retry,command_id */
 #define SERIAL_TYPE_PICK_DONE     0x0F   /* 抓取完成序号 (下位机->上位机): ASCII 序号 1~6 */
 #define SERIAL_TYPE_NEXT_BATCH    0x10   /* 第一批 3 次抓取完成、回装就绪 (下位机->上位机): "1" */
+#define SERIAL_TYPE_PICK_COLOR    0x11   /* 本件抓取颜色号 (下位机->上位机): ASCII 颜色 1~6 */
+                                         /* 上位机当前不消费此类型, 只打一条节流的"忽略反馈帧" */
+                                         /* 警告 -> 作用是在视觉日志里能直接看到抓的是哪个颜色 */
 
 #define SERIAL_RX_PAYLOAD_MAX     128    /* Includes UUID and placement XYZ. */
 
@@ -64,7 +67,8 @@ typedef struct {
     float   target_x_mm, target_y_mm, target_z_mm;
 
     /* 0x09 GrabCmd */
-    uint8_t grab_cmd;
+    uint8_t grab_cmd;                   /* 1=有一帧未消费的抓取授权 (app_kin 闭爪时清0) */
+    uint16_t grab_cmd_cnt;              /* 收到过的 0x09 帧数 (只增: Watch 看它涨=视觉又发了一次) */
 
     /* 0x02 ColorMotion */
     uint8_t motion_state;
@@ -122,9 +126,12 @@ uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out);
 void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8_t success);
 void Serial_SendPlaceControlStart(uint8_t stage, uint8_t batch);  /* 0x0D: start,<stage>,<batch> */
 void Serial_SendPlaceControlRetry(uint32_t command_id);           /* 0x0D: retry,<command_id> */
-/* 0x0F: 抓取完成序号 (1~6) -> 上位机 pick_task.complete() 依此推进抓取顺序 */
+/* 0x0F: 抓取完成序号 1~6 -> 上位机 pick_task.complete() 依此推进"期望颜色"
+ * (不发就一直等同一个颜色; 序号/状态对不上会被忽略)。payload 只能是纯 ASCII 数字。 */
 void Serial_SendPickDone(uint8_t seq);
-/* 0x10: 第一批(前 3 次抓取)完成、可以进入第二批 -> 上位机只接受 batch=1 */
+/* 0x10: 第一批(前 3 次抓取)完成、可以进第二批 -> 上位机只接受 payload "1" */
 void Serial_SendNextBatch(uint8_t batch);
+/* 0x11: 本件抓取颜色号 1~6 (下位机从 0x08 抄回来的) -> 上位机暂不解析, 只在日志里显示 */
+void Serial_SendPickColor(uint8_t color);
 
 #endif

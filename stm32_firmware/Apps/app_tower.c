@@ -573,6 +573,7 @@ void Tower_Test_Task(void)
                 wait_grab = 1;
                 if (!grab_cmd) break;
                 grab_cmd = 0;
+                Serial_RxData.grab_cmd = 0;   /* 同为消费方: 保持"待消费标志被消费即清 0"的口径 */
             }
             wait_grab = 0;
             wait_tick = 0;

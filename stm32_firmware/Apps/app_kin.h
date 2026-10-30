@@ -51,7 +51,7 @@
 
 /* ================= 标志位 (位域打包: 32 位叠进 1 个 uint32, Keil Watch 只看 kin_flag) ================= */
 typedef struct {
-    uint32_t cmd           : 4;   /* 0..11: 1=装货抓取 GotoXY / 2=停止 / 3=卸货 / 4=探查姿态 / 5=运动姿态 / 6=前往坐标 / 7=一键回装(反序3->2->1) / 8=一键堆垛(码垛高放0x0C三落点) / 9=物料区探查姿态(135/460/200) / 10=物料区固定位完整装货 / 11=物料区探查姿态+等底盘微调 */
+    uint32_t cmd           : 4;   /* 0..12: 1=装货抓取 GotoXY / 2=停止 / 3=卸货 / 4=探查姿态 / 5=运动姿态 / 6=前往坐标 / 7=一键回装(反序3->2->1) / 8=一键堆垛(码垛高放0x0C三落点) / 9=物料区探查姿态(135/460/200) / 10=物料区固定位完整装货 / 11=物料区探查姿态+等底盘微调 / 12=物料区连抓3件 */
     uint32_t active        : 1;   /* 只读: 1=运动中 */
     uint32_t done          : 1;   /* 只读: 1=刚到位(一次, 用后清0) */
     uint32_t reachable     : 1;   /* 只读: 上次逆解 r 是否越界(0=被截断) */
@@ -167,7 +167,7 @@ void Kin_BootPosture(void);          /* 上电引导位姿: 夹爪开 -> 平台A
 void Kin_GotoPosture(float gimbal_deg, float m5_deg, float m6_deg);  /* 通用姿态切换 */
 void Kin_GoDefault(void);            /* 去探查姿态 135/600/0 (粗加工/暂存) */
 void Kin_GoMaterialProbe(void);      /* 去物料区专属探查姿态 135/460/200 (只摆姿态不抓) */
-void Kin_MaterialGrabStart(void);    /* 物料区固定位完整装货: 摆姿态(即抓取高) -> 等 mat_grab_cmd/0x09 -> 闭爪 -> 升640 -> 放置 */
+void Kin_MaterialGrabStart(void);    /* 物料区固定位完整装货(cmd=10; cmd=12 也用它再置连抓次数): 摆姿态(即抓取高) -> 等 mat_grab_cmd/0x09 -> 闭爪 -> 升640 -> 放置 */
 void Kin_MaterialProbeTrimStart(void); /* 物料区探查姿态 + 底盘微调: 摆姿态期间挂起纠偏, 到位后放开并等 within=1 (cmd=11) */
 void Kin_GoBoot(void);               /* 回运动姿态 310/600/500 */
 void Kin_Stop(void);

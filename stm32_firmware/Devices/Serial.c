@@ -76,8 +76,8 @@ void Serial_SendPlaceControlRetry(uint32_t command_id)
     Serial_SendFramed(SERIAL_TYPE_PLACE_CONTROL, payload, len);
 }
 
-/* 0x0F PickDone: 抓取完成序号 (1~6)。上位机 identify_pack/scripts/pick_task.py 的
- * Pick.sequence = batch*3 + index + 1，只有序号与其期望值一致才会推进状态机。 */
+/* 0x0F PickDone: 抓取完成序号 (1~6)。上位机 pick_task.Pick.sequence = 批次*3 + 第几个 + 1,
+ * 只有序号和它当前期望值一致才推进 (否则回 "忽略抓取完成序号")。payload 只能是纯 ASCII 数字。 */
 void Serial_SendPickDone(uint8_t seq)
 {
     char payload[8];
@@ -85,8 +85,19 @@ void Serial_SendPickDone(uint8_t seq)
     Serial_SendFramed(SERIAL_TYPE_PICK_DONE, payload, len);
 }
 
-/* 0x10 NextBatch: 第一批(前 3 次抓取)完成、回装就绪。上位机 next_batch() 只接受 payload "1"，
- * 收到后才从 WAIT_NEXT_BATCH 放行第二批。 */
+/* 0x11 PickColor: 本件抓取颜色号 (1~6)。
+ * 下位机不识别颜色, 只是把 0x08 ColorTarget 里的 color_id 原样抄回来。
+ * 上位机目前不消费这个类型, 会打一条节流的 "忽略反馈帧 type=0x11 payload='5'" 警告 ——
+ * 目的就是在视觉日志里能直接看到"这一件抓的是什么颜色", 便于两边对账。 */
+void Serial_SendPickColor(uint8_t color)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u", (unsigned)color);
+    Serial_SendFramed(SERIAL_TYPE_PICK_COLOR, payload, len);
+}
+
+/* 0x10 NextBatch: 第一批(前 3 次抓取)完成、回装就绪。上位机 next_batch() 只接受 "1"，
+ * 收到后才从 WAIT_NEXT_BATCH 放行第二批 (序号 4/5/6)。 */
 void Serial_SendNextBatch(uint8_t batch)
 {
     char payload[8];
@@ -501,12 +512,13 @@ void Serial_ProcessFrame(void)
         break;
     }
 
-    case SERIAL_TYPE_GRAB_CMD:   /* 0x09: "1"=授权下降抓取 (夹爪到位) */
+    case SERIAL_TYPE_GRAB_CMD:   /* 0x09: "1"=视觉授权抓取 (物料停稳/夹爪到位) */
     {
         int v = 0;
         if (Serial_ParseIntTok(&p, &v) && v != 0)
         {
-            Serial_RxData.grab_cmd = 1;
+            Serial_RxData.grab_cmd = 1;   /* 待消费标志: app_kin 闭爪时清 0, 不会一直挂 1 */
+            if (Serial_RxData.grab_cmd_cnt < 60000) Serial_RxData.grab_cmd_cnt++;   /* 到达计数, 只增不清 */
             grab_cmd = 1;   /* 装货流程: 电机5 从550降到447 下探抓取 */
             Serial_VisionCmd = 1;
         }

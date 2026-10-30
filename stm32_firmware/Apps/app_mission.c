@@ -60,15 +60,32 @@ Mission_t mission = {
     .state            = MS_BOOT,
 };
 
-uint8_t mission_report_pick = 1;  /* 1=每次装货抓取完成上报 0x0F/0x10 (Watch 可置 0 关闭, 联调兜底) */
-
 /* 手动debug 当前等的是哪个操作 (进入 MS_WAIT_MANUAL 前填, 决定写完 done 后去哪) */
 enum { MSOP_LOAD = 0, MSOP_UNLOAD = 1, MSOP_RELOAD = 2, MSOP_STACK = 3 };
 static uint8_t ms_manual_op = MSOP_LOAD;
 
 /* 扫码流程/视觉超时参数已打包进 mission (见上方 Mission_t 初始化) */
 
-/* 二维码解析结果: 只用到第2组(第1轮环序)/第4组(第2轮环序), 第1/3组颜色由视觉自己把握 */
+#define MISSION_ITEM_TOTAL 6             /* 总物料件数: 2 轮 x 3 件 */
+
+/* ================= 物料颜色对账打包变量 (Keil Watch 只看 mission_color) ================= */
+/* 二维码解析结果: 第2组(第1轮环序)/第4组(第2轮环序) 给放置用 -> ms_qr_rings (内部, 经 Mission_Ring 读);
+   第1组(第1轮颜色)/第3组(第2轮颜色) 存 mission_color.expected, 和实际抓到的颜色逐件对账。
+   "实际抓到的颜色" 在物料区每闭一次夹爪时记一件 (见 Mission_NoteGrabColor), 手动 cmd=10/12 也记。
+   注意口径: 0x08 的 color_id 是视觉按它自己解析的任务码过滤后的结果, 正常必然和二维码一致;
+   这一对账抓的是"视觉任务码/状态机跑偏"(以及 task_mode 关掉时的乱发), 抓不到摄像头把颜色认错。 */
+MissionColor_t mission_color = {
+    .qr_colors_ok = 0,
+    .ok           = 0,
+    .err          = 0,
+    .total        = MISSION_ITEM_TOTAL,
+    .cnt          = 0,
+    .clr          = 0,
+    .expected     = { {1,2,3}, {1,2,3} },   /* 没扫到码时的占位: 按 1/2/3 记 */
+    .seq          = { 0,0,0,0,0,0 },        /* 0 = 这件还没抓到 */
+};
+static uint8_t ms_count_shown = 0;      /* 1=本次已上屏过对账结果 (新一场长按启动清0) */
+
 static uint8_t ms_qr_rings[2][3] = { {1,2,3}, {1,2,3} };   /* [轮][序号] = 环号(1~3) */
 static uint8_t ms_qr_valid = 0;
 static uint8_t ms_qr_received = 0;   /* 收到过二维码帧(0x06)标志(慢扫用); 启动/进慢扫时清 0 */
@@ -114,17 +131,15 @@ extern volatile uint8_t Serial_ColorTargetReady;
 extern volatile uint8_t Serial_QRReady;
 extern volatile uint8_t Serial_VisionCmd;
 extern Serial_RxData_t   Serial_RxData;
-void Serial_SendPickDone(uint8_t seq);      /* 0x0F: 抓取完成序号 1~6 */
-void Serial_SendNextBatch(uint8_t batch);   /* 0x10: 第一批完成 1 */
 
 void Screen_ShowZone(uint8_t zone);
 void Screen_ShowCount(uint8_t ok, uint8_t err, uint8_t total);
 
 /* ================= 二维码解析 ================= */
-/* "156+231+516+312" -> 4组3位, 只取第2组(下标3~5)/第4组(下标9~11)作环序 */
+/* "156+231+516+312" -> 4组3位: 第2/4组(d[3..5]/d[9..11])作环序, 第1/3组(d[0..2]/d[6..8])作颜色顺序 */
 static void Mission_ParseQR(const char *s)
 {
-    uint8_t d[12], n = 0, i;
+    uint8_t d[12], n = 0, i, colors_ok = 1;
     while (*s && n < 12)
     {
         if (*s >= '0' && *s <= '9') d[n++] = (uint8_t)(*s - '0');
@@ -134,17 +149,72 @@ static void Mission_ParseQR(const char *s)
     for (i = 0; i < 3; i++)
     {
         uint8_t r1 = d[3 + i], r2 = d[9 + i];
+        uint8_t c1 = d[0 + i], c2 = d[6 + i];
         if (r1 < 1 || r1 > 3) r1 = i + 1;
         if (r2 < 1 || r2 > 3) r2 = i + 1;
         ms_qr_rings[0][i] = r1;
         ms_qr_rings[1][i] = r2;
+        mission_color.expected[0][i] = c1;
+        mission_color.expected[1][i] = c2;
+        if (c1 < 1 || c1 > 6 || c2 < 1 || c2 > 6) colors_ok = 0;   /* 颜色组不是 1~6: 不可信, 不参与对账 */
     }
+    mission_color.qr_colors_ok = colors_ok;
     ms_qr_valid = 1;
 }
 
 static uint8_t Mission_Ring(uint8_t round, uint8_t idx)
 {
     return ms_qr_rings[round ? 1 : 0][idx];
+}
+
+/* 物料颜色对账: app_kin 在物料区每闭一次夹爪(拿到一件物料)时调一次。
+   color = 闭爪那一刻的 0x08 color_id (1=红 2=黄 3=蓝 4=绿 5=黑 6=浅蓝), 期望值取二维码颜色组。
+   对不上只记错, 不影响抓取流程。手动 cmd=10/12 连抓也走这里, 所以不需要跑 mission 也能看。 */
+void Mission_NoteGrabColor(uint8_t color)
+{
+    uint8_t i;
+    if (color < 1 || color > 6) return;                    /* 0=视觉还没发过, 越界丢, 不占件数 */
+    if (mission_color.cnt >= MISSION_ITEM_TOTAL) return;   /* 一场最多记 6 件 */
+    i = mission_color.cnt;
+    mission_color.seq[i] = color;
+    mission_color.cnt = (uint8_t)(i + 1);
+    if (!mission_color.qr_colors_ok) return;               /* 没扫到码/颜色组不可信: 这一件不判 */
+    if (color == mission_color.expected[i / 3][i % 3]) mission_color.ok++;
+    else                                              mission_color.err++;
+}
+
+/* 房务: 处理 Watch 写的 mission_color.clr=1 -> 清空重开一场 (10ms 调一次, 在 Kin_Update 开头) */
+void Mission_ColorTick(void)
+{
+    if (!mission_color.clr) return;
+    mission_color.clr = 0;
+    mission_color.cnt = 0;
+    mission_color.ok  = 0;
+    mission_color.err = 0;
+    memset(mission_color.seq, 0, sizeof(mission_color.seq));
+}
+
+/* ================= 抓取完成上报 (0x0F PickDone / 0x11 PickColor / 0x10 NextBatch) ================= */
+/* 上位机 pick_task: 期望颜色 -> 发 0x08 目标 -> 等 0x09 授权 -> 抓完必须收到 0x0F 才推进到下一件。
+   不发就一直卡在 WAIT_PICK_DONE, 期望颜色永远是 1 -> 3/5 等颜色全被跳过。
+   0x0F payload 只能是序号 (上位机 int() 解析后和 expected.sequence 比), 发颜色一定卡在第 2 件。
+   所以: 0x0F 发序号保证推进, 0x11 发颜色给视觉日志看 (它不消费, 只打一条节流警告)。 */
+uint8_t mission_report_pick = 1;   /* 1=上报 (默认); Watch 写 0 整体关闭 (视觉没升级时的兜底) */
+uint8_t mission_pick_seq    = 0;   /* 已上报序号 0~6; 决定下一件报几号和何时发 0x10, Watch 可改写对齐 */
+
+/* 一件物料抓完: color = 闭爪那拍锁存的 0x08 color_id。
+   color 无效(视觉没发过 0x08) -> 不发也不计件 (手动 cmd=10/12 没接视觉时就是这种情况)。 */
+void Mission_ReportPickDone(uint8_t color)
+{
+    uint8_t seq;
+    if (!mission_report_pick) return;
+    if (color < 1 || color > 6) return;
+    if (mission_pick_seq >= 6) return;              /* 一场只 6 件, 超了不再报 */
+    seq = (uint8_t)(mission_pick_seq + 1);
+    Serial_SendPickDone(seq);                       /* 0x0F: 序号 1~6 (视觉据此推进) */
+    Serial_SendPickColor(color);                    /* 0x11: 本件颜色 (视觉日志里可见) */
+    mission_pick_seq = seq;
+    if (seq == 3) Serial_SendNextBatch(1);          /* 第一批 3 件抓完 -> 放行第二批 */
 }
 
 /* ================= 塔吊参数准备 ================= */
@@ -185,6 +255,16 @@ static void Mission_KeyIdle(uint8_t k)
             Nav_Stop();
             ms_qr_valid = 0;   /* 新一轮, 清旧二维码/底盘锁/直行旋转标志 */
             ms_qr_received = 0;
+            mission_color.qr_colors_ok = 0;  /* 颜色组也要重新扫到才可信 */
+            mission_color.ok  = 0;           /* 物料颜色对账清零, 一场一统计 */
+            mission_color.err = 0;
+            mission_color.cnt = 0;           /* 取色件数清零 */
+            mission_color.clr = 0;
+            memset(mission_color.seq, 0, sizeof(mission_color.seq));   /* 上一场的颜色别留在这 */
+            ms_ok_count  = 0;
+            ms_err_count = 0;
+            ms_count_shown = 0;              /* 结果没上屏前允许再上, 新一场重新允许 */
+            mission_pick_seq = 0;            /* 已上报件数从头数 (只管什么时候发 0x10) */
             chassis_flag.lock = 0;
             chassis_flag.qr_scan_active = 0;
             chassis_flag.rotate_active = 0;
@@ -498,28 +578,19 @@ void Mission_Update(uint8_t key_pressed)
 
     case MS_LOAD:
         /* 装货 x3: 视觉发 0x08 坐标 -> 锁存坐标过去 -> 等 0x09 ok -> 自动夹 -> 收平台。
-           0x08 可能周期性带抖动, 抓完清标志只认下一个物料的新坐标(旧的 0x08 不管)。
-
-           抓取完成上报 (与上位机 pick_task.py 对齐):
-             0x0F PickDone  序号 = ms_round*3 + 第几个 + 1, 即第1轮 1/2/3、第2轮 4/5/6;
-             0x10 NextBatch 第1轮 3 次抓完后发 "1", 上位机据此放行第二批
-                            (第2轮抓完上位机已 DONE, 不再发 NextBatch)。
-           mission_report_pick=0 可整体关闭上报 (联调兜底开关)。 */
+           0x08 可能周期性带抖动, 抓完清标志只认下一个物料的新坐标(旧的 0x08 不管)。 */
         if (mission.sub < 3)
         {
-            if (kin_flag.done)
-            {
-                kin_flag.done = 0;
-                if (mission_report_pick) Serial_SendPickDone((uint8_t)(ms_round * 3 + mission.sub + 1));
-                mission.sub++;
-                Serial_ColorTargetReady = 0;   /* 抓+放+回收完成, 清残留抖动帧 */
-                if (mission.sub >= 3 && ms_round == 0 && mission_report_pick)
-                    Serial_SendNextBatch(1);
-            }
+            if (kin_flag.done) { kin_flag.done = 0; mission.sub++; Serial_ColorTargetReady = 0; }   /* 抓+放+回收完成, 清残留抖动帧 */
             if (mission.sub < 3 && !kin_flag.active && Serial_ColorTargetReady)
             {
                 Serial_ColorTargetReady = 0;
                 kin_flag.cmd = 1;               /* 用 Serial.c 已更新的 kin_tgt.target_x/y 去抓 */
+                /* 颜色不在这里记: 由 app_kin 闭夹爪时调 Mission_NoteGrabColor() 统一记,
+                   这样手动 cmd=10/12 连抓也能进同一份记录。
+                   抓取完成上报(0x0F PickDone / 0x10 NextBatch)也不在这里发:
+                   由 app_kin 在"回到探查位"那拍调 Mission_ReportPickDone(闭爪时锁存的颜色) 统一发,
+                   mission / cmd=10 / cmd=12 共用一条 (见 app_kin.c KIN_STEP_POSE_HOIST)。 */
             }
         }
         else
@@ -614,13 +685,14 @@ void Mission_Update(uint8_t key_pressed)
         break;
 
     case MS_DONE:
-        /* 收车完成: t1 显示对/错统计 (只发一次) */
+        /* 收车完成: t1 显示"物料颜色对账"结果 OK=对上的件数 / ERR=对不上的件数 (只发一次)。
+           口径: 每采用一帧 0x08 去抓算一件, 共 MISSION_ITEM_TOTAL 件(2 轮 x 3 件)。
+           原来的工作区动作统计仍在 ms_ok_count/ms_err_count 里, Watch 可看, 不再上屏。 */
         {
-            static uint8_t shown = 0;
-            if (!shown)
+            if (!ms_count_shown)
             {
-                shown = 1;
-                Screen_ShowCount(ms_ok_count, ms_err_count, MISSION_WORK_TOTAL);
+                ms_count_shown = 1;
+                Screen_ShowCount(mission_color.ok, mission_color.err, mission_color.total);
             }
         }
         break;
