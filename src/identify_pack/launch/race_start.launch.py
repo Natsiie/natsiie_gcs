@@ -1,8 +1,8 @@
-"""总启动入口（暂时用于全图颜色跟踪调试）。
+"""总启动入口：相机、颜色识别、停稳 OK、投影、转盘检测与串口桥。
 
-只启用上相机 camera_secondary 与 tracking_color_node，默认显示跟踪窗口。
-原主相机、ROI 颜色识别、到位检测、TF、投影、串口和工位任务节点暂时
-注释保留，调试完成后可恢复。旧参数声明保留，但不启用对应功能。
+各功能用 ``start_*`` / ``enable_*`` / ``*_show`` 参数单独开关。
+当前默认启用主/副相机、颜色识别、像素投影、转盘外圆与圆心对齐、
+串口桥和叠放位检测；粉色夹爪到位与三圆环工位检测保持注释。
 """
 import os
 
@@ -86,6 +86,10 @@ def generate_launch_description():
             share, 'config', 'pixel_to_base.yaml')),
         # pixel_to_base 的调试窗口默认关闭，无图形环境下也能正常运行。
         DeclareLaunchArgument('pixel_show', default_value='false'),
+        # 转盘外圆检测 + 圆心对齐：检测结果经串口桥转发 0x03/0x0E。
+        DeclareLaunchArgument('start_turntable_detect', default_value='true'),
+        DeclareLaunchArgument('turntable_show', default_value='false'),
+        DeclareLaunchArgument('enable_turntable_seed', default_value='true'),
         # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
         DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
             share, 'config', 'place_task.yaml')),
@@ -216,8 +220,8 @@ def generate_launch_description():
             parameters=[LaunchConfiguration('tf_params_file')],
         ),
 
-        # 二维码任务码：已并入 camera_main（qr_decode=True），不再单独启动，
-        # 否则两个节点会重复发布 /QR_Decode。
+        # # 二维码任务码：已并入 camera_main（qr_decode=True），不再单独启动，
+        # # 否则两个节点会重复发布 /QR_Decode。
         # Node(
         #     package='identify_pack',
         #     executable='qr_decode_node',
@@ -280,17 +284,22 @@ def generate_launch_description():
         #     }],
         # ),
 
-        # 转盘外圆检测节点：订阅副相机（发布 /Turntable，格式 cx,cy,radius,stable）
-        # Node(
-        #     package='identify_pack',
-        #     executable='turntable_detect_node',
-        #     name='turntable_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': SECONDARY_TOPIC,
-        #         'show': True,
-        #     }],
-        # ),
+        # 转盘外圆检测节点：订阅副相机，发布 /Turntable (0x03) 与 /TurntableAlign (0x0E)。
+        Node(
+            package='identify_pack',
+            executable='turntable_detect_node',
+            name='turntable_detect_node',
+            condition=IfCondition(LaunchConfiguration('start_turntable_detect')),
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'color_config': LaunchConfiguration('color_config'),
+                'enable_material_seed': ParameterValue(
+                    LaunchConfiguration('enable_turntable_seed'), value_type=bool),
+                'show': ParameterValue(
+                    LaunchConfiguration('turntable_show'), value_type=bool),
+            }],
+        ),
 
         # # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         # Node(

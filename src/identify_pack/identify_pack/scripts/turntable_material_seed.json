@@ -2,8 +2,8 @@
   "format_version": 1,
   "enabled": true,
   "reference": {
-    "center_px": [309.1, 296.0],
-    "radius_px": 169.0
+    "center_px": [332.1, 89.2],
+    "radius_px": 175.6
   },
   "detection": {
     "roi_margin_px": 90.0,

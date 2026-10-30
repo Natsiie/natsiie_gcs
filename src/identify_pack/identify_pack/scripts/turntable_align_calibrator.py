@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
     parser.add_argument('--detector-config', default=DEFAULT_DETECTOR_CONFIG)
-    parser.add_argument('--diameter-mm', type=float, default=200.0)
+    parser.add_argument('--diameter-mm', type=float, default=300.0)
     parser.add_argument('--tolerance-mm', type=float, default=10.0)
     return parser.parse_args()
 
