@@ -1,8 +1,9 @@
 """总启动入口：相机、颜色识别、停稳 OK、投影、转盘检测与串口桥。
 
 各功能用 ``start_*`` / ``enable_*`` / ``*_show`` 参数单独开关。
-当前默认启用主/副相机、颜色识别、像素投影、转盘外圆与圆心对齐、
-串口桥和叠放位检测；粉色夹爪到位与三圆环工位检测保持注释。
+当前默认启用副相机、颜色识别、像素投影、转盘外圆与圆心对齐、
+串口桥和叠放位检测；主相机（扫码）默认关闭，粉色夹爪到位与三圆环
+工位检测保持注释。
 """
 import os
 
@@ -51,6 +52,7 @@ def generate_launch_description():
         DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
             share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
+        # 当前先关闭主相机，单独验证转盘位姿矫正；需要扫码时再设为 true。
         DeclareLaunchArgument('start_main_camera', default_value='true'),
         # 副相机用于颜色/工位识别，默认打开；如果已经由其他终端启动，可改为 false。
         DeclareLaunchArgument('start_secondary_camera', default_value='true'),
@@ -88,7 +90,7 @@ def generate_launch_description():
         DeclareLaunchArgument('pixel_show', default_value='false'),
         # 转盘外圆检测 + 圆心对齐：检测结果经串口桥转发 0x03/0x0E。
         DeclareLaunchArgument('start_turntable_detect', default_value='true'),
-        DeclareLaunchArgument('turntable_show', default_value='false'),
+        DeclareLaunchArgument('turntable_show', default_value='true'),
         DeclareLaunchArgument('enable_turntable_seed', default_value='true'),
         # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
         DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
