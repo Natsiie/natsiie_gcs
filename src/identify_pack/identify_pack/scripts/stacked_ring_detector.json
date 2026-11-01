@@ -33,7 +33,9 @@
     "minimum_x_span_px": 220.0,
     "maximum_line_disagreement_deg": 2.0,
     "require_both_lines": true,
-    "independent_line_lock": true
+    "independent_line_lock": false,
+    "derive_lower_from_upper": false,
+    "line_separation_mm": 150.0
   },
   "search_calibration": {
     "version": 1,

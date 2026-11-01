@@ -6,6 +6,7 @@
 
 按键：
     L  切换 独立锁定 / 中环相对 两种模式
+    D  切换 下边界：独立检测 / 上边界+150mm 推导
     R  重置检测器（清空稳定窗口和线锁）
     S  保存当前 overlay PNG + 本次检测 JSON 快照到 /tmp
     Q / Esc  退出
@@ -51,6 +52,8 @@ def parse_args():
     parser.add_argument('--ring-config', default=str(DEFAULT_RING_CONFIG))
     parser.add_argument('--no-line-lock', action='store_true',
                         help='启动时关闭 independent_line_lock')
+    parser.add_argument('--no-derive-lower', action='store_true',
+                        help='启动时关闭“上边界+间距推导下边界”')
     return parser.parse_args()
 
 
@@ -76,8 +79,11 @@ def build_detector(config, ring_config, width, height):
 def run(args):
     config = load_stacked_ring_config(args.config)
     ring_config = load_ring_station_config(args.ring_config)
-    if args.no_line_lock:
-        config = replace(config, independent_line_lock=False)
+    # race_start 的 JSON 里保持关闭；测试脚本默认开启，方便对比。
+    if not args.no_line_lock:
+        config = replace(config, independent_line_lock=True)
+    if not args.no_derive_lower:
+        config = replace(config, derive_lower_from_upper=True)
     detector = build_detector(config, ring_config, args.width, args.height)
     cap = open_camera(args.device, args.width, args.height, args.fps)
 
@@ -95,9 +101,12 @@ def run(args):
             result = detector.detect(frame)
             draw_stacked_ring_detection(frame, result)
             mode = 'LINE-LOCK' if config.independent_line_lock else 'RING-RELATIVE'
+            lower_mode = ('LOWER-DERIVED' if config.derive_lower_from_upper
+                          else 'LOWER-MEASURED')
             cv2.putText(
-                frame, f'{mode}  L=toggle  R=reset  S=save  Q=quit',
-                (20, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 220, 80),
+                frame,
+                f'{mode} {lower_mode}  L=toggle D=derive R=reset S=save Q=quit',
+                (20, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 220, 80),
                 2, cv2.LINE_AA)
             if result.detected and time.monotonic() - last_report >= 1.0:
                 last_report = time.monotonic()
@@ -109,7 +118,10 @@ def run(args):
                              if result.line_error_y_mm is not None else 'n/a')
                     sep = (f'{result.line_separation_px:.1f}px'
                            if result.line_separation_px is not None else 'n/a')
-                    extra = f' line_lock dY={dy} ({dy_mm}) sep={sep}'
+                    lower = ('derived' if result.lower_line_derived
+                             else 'measured')
+                    extra = (f' line_lock dY={dy} ({dy_mm}) '
+                             f'sep={sep} lower={lower}')
                 print(f"{mode} state={result.stable and 'stable' or 'wait'} "
                       f"err=({result.error_x_mm:+.1f},{result.error_y_mm:+.1f})mm "
                       f"dYaw={result.angle_error_deg:+.2f}deg{extra}")
@@ -123,6 +135,13 @@ def run(args):
                 detector = build_detector(config, ring_config, args.width, args.height)
                 print('切换为', 'LINE-LOCK' if config.independent_line_lock
                       else 'RING-RELATIVE')
+            elif key in (ord('d'), ord('D')):
+                config = replace(
+                    config,
+                    derive_lower_from_upper=not config.derive_lower_from_upper)
+                detector = build_detector(config, ring_config, args.width, args.height)
+                print('下边界:', '上边界+间距推导'
+                      if config.derive_lower_from_upper else '独立检测')
             elif key in (ord('r'), ord('R')):
                 detector.reset()
                 print('检测器已重置')
@@ -139,6 +158,9 @@ def run(args):
                     'mode': ('line_lock' if config.independent_line_lock
                              else 'ring_relative'),
                     'independent_line_lock': config.independent_line_lock,
+                    'derive_lower_from_upper': config.derive_lower_from_upper,
+                    'line_separation_mm': config.line_separation_mm,
+                    'lower_line_derived': result.lower_line_derived,
                     'detected': result.detected,
                     'stable': result.stable,
                     'line_lock_active': result.line_lock_active,

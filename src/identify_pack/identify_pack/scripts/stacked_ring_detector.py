@@ -79,6 +79,10 @@ class StackedRingConfig:
     # 实验：上下边线一旦稳定检出就锁定，后续围绕上一帧线位置跟踪，
     # 不再用中环重算搜索带（避免边线跟着中环/镜头漂）。
     independent_line_lock: bool = False
+    # 实验：只跟踪上边界，下边界由“上边界 + 已知上下间距”推导。
+    derive_lower_from_upper: bool = False
+    # 上下边界实际间距（mm）；0 表示用 2 * line_offset_mm。
+    line_separation_mm: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,7 @@ class StackedRingDetection:
     line_mid_y_error_px: float | None = None
     line_error_y_mm: float | None = None
     line_lock_drift_px: float | None = None
+    lower_line_derived: bool = False
     angle_error_deg: float = 0.0
     error_x_mm: float = 0.0
     error_y_mm: float = 0.0
@@ -184,6 +189,10 @@ def load_stacked_ring_config(path: Path | str) -> StackedRingConfig:
             require_both_lines=bool(lines.get("require_both_lines", False)),
             independent_line_lock=bool(
                 lines.get("independent_line_lock", False)),
+            derive_lower_from_upper=bool(
+                lines.get("derive_lower_from_upper", False)),
+            line_separation_mm=float(
+                lines.get("line_separation_mm", 0.0) or 0.0),
             line_minimum_x_span_px=float(lines["minimum_x_span_px"]),
             search_calibration=raw.get("search_calibration"),
             maximum_line_disagreement_deg=float(
@@ -678,9 +687,69 @@ def _locked_line_config(config, diameter, band_diameters):
     )
 
 
+def _derive_lower_y(upper_angle, upper_y, ellipse, separation_mm, diameter_mm):
+    """由上线角度/位置 + 已知上下间距，按中环局部尺度推导下线 y。"""
+    if ellipse is None or separation_mm <= 0 or diameter_mm <= 0:
+        return None
+    diameter = float(max(ellipse[1]))
+    if diameter <= 0:
+        return None
+    theta = math.radians(upper_angle)
+    normal = np.asarray((-math.sin(theta), math.cos(theta)), dtype=np.float64)
+    normal_y = float(normal[1])
+    if normal_y <= 1e-6:
+        return None
+    shape = ellipse_shape_matrix(ellipse)
+    normal_radius = math.sqrt(float(normal @ shape @ normal))
+    offset = 2.0 * normal_radius * (separation_mm / 2.0) / diameter_mm
+    dy = 2.0 * offset / normal_y
+    if not math.isfinite(dy) or dy <= 0.0:
+        return None
+    return float(upper_y + dy)
+
+
 def _detect_locked_reference_lines(edges, line_config, x_bounds, target_x,
-                                   previous_lines):
-    """围绕上一帧线位置独立跟踪上下边线；不再使用中环重新定位。"""
+                                   previous_lines, *, ellipse=None,
+                                   separation_mm=0.0, diameter_mm=0.0,
+                                   derive_lower=False):
+    """围绕上一帧线位置独立跟踪上下边线；derive_lower 时下线由上线推导。"""
+    if derive_lower:
+        upper = None
+        if previous_lines[0] is not None:
+            target = (float(target_x), float(previous_lines[0][1]))
+            candidates = _line_candidates(
+                edges, target, x_bounds, line_config, previous_lines[0])
+            if candidates:
+                upper = max(candidates, key=lambda item: item[0])
+        if upper is None:
+            return None
+        separation = (separation_mm if separation_mm > 0
+                      else 2.0 * line_config.line_offset_mm)
+        lower_y = _derive_lower_y(
+            upper[1], upper[4], ellipse, separation, diameter_mm)
+        if lower_y is None:
+            return None
+        band = line_config.line_band_half_height_px
+        return {
+            "yaw": upper[1],
+            "top_angle": upper[1],
+            "bottom_angle": upper[1],
+            "line_quality": min(
+                1.0, upper[2] / (2.0 * line_config.line_minimum_x_span_px)),
+            "segments": (
+                _line_segment(upper[1], upper[4], float(target_x),
+                              x_bounds[0], x_bounds[1]),
+                _line_segment(upper[1], lower_y, float(target_x),
+                              x_bounds[0], x_bounds[1]),
+            ),
+            "seeds": ((upper[1], upper[4]), (upper[1], lower_y)),
+            "mid_y": 0.5 * (upper[4] + lower_y),
+            "separation": lower_y - upper[4],
+            "rois": ((x_bounds[0], int(round(upper[4])) - band,
+                      x_bounds[1], int(round(upper[4])) + band + 1),),
+            "lower_derived": True,
+        }
+
     groups = []
     for previous in previous_lines:
         if previous is None:
@@ -734,6 +803,7 @@ def _detect_locked_reference_lines(edges, line_config, x_bounds, target_x,
         "mid_y": mid_y,
         "separation": separation,
         "rois": tuple(rois),
+        "lower_derived": False,
     }
 
 
@@ -1153,7 +1223,10 @@ class StackedRingDetector:
             return None
         result = _detect_locked_reference_lines(
             edges, lock["config"], lock["x_bounds"], lock["target_x"],
-            lock["seeds"])
+            lock["seeds"], ellipse=ellipse,
+            separation_mm=lock.get("separation_mm", 0.0),
+            diameter_mm=lock.get("diameter_mm", 0.0),
+            derive_lower=self.config.derive_lower_from_upper)
         if result is None or result["mid_y"] is None:
             return None
         lock["seeds"] = result["seeds"]
@@ -1180,6 +1253,7 @@ class StackedRingDetector:
             "line_error_y_mm": float(line_error_mm[1]),
             "line_lock_drift_px": (
                 result["mid_y"] - lock.get("lock_mid_y", lock["ref_mid_y"])),
+            "lower_derived": bool(result.get("lower_derived", False)),
         }
 
     def _try_lock_lines(self, raw, data, ellipse, edges):
@@ -1211,6 +1285,10 @@ class StackedRingDetector:
             # 控制用的目标由标定中环中心给出；首锁位置只留作调试漂移量。
             "ref_mid_y": float(data["center_px"][1]),
             "lock_mid_y": lock_mid_y,
+            "separation_mm": (self.config.line_separation_mm
+                              if self.config.line_separation_mm > 0
+                              else 2.0 * self.config.line_offset_mm),
+            "diameter_mm": float(data["outer_diameter_mm"]),
             "misses": 0,
         }
 
@@ -1424,6 +1502,7 @@ class StackedRingDetector:
                 [sample.get("line_error_y_mm") for sample in self._samples]),
             line_lock_drift_px=_present_value_median(
                 [sample.get("line_lock_drift_px") for sample in self._samples]),
+            lower_line_derived=bool(raw.get("lower_derived", False)),
             angle_error_deg=angle_error,
             error_x_mm=error_x,
             error_y_mm=error_y,
@@ -1508,8 +1587,12 @@ def draw_stacked_ring_detection(frame, result: StackedRingDetection):
 
     for x0, y0, x1, y1 in result.search_rois:
         cv2.rectangle(frame, (x0, y0), (x1 - 1, y1 - 1), (255, 180, 0), 1)
-    for segment in result.line_segments_px:
-        cv2.line(frame, segment[0], segment[1], (255, 0, 255), 3, cv2.LINE_AA)
+    for index, segment in enumerate(result.line_segments_px):
+        derived_lower = result.lower_line_derived and index == 1
+        cv2.line(
+            frame, segment[0], segment[1],
+            (0, 200, 255) if derived_lower else (255, 0, 255),
+            2 if derived_lower else 3, cv2.LINE_AA)
     middle = tuple(int(round(value)) for value in result.middle_center_px)
     if result.outer_ellipse is not None:
         cv2.ellipse(frame, result.outer_ellipse, (0, 255, 0), 3, cv2.LINE_AA)
@@ -1567,10 +1650,12 @@ def draw_stacked_ring_detection(frame, result: StackedRingDetection):
                  if result.line_error_y_mm is not None else "")
         drift = (f" drift={result.line_lock_drift_px:+.1f}px"
                  if result.line_lock_drift_px is not None else "")
+        lower = 'DERIVED' if result.lower_line_derived else 'MEASURED'
         cv2.putText(
             frame,
             f"LineLock ON  dY={result.line_mid_y_error_px:+.1f}px{dy_mm}  "
-            f"midY={result.line_mid_y_px:.1f}  sep={separation}{drift}",
+            f"midY={result.line_mid_y_px:.1f}  sep={separation} "
+            f"lower={lower}{drift}",
             (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
             (0, 200, 255), 2, cv2.LINE_AA,
         )

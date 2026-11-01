@@ -113,7 +113,9 @@ class StackedRingDetectNode(Node):
                          if result.line_error_y_mm is not None else 'n/a')
                 separation = (f'{result.line_separation_px:.1f}px'
                               if result.line_separation_px is not None else 'n/a')
-                extra = f' line_lock dY={dy} ({dy_mm}) sep={separation}'
+                lower = 'derived' if result.lower_line_derived else 'measured'
+                extra = (f' line_lock dY={dy} ({dy_mm}) '
+                         f'sep={separation} lower={lower}')
             self.get_logger().info(
                 f'middle={result.middle_center_px} '
                 f'err=({result.error_x_mm:.2f},{result.error_y_mm:.2f})mm '
