@@ -76,6 +76,9 @@ class StackedRingConfig:
     search_calibration: dict | None = None
     # 运行时是否强制上下两条基准线都有效（true=双线约束，false=单线也可）
     require_both_lines: bool = False
+    # 实验：上下边线一旦稳定检出就锁定，后续围绕上一帧线位置跟踪，
+    # 不再用中环重算搜索带（避免边线跟着中环/镜头漂）。
+    independent_line_lock: bool = False
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,12 @@ class StackedRingDetection:
     line_segments_px: tuple[tuple[tuple[int, int], tuple[int, int]], ...] = ()
     circle_support: float = 0.0
     line_quality: float = 0.0
+    # 独立边线锁定调试信息（未启用/未锁定时为 None/False）。
+    line_lock_active: bool = False
+    line_lock_misses: int = 0
+    line_mid_y_px: float | None = None
+    line_separation_px: float | None = None
+    line_mid_y_error_px: float | None = None
     angle_error_deg: float = 0.0
     error_x_mm: float = 0.0
     error_y_mm: float = 0.0
@@ -171,6 +180,8 @@ def load_stacked_ring_config(path: Path | str) -> StackedRingConfig:
             ),
             line_minimum_edge_points=int(lines["minimum_edge_points"]),
             require_both_lines=bool(lines.get("require_both_lines", False)),
+            independent_line_lock=bool(
+                lines.get("independent_line_lock", False)),
             line_minimum_x_span_px=float(lines["minimum_x_span_px"]),
             search_calibration=raw.get("search_calibration"),
             maximum_line_disagreement_deg=float(
@@ -641,6 +652,89 @@ def _detect_reference_lines(
     )
 
 
+def _segment_y_at_x(segment, x):
+    """线段在指定 x 处的 y 坐标（用于把线 seed 固定在统一 target_x 上）。"""
+    (x0, y0), (x1, y1) = segment
+    if x1 == x0:
+        return float(y0)
+    return float(y0 + (y1 - y0) * (x - x0) / (x1 - x0))
+
+
+def _locked_line_config(config, diameter, band_diameters):
+    """锁定模式初始化时按中环尺度算一次线搜索参数，之后固定不再随中环变。"""
+    band = max(5, int(round(diameter * band_diameters)))
+    # 跟踪时允许线在帧间移动，搜索带比标定验收带略宽。
+    track_band = max(band, int(round(diameter * 0.25)))
+    return replace(
+        config,
+        line_band_half_height_px=track_band,
+        line_maximum_target_distance_px=track_band,
+        line_refinement_distance_px=max(1.0, diameter * 0.015),
+        line_minimum_edge_points=max(12, int(diameter * 0.3)),
+        line_minimum_x_span_px=diameter * 1.4,
+        line_hough_vote_threshold=max(12, int(diameter * 0.4)),
+    )
+
+
+def _detect_locked_reference_lines(edges, line_config, x_bounds, target_x,
+                                   previous_lines):
+    """围绕上一帧线位置独立跟踪上下边线；不再使用中环重新定位。"""
+    groups = []
+    for previous in previous_lines:
+        if previous is None:
+            groups.append([])
+            continue
+        target = (float(target_x), float(previous[1]))
+        groups.append(_line_candidates(
+            edges, target, x_bounds, line_config, previous))
+    try:
+        top, bottom = _select_reference_lines(
+            groups, line_config, line_config.require_both_lines)
+    except StackedRingDetectionError:
+        return None
+    if top is not None and bottom is not None:
+        disagreement = abs(_normalize_angle(top[1] - bottom[1]))
+        total_span = top[2] + bottom[2]
+        yaw = _normalize_angle(
+            (top[1] * top[2] + bottom[1] * bottom[2]) / total_span)
+        quality = min(
+            1.0,
+            min(top[2], bottom[2]) / 300.0,
+            max(0.0, 1.0 - disagreement / line_config.maximum_line_disagreement_deg),
+        )
+        mid_y = 0.5 * (top[4] + bottom[4])
+        separation = bottom[4] - top[4]
+    else:
+        single = top if top is not None else bottom
+        yaw = single[1]
+        quality = min(1.0, single[2] / (2 * line_config.line_minimum_x_span_px))
+        mid_y = None
+        separation = None
+    segments = tuple(
+        _line_segment(item[1], item[4], float(target_x), x_bounds[0], x_bounds[1])
+        for item in (top, bottom) if item is not None)
+    seeds = tuple((item[1], item[4]) if item is not None else None
+                  for item in (top, bottom))
+    rois = []
+    for item in (top, bottom):
+        if item is None:
+            continue
+        band = line_config.line_band_half_height_px
+        rois.append((x_bounds[0], int(round(item[4])) - band,
+                     x_bounds[1], int(round(item[4])) + band + 1))
+    return {
+        "yaw": yaw,
+        "top_angle": top[1] if top is not None else None,
+        "bottom_angle": bottom[1] if bottom is not None else None,
+        "line_quality": quality,
+        "segments": segments,
+        "seeds": seeds,
+        "mid_y": mid_y,
+        "separation": separation,
+        "rois": tuple(rois),
+    }
+
+
 def _synthesise_centers(ring_config, middle_center, station_yaw):
     reference = np.asarray(ring_config.reference_centers_px, dtype=np.float64)
     reference_middle = reference[1]
@@ -1003,6 +1097,7 @@ class StackedRingDetector:
         self._samples = deque(maxlen=ring_config.stable_frame_count)
         self._middle_seed = None
         self._line_seeds = None
+        self._line_lock = None
         self._camera_signature = None
         self.search_observation = None
         self._next_ring_relocation = 0.0
@@ -1012,6 +1107,7 @@ class StackedRingDetector:
         self._samples.clear()
         self._middle_seed = None
         self._line_seeds = None
+        self._line_lock = None
         self.search_observation = None
         self._next_ring_relocation = 0.0
         self._ring_relocation_error = None
@@ -1048,6 +1144,64 @@ class StackedRingDetector:
             )
             raise StackedRingDetectionError(self._ring_relocation_error) from error
 
+    def _independent_line_detection(self, edges, ellipse):
+        """锁定后只围绕上一帧线位置跟踪，不再用中环重算线搜索带。"""
+        lock = self._line_lock
+        if lock is None:
+            return None
+        result = _detect_locked_reference_lines(
+            edges, lock["config"], lock["x_bounds"], lock["target_x"],
+            lock["seeds"])
+        if result is None or result["mid_y"] is None:
+            return None
+        lock["seeds"] = result["seeds"]
+        lock["misses"] = 0
+        return {
+            "ellipse": ellipse,
+            "middle": tuple(float(value) for value in ellipse[0]),
+            "radius": float(min(ellipse[1]) / 2.0),
+            "yaw": result["yaw"],
+            "top_angle": result["top_angle"],
+            "bottom_angle": result["bottom_angle"],
+            "segments": result["segments"],
+            "rois": result["rois"],
+            "line_quality": result["line_quality"],
+            "line_lock_active": True,
+            "line_lock_misses": 0,
+            "line_mid_y_px": result["mid_y"],
+            "line_separation_px": result["separation"],
+            "line_mid_y_error_px": result["mid_y"] - lock["ref_mid_y"],
+        }
+
+    def _try_lock_lines(self, raw, data, ellipse, edges):
+        """首帧两条线都有效时建立独立锁；之后不再用中环定位边线。"""
+        if not has_both_reference_lines(raw):
+            return
+        segments = raw.get("segments", ())
+        if len(segments) != 2:
+            return
+        diameter = float(max(ellipse[1]))
+        center_x = float(ellipse[0][0])
+        half_width = int(round(diameter * data["search_half_width_diameters"]))
+        x0 = max(0, int(round(center_x)) - half_width)
+        x1 = min(edges.shape[1], int(round(center_x)) + half_width)
+        if x1 - x0 < 20:
+            return
+        top_y = _segment_y_at_x(segments[0], center_x)
+        bottom_y = _segment_y_at_x(segments[1], center_x)
+        if abs(bottom_y - top_y) < 5.0:
+            return
+        self._line_lock = {
+            "config": _locked_line_config(
+                self.config, diameter, data["band_half_height_diameters"]),
+            "x_bounds": (x0, x1),
+            "target_x": center_x,
+            "seeds": ((raw["top_angle"], top_y),
+                      (raw["bottom_angle"], bottom_y)),
+            "ref_mid_y": 0.5 * (top_y + bottom_y),
+            "misses": 0,
+        }
+
     def _calibrated_detection(self, frame):
         data = validate_search_calibration(self.config.search_calibration)
         _require(self._camera_signature is not None, "Recalibrate stacking: camera geometry not configured")
@@ -1056,14 +1210,28 @@ class StackedRingDetector:
         _require(list(frame.shape[1::-1]) == data["image_size"], "Recalibrate stacking: image size changed")
         edges = stacked_edge_image(frame, self.config)
         ellipse, support = self._find_calibrated_ring(frame, data, edges)
-        raw = detect_scaled_reference_lines(
-            frame, ellipse, self.config, data["outer_diameter_mm"], data["line_offset_mm"],
-            data["line_yaw_deg"], data["search_half_width_diameters"],
-            data["band_half_height_diameters"], edge_image=edges,
-            require_both=self.config.require_both_lines)
+        raw = None
+        if self.config.independent_line_lock and self._line_lock is not None:
+            raw = self._independent_line_detection(edges, ellipse)
+            if raw is None:
+                self._line_lock["misses"] = int(
+                    self._line_lock.get("misses", 0)) + 1
+                if self._line_lock["misses"] <= 5:
+                    raise StackedRingDetectionError("基准线暂时丢失（独立锁定中）")
+                self._line_lock = None
+        if raw is None:
+            raw = detect_scaled_reference_lines(
+                frame, ellipse, self.config, data["outer_diameter_mm"],
+                data["line_offset_mm"], data["line_yaw_deg"],
+                data["search_half_width_diameters"],
+                data["band_half_height_diameters"], edge_image=edges,
+                require_both=self.config.require_both_lines)
+            if self.config.independent_line_lock:
+                self._try_lock_lines(raw, data, ellipse, edges)
         raw["circle_support"] = support
         raw["confidence"] = 0.92 + 0.08 * min(support, raw["line_quality"])
-        raw["centers"] = _synthesise_centers(self.ring_config, raw["middle"], raw["yaw"])
+        raw["centers"] = _synthesise_centers(
+            self.ring_config, raw["middle"], raw["yaw"])
         self._middle_seed = raw["middle"]
         self._ring_relocation_error = None
         self.search_observation = raw
@@ -1230,6 +1398,16 @@ class StackedRingDetector:
             line_quality=float(np.median([
                 sample["line_quality"] for sample in self._samples
             ])),
+            line_lock_active=bool(raw.get("line_lock_active", False)),
+            line_lock_misses=int(raw.get(
+                "line_lock_misses",
+                self._line_lock.get("misses", 0) if self._line_lock else 0)),
+            line_mid_y_px=_present_value_median(
+                [sample.get("line_mid_y_px") for sample in self._samples]),
+            line_separation_px=_present_value_median(
+                [sample.get("line_separation_px") for sample in self._samples]),
+            line_mid_y_error_px=_present_value_median(
+                [sample.get("line_mid_y_error_px") for sample in self._samples]),
             angle_error_deg=angle_error,
             error_x_mm=error_x,
             error_y_mm=error_y,
@@ -1247,6 +1425,11 @@ class StackedRingDetector:
             processing_ms=(time.perf_counter() - started) * 1000.0,
             detail=detail,
         )
+
+
+def _present_value_median(values):
+    present = [value for value in values if value is not None]
+    return float(np.median(present)) if present else None
 
 
 def _present_angle_median(samples, current, key):
@@ -1352,4 +1535,23 @@ def draw_stacked_ring_detection(frame, result: StackedRingDetection):
         (20, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.56,
         (255, 255, 255), 2, cv2.LINE_AA,
     )
+    if (result.line_lock_active and result.line_mid_y_px is not None
+            and result.line_mid_y_error_px is not None):
+        reference_y = int(round(
+            result.line_mid_y_px - result.line_mid_y_error_px))
+        for x in range(0, frame.shape[1], 24):
+            cv2.line(
+                frame, (x, reference_y),
+                (min(x + 12, frame.shape[1] - 1), reference_y),
+                (0, 200, 255), 1, cv2.LINE_AA,
+            )
+        separation = (f"{result.line_separation_px:.1f}px"
+                      if result.line_separation_px is not None else "n/a")
+        cv2.putText(
+            frame,
+            f"LineLock ON  dY={result.line_mid_y_error_px:+.1f}px  "
+            f"midY={result.line_mid_y_px:.1f}  sep={separation}",
+            (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.56,
+            (0, 200, 255), 2, cv2.LINE_AA,
+        )
     return frame

@@ -105,11 +105,19 @@ class StackedRingDetectNode(Node):
                 f'{1 if result.within_tolerance else 0}'
             )
             self.pub.publish(out)
+            extra = ''
+            if result.line_lock_active:
+                dy = (f'{result.line_mid_y_error_px:+.1f}px'
+                      if result.line_mid_y_error_px is not None else 'n/a')
+                separation = (f'{result.line_separation_px:.1f}px'
+                              if result.line_separation_px is not None else 'n/a')
+                extra = f' line_lock dY={dy} sep={separation}'
             self.get_logger().info(
                 f'middle={result.middle_center_px} '
                 f'err=({result.error_x_mm:.2f},{result.error_y_mm:.2f})mm '
                 f'yaw={result.angle_error_deg:.2f}deg stable={result.stable} '
-                f'circle={result.circle_support:.2f} line={result.line_quality:.2f}',
+                f'circle={result.circle_support:.2f} line={result.line_quality:.2f}'
+                f'{extra}',
                 throttle_duration_sec=1.0)
         else:
             self.get_logger().info(f'叠放位未检出：{result.detail}',

@@ -32,7 +32,8 @@
     "minimum_edge_points": 60,
     "minimum_x_span_px": 220.0,
     "maximum_line_disagreement_deg": 2.0,
-    "require_both_lines": true
+    "require_both_lines": true,
+    "independent_line_lock": true
   },
   "search_calibration": {
     "version": 1,
