@@ -4,6 +4,8 @@
 用法（Pi 桌面或 RDP/X11 下）：
     python3 stacked_ring_line_lock_test.py --device /dev/camera_upper
 
+默认按配置文件走“中环反推上下边界”的旧逻辑；L/D 可临时开启实验模式。
+
 按键：
     L  切换 独立锁定 / 中环相对 两种模式
     D  切换 下边界：独立检测 / 上边界+150mm 推导
@@ -50,10 +52,10 @@ def parse_args():
     parser.add_argument('--fps', type=float, default=25.0)
     parser.add_argument('--config', default=str(DEFAULT_CONFIG))
     parser.add_argument('--ring-config', default=str(DEFAULT_RING_CONFIG))
-    parser.add_argument('--no-line-lock', action='store_true',
-                        help='启动时关闭 independent_line_lock')
-    parser.add_argument('--no-derive-lower', action='store_true',
-                        help='启动时关闭“上边界+间距推导下边界”')
+    parser.add_argument('--line-lock', action='store_true',
+                        help='启动时开启 independent_line_lock（默认关闭）')
+    parser.add_argument('--derive-lower', action='store_true',
+                        help='启动时开启“上边界+间距推导下边界”（默认关闭）')
     return parser.parse_args()
 
 
@@ -79,10 +81,10 @@ def build_detector(config, ring_config, width, height):
 def run(args):
     config = load_stacked_ring_config(args.config)
     ring_config = load_ring_station_config(args.ring_config)
-    # race_start 的 JSON 里保持关闭；测试脚本默认开启，方便对比。
-    if not args.no_line_lock:
+    # 默认完全按 JSON（当前关闭新方法）；需要实验时显式传 --line-lock / --derive-lower。
+    if args.line_lock:
         config = replace(config, independent_line_lock=True)
-    if not args.no_derive_lower:
+    if args.derive_lower:
         config = replace(config, derive_lower_from_upper=True)
     detector = build_detector(config, ring_config, args.width, args.height)
     cap = open_camera(args.device, args.width, args.height, args.fps)
