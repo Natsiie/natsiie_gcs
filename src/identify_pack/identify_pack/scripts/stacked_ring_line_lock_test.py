@@ -7,7 +7,7 @@
 按键：
     L  切换 独立锁定 / 中环相对 两种模式
     R  重置检测器（清空稳定窗口和线锁）
-    S  保存当前 overlay 截图到 /tmp
+    S  保存当前 overlay PNG + 本次检测 JSON 快照到 /tmp
     Q / Esc  退出
 """
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import json
 from pathlib import Path
 import sys
 import time
@@ -104,9 +105,11 @@ def run(args):
                 if result.line_lock_active:
                     dy = (f'{result.line_mid_y_error_px:+.1f}px'
                           if result.line_mid_y_error_px is not None else 'n/a')
+                    dy_mm = (f'{result.line_error_y_mm:+.1f}mm'
+                             if result.line_error_y_mm is not None else 'n/a')
                     sep = (f'{result.line_separation_px:.1f}px'
                            if result.line_separation_px is not None else 'n/a')
-                    extra = f' line_lock dY={dy} sep={sep}'
+                    extra = f' line_lock dY={dy} ({dy_mm}) sep={sep}'
                 print(f"{mode} state={result.stable and 'stable' or 'wait'} "
                       f"err=({result.error_x_mm:+.1f},{result.error_y_mm:+.1f})mm "
                       f"dYaw={result.angle_error_deg:+.2f}deg{extra}")
@@ -125,9 +128,42 @@ def run(args):
                 print('检测器已重置')
             elif key in (ord('s'), ord('S')):
                 save_count += 1
-                path = f'/tmp/stacked_line_lock_{int(time.time())}_{save_count}.png'
+                stamp = int(time.time())
+                path = f'/tmp/stacked_line_lock_{stamp}_{save_count}.png'
                 cv2.imwrite(path, frame)
-                print('已保存', path)
+                snapshot = {
+                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'device': args.device,
+                    'width': args.width, 'height': args.height,
+                    'fps': args.fps,
+                    'mode': ('line_lock' if config.independent_line_lock
+                             else 'ring_relative'),
+                    'independent_line_lock': config.independent_line_lock,
+                    'detected': result.detected,
+                    'stable': result.stable,
+                    'line_lock_active': result.line_lock_active,
+                    'line_lock_misses': result.line_lock_misses,
+                    'line_mid_y_px': result.line_mid_y_px,
+                    'line_mid_y_error_px': result.line_mid_y_error_px,
+                    'line_error_y_mm': result.line_error_y_mm,
+                    'line_separation_px': result.line_separation_px,
+                    'line_lock_drift_px': result.line_lock_drift_px,
+                    'error_x_mm': result.error_x_mm,
+                    'error_y_mm': result.error_y_mm,
+                    'angle_error_deg': result.angle_error_deg,
+                    'top_line_angle_deg': result.top_line_angle_deg,
+                    'bottom_line_angle_deg': result.bottom_line_angle_deg,
+                    'middle_center_px': result.middle_center_px,
+                    'line_quality': result.line_quality,
+                    'circle_support': result.circle_support,
+                    'within_tolerance': result.within_tolerance,
+                    'detail': result.detail,
+                    'search_calibration': config.search_calibration,
+                }
+                json_path = path[:-4] + '.json'
+                with open(json_path, 'w', encoding='utf-8') as file:
+                    json.dump(snapshot, file, ensure_ascii=False, indent=2)
+                print('已保存', path, '和', json_path)
     finally:
         cap.release()
         cv2.destroyAllWindows()

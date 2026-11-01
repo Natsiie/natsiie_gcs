@@ -103,6 +103,8 @@ class StackedRingDetection:
     line_mid_y_px: float | None = None
     line_separation_px: float | None = None
     line_mid_y_error_px: float | None = None
+    line_error_y_mm: float | None = None
+    line_lock_drift_px: float | None = None
     angle_error_deg: float = 0.0
     error_x_mm: float = 0.0
     error_y_mm: float = 0.0
@@ -1156,6 +1158,10 @@ class StackedRingDetector:
             return None
         lock["seeds"] = result["seeds"]
         lock["misses"] = 0
+        line_error_px = result["mid_y"] - lock["ref_mid_y"]
+        affine = np.asarray(
+            self.ring_config.image_to_station_affine, dtype=np.float64)
+        line_error_mm = affine @ np.asarray((0.0, line_error_px))
         return {
             "ellipse": ellipse,
             "middle": tuple(float(value) for value in ellipse[0]),
@@ -1170,7 +1176,10 @@ class StackedRingDetector:
             "line_lock_misses": 0,
             "line_mid_y_px": result["mid_y"],
             "line_separation_px": result["separation"],
-            "line_mid_y_error_px": result["mid_y"] - lock["ref_mid_y"],
+            "line_mid_y_error_px": line_error_px,
+            "line_error_y_mm": float(line_error_mm[1]),
+            "line_lock_drift_px": (
+                result["mid_y"] - lock.get("lock_mid_y", lock["ref_mid_y"])),
         }
 
     def _try_lock_lines(self, raw, data, ellipse, edges):
@@ -1191,6 +1200,7 @@ class StackedRingDetector:
         bottom_y = _segment_y_at_x(segments[1], center_x)
         if abs(bottom_y - top_y) < 5.0:
             return
+        lock_mid_y = 0.5 * (top_y + bottom_y)
         self._line_lock = {
             "config": _locked_line_config(
                 self.config, diameter, data["band_half_height_diameters"]),
@@ -1198,7 +1208,9 @@ class StackedRingDetector:
             "target_x": center_x,
             "seeds": ((raw["top_angle"], top_y),
                       (raw["bottom_angle"], bottom_y)),
-            "ref_mid_y": 0.5 * (top_y + bottom_y),
+            # 控制用的目标由标定中环中心给出；首锁位置只留作调试漂移量。
+            "ref_mid_y": float(data["center_px"][1]),
+            "lock_mid_y": lock_mid_y,
             "misses": 0,
         }
 
@@ -1408,6 +1420,10 @@ class StackedRingDetector:
                 [sample.get("line_separation_px") for sample in self._samples]),
             line_mid_y_error_px=_present_value_median(
                 [sample.get("line_mid_y_error_px") for sample in self._samples]),
+            line_error_y_mm=_present_value_median(
+                [sample.get("line_error_y_mm") for sample in self._samples]),
+            line_lock_drift_px=_present_value_median(
+                [sample.get("line_lock_drift_px") for sample in self._samples]),
             angle_error_deg=angle_error,
             error_x_mm=error_x,
             error_y_mm=error_y,
@@ -1547,11 +1563,15 @@ def draw_stacked_ring_detection(frame, result: StackedRingDetection):
             )
         separation = (f"{result.line_separation_px:.1f}px"
                       if result.line_separation_px is not None else "n/a")
+        dy_mm = (f" ({result.line_error_y_mm:+.1f}mm)"
+                 if result.line_error_y_mm is not None else "")
+        drift = (f" drift={result.line_lock_drift_px:+.1f}px"
+                 if result.line_lock_drift_px is not None else "")
         cv2.putText(
             frame,
-            f"LineLock ON  dY={result.line_mid_y_error_px:+.1f}px  "
-            f"midY={result.line_mid_y_px:.1f}  sep={separation}",
-            (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.56,
+            f"LineLock ON  dY={result.line_mid_y_error_px:+.1f}px{dy_mm}  "
+            f"midY={result.line_mid_y_px:.1f}  sep={separation}{drift}",
+            (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
             (0, 200, 255), 2, cv2.LINE_AA,
         )
     return frame
