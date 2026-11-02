@@ -29,10 +29,17 @@ class SerialFeedbackTests(unittest.TestCase):
             get_clock=lambda: clock, get_logger=lambda: logger,
             target_frame='gimbal_base', pub_place_result=Mock(),
             pub_place_control=Mock(), task_mode=False, grab_cmd_sent=False,
+            require_turntable_align=False, turntable_within=True,
+            turntable_within_time=0.0, turntable_align_max_age=1.0,
+            grab_cmd_pending=False,
         )
         # 测试替身：不真正打开串口，沿用上面准备好的 Mock 端口。
         bridge._ensure_serial = lambda: bridge.ser is not None and bridge.ser.is_open
         bridge._close_serial = lambda: None
+        for name in ('_try_send_grab_cmd', '_turntable_ready',
+                     '_update_turntable_align', '_reset_turntable_gate'):
+            setattr(bridge, name,
+                    getattr(SerialBridgeNode, name).__get__(bridge))
         return bridge
 
     def feed(self, bridge, data):
@@ -111,6 +118,30 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.ser.write.reset_mock()
         SerialBridgeNode._on_arrived(bridge, Bool(data=True))
         bridge.ser.write.assert_not_called()
+
+    def test_arrived_waits_for_turntable_within(self):
+        bridge = self.make_bridge()
+        bridge.task_mode = True
+        bridge.grab_cmd_sent = False
+        bridge.task = PickTask()
+        bridge.task.load('123+123+456+123', 0)
+        bridge.task.sent(10)
+        bridge._send = SerialBridgeNode._send.__get__(bridge)
+        bridge.ser.write.side_effect = lambda frame: len(frame)
+        bridge.require_turntable_align = True
+        bridge.turntable_within = False
+        bridge.turntable_align_max_age = 1.0
+
+        # 抓取到位但转盘未 within：挂起，不下发
+        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        bridge.ser.write.assert_not_called()
+        self.assertTrue(bridge.grab_cmd_pending)
+
+        # /TurntableAlign 的 within 变 1 后补发
+        SerialBridgeNode._update_turntable_align(bridge, '0,0,1')
+        bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
+        self.assertFalse(bridge.grab_cmd_pending)
+        self.assertTrue(bridge.grab_cmd_sent)
 
     def test_placement_feedback_and_invalid_results(self):
         bridge = self.make_bridge()

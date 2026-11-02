@@ -53,6 +53,7 @@ PLACE_CONTROL_TYPE = TOPIC_TYPES['PlaceControl']
 RING_TARGET_TYPE = TOPIC_TYPES['RingTarget']
 PICK_DONE_TYPE = TOPIC_TYPES['PickDone']
 NEXT_BATCH_TYPE = TOPIC_TYPES['NextBatch']
+TURNTABLE_ALIGN_TYPE = TOPIC_TYPES['TurntableAlign']
 
 
 def validate_place_identity(task_id, command_id):

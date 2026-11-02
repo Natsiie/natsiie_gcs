@@ -21,7 +21,7 @@ from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
     make_frame, COLOR_TARGET_TYPE, RING_TARGET_TYPE,
     PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE,
-    PICK_DONE_TYPE, NEXT_BATCH_TYPE,
+    PICK_DONE_TYPE, NEXT_BATCH_TYPE, TURNTABLE_ALIGN_TYPE,
     parse_place_result, parse_place_control, place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
@@ -74,6 +74,16 @@ class SerialBridgeNode(Node):
             raise ValueError('target_max_hz must be finite and positive')
         if not math.isfinite(self.target_max_age) or self.target_max_age <= 0:
             raise ValueError('target_max_age_sec must be finite and positive')
+        self.declare_parameter('require_turntable_align', True)
+        self.declare_parameter('turntable_align_max_age_sec', 1.0)
+        self.require_turntable_align = bool(
+            self.get_parameter('require_turntable_align').value)
+        self.turntable_align_max_age = float(
+            self.get_parameter('turntable_align_max_age_sec').value)
+        if (not math.isfinite(self.turntable_align_max_age)
+                or self.turntable_align_max_age <= 0):
+            raise ValueError(
+                'turntable_align_max_age_sec must be finite and positive')
         if not self.target_topic or not self.target_frame:
             raise ValueError('Target topic and frame cannot be empty')
         self._last_target_send = {}
@@ -89,6 +99,9 @@ class SerialBridgeNode(Node):
         self.task_code = None
         self.task_code_send_deadline = None
         self.grab_cmd_sent = False
+        self.grab_cmd_pending = False
+        self.turntable_within = False
+        self.turntable_within_time = -math.inf
         self.pub_task_status = self.create_publisher(
             String, '/arm/task_status', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         if self.task_mode:
@@ -178,6 +191,7 @@ class SerialBridgeNode(Node):
                     OUTGOING_TOPIC_TYPES['QR_Decode'], 'QR_Decode', code)
             if changed:
                 self.grab_cmd_sent = False
+                self._reset_turntable_gate()
                 self._publish_task_status()
         except ValueError as error:
             self.get_logger().warning(f'任务码拒绝: {error}', throttle_duration_sec=2.0)
@@ -196,7 +210,13 @@ class SerialBridgeNode(Node):
             self.task_code_sent = True
 
     def _on_pick_done(self, msg):
+        before = self.task.expected
         if self.task.complete(msg.data, self.get_clock().now().nanoseconds):
+            after = self.task.expected
+            # 第一批 -> 第二批：必须重新等待一次转盘矫正。
+            if (before is not None and after is not None
+                    and before.batch != after.batch):
+                self._reset_turntable_gate()
             self.grab_cmd_sent = False
             self._publish_task_status()
         else:
@@ -205,6 +225,7 @@ class SerialBridgeNode(Node):
     def _on_next_batch(self, msg):
         if self.task.next_batch(msg.data, self.get_clock().now().nanoseconds):
             self.grab_cmd_sent = False
+            self._reset_turntable_gate()
             self._publish_task_status()
         else:
             self.get_logger().warning('忽略批次通知：需要第一批三个抓取确认后发送 data=1')
@@ -350,6 +371,7 @@ class SerialBridgeNode(Node):
                     throttle_duration_sec=2.0)
 
     def _send(self, type_byte: int, topic: str, text: str):
+        is_turntable_align = type_byte == TURNTABLE_ALIGN_TYPE
         try:
             frame = make_frame(type_byte, text)
         except Exception as e:
@@ -368,6 +390,9 @@ class SerialBridgeNode(Node):
                 self.get_logger().warning(message)
             else:
                 self.get_logger().info(message)
+            if is_turntable_align:
+                # 先让 0x0E 真正写出去，再尝试补发挂起的 GrabCmd。
+                self._update_turntable_align(text)
             return True
         except Exception as e:
             self.get_logger().error(f'串口写入失败，关闭并重连: {e}')
@@ -420,15 +445,72 @@ class SerialBridgeNode(Node):
         except (ValueError, KeyError, TypeError) as error:
             self.get_logger().warning(f'Invalid placement command: {error}')
 
-    def _on_arrived(self, msg):
-        """收到夹爪到位信号 -> 确认颜色顺序匹配后再下发 GrabCmd。"""
-        if not msg.data:
+    def _reset_turntable_gate(self):
+        """新任务/换批时清掉上一批的转盘到位状态。"""
+        self.turntable_within = False
+        self.turntable_within_time = -math.inf
+        self.grab_cmd_pending = False
+
+    def _update_turntable_align(self, text):
+        """跟踪 /TurntableAlign 的 within；within 变 1 时补发挂起的 GrabCmd。"""
+        parts = str(text).strip().split(',')
+        if len(parts) != 3:
             return
+        try:
+            within = int(float(parts[2].strip())) != 0
+        except (TypeError, ValueError):
+            return
+        self.turntable_within = within
+        if within:
+            self.turntable_within_time = time.monotonic()
+            self._try_send_grab_cmd('turntable-align')
+
+    def _turntable_ready(self):
+        if not self.require_turntable_align:
+            return True
+        if not self.turntable_within:
+            return False
+        return (time.monotonic() - self.turntable_within_time
+                <= self.turntable_align_max_age)
+
+    def _try_send_grab_cmd(self, reason=''):
+        """有挂起的抓取授权时，确认转盘 within 仍有效才真正下发。"""
+        if not self.grab_cmd_pending:
+            return
+        expected = None
         if self.task_mode:
             expected = self.task.expected
             # WAIT_PICK_DONE 只会在 _send_color_targets 接受了「当前期望颜色」
             # 并成功发出目标坐标后由 task.sent() 置位；这里再发抓取授权，
             # 就保证了 GrabCmd 一定对应解码顺序里的当前颜色。
+            if self.task.state != 'WAIT_PICK_DONE' or expected is None:
+                self.grab_cmd_pending = False
+                return
+            if self.grab_cmd_sent:
+                self.grab_cmd_pending = False
+                return
+        if not self._turntable_ready():
+            self.get_logger().warning(
+                '抓取已到位，但转盘/底盘矫正尚未 within=1，暂缓 GrabCmd'
+                f'（{reason}）', throttle_duration_sec=2.0)
+            return
+        if not self._send(GRAB_CMD_TYPE, 'GrabCmd', '1'):
+            return
+        self.grab_cmd_pending = False
+        if self.task_mode:
+            self.grab_cmd_sent = True
+            self.get_logger().warning(
+                f'颜色顺序匹配：序号 {expected.sequence} 颜色 {expected.color}，'
+                '转盘已到位，已下发 GrabCmd')
+        else:
+            self.get_logger().warning('转盘已到位，下发 GrabCmd')
+
+    def _on_arrived(self, msg):
+        """收到夹爪到位信号 -> 颜色匹配后挂起，等转盘矫正 within=1 再发 GrabCmd。"""
+        if not msg.data:
+            return
+        if self.task_mode:
+            expected = self.task.expected
             if self.task.state != 'WAIT_PICK_DONE' or expected is None:
                 self.get_logger().warning(
                     f'收到夹爪到位，但任务状态为 {self.task.state}，'
@@ -440,15 +522,8 @@ class SerialBridgeNode(Node):
                     f'序号 {expected.sequence} 已发送过 GrabCmd，忽略重复到位信号',
                     throttle_duration_sec=2.0)
                 return
-        if not self._send(GRAB_CMD_TYPE, 'GrabCmd', '1'):
-            return
-        if self.task_mode:
-            self.grab_cmd_sent = True
-            self.get_logger().warning(
-                f'颜色顺序匹配：序号 {expected.sequence} 颜色 {expected.color}，'
-                '已下发 GrabCmd')
-        else:
-            self.get_logger().warning('收到夹爪到位信号，下发下降抓取授权')
+        self.grab_cmd_pending = True
+        self._try_send_grab_cmd('gripper-arrived')
 
     def _send_color_targets(self, message: PointCloud):
         """Send base-frame target coordinates in millimetres.
