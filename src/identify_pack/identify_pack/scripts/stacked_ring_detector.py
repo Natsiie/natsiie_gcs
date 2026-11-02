@@ -1145,7 +1145,8 @@ def calibration_samples_stable(samples, ring_config):
     yaw = np.asarray([item["yaw"] for item in samples])
     return bool(np.max(np.linalg.norm(centers - np.median(centers, axis=0), axis=1))
                 <= ring_config.maximum_center_jitter_px
-                and np.max(np.abs(axes - np.median(axes, axis=0))) <= 2.0
+                and np.max(np.abs(axes - np.median(axes, axis=0)))
+                <= ring_config.maximum_axes_jitter_px
                 and np.ptp(yaw) <= 0.5)
 
 

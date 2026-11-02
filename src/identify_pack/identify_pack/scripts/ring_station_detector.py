@@ -58,6 +58,8 @@ class RingStationConfig:
     maximum_position_error_mm: float
     maximum_angle_error_deg: float
     chassis_image_to_motion: tuple[tuple[float, float, float], ...] | None
+    # 叠放位等使用 ring_config 做样本稳定性时，允许的椭圆轴长逐帧偏差（px）。
+    maximum_axes_jitter_px: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,9 @@ def load_ring_station_config(path: Path | str) -> RingStationConfig:
             maximum_center_jitter_px=float(
                 reference["maximum_center_jitter_px"]
             ),
+            maximum_axes_jitter_px=float(
+                reference.get("maximum_axes_jitter_px", 2.0)
+            ),
             maximum_affine_residual=float(
                 reference["maximum_affine_residual"]
             ),
@@ -213,6 +218,8 @@ def load_ring_station_config(path: Path | str) -> RingStationConfig:
         raise RingStationDetectionError("置信度门槛无效")
     if config.stable_frame_count < 2:
         raise RingStationDetectionError("稳定窗口至少需要2帧")
+    if config.maximum_axes_jitter_px <= 0:
+        raise RingStationDetectionError('maximum_axes_jitter_px must be positive')
     if config.maximum_center_jitter_px <= 0:
         raise RingStationDetectionError("圆心抖动门槛必须大于0")
     if len(config.perspective_ratio_range) != 2:
