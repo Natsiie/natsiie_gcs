@@ -18,6 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from identify_pack.config_paths import data_path
@@ -74,6 +75,13 @@ class PixelToBaseNode(Node):
             'ring_plane_z_mm': 0.0,
             'ring_centers_topic': '/ring_station/centers_pixel',
             'ring_targets_topic': '/ring_station/targets_base',
+            # 第一层放置（普通工位）用三圆环检测同时定位；累计成功放置
+            # ring_source_switch_count 次后，切换到叠放区检测（中间圆 +
+            # 上下边界线）做微调。0 = 不切换，始终用第一个话题。
+            'ring_centers_topic_after': '/stacked_ring/centers_pixel',
+            'ring_source_switch_count': 3,
+            # 下位机放置结束回传（0x0B -> 串口桥 -> /arm/place_result）。
+            'place_result_topic': '/arm/place_result',
             # 三环几何约束：以中间环为锚点，按已知中心距重建左右两环，
             # 消除三环各自投影误差。整体平移/旋转校正由下位机负责。
             'ring_geometry_enforce': True,
@@ -163,9 +171,38 @@ class PixelToBaseNode(Node):
             qos_profile_sensor_data)
         self.ring_target_publisher = self.create_publisher(
             PointCloud, self.param('ring_targets_topic'), 10)
+        self.ring_centers_topic = self.param('ring_centers_topic')
+        self.ring_centers_topic_after = self.param('ring_centers_topic_after')
+        self.ring_source_switch_count = int(self.param('ring_source_switch_count'))
+        if self.ring_source_switch_count < 0:
+            raise ValueError('ring_source_switch_count must be >= 0')
+        self.active_ring_source = self.ring_centers_topic
+        self.first_layer_placement_count = 0
+        self.current_task_id = None
+        self.counted_place_commands = set()
+        self.declare_parameter('first_layer_placement_count', 0)
         self.ring_center_subscription = self.create_subscription(
-            PointCloud, self.param('ring_centers_topic'), self.on_ring_centers,
+            PointCloud, self.ring_centers_topic,
+            lambda message: self.on_ring_centers(message, self.ring_centers_topic),
             qos_profile_sensor_data)
+        self.ring_center_after_subscription = None
+        if (self.ring_centers_topic_after
+                and self.ring_centers_topic_after != self.ring_centers_topic):
+            self.ring_center_after_subscription = self.create_subscription(
+                PointCloud, self.ring_centers_topic_after,
+                lambda message: self.on_ring_centers(
+                    message, self.ring_centers_topic_after),
+                qos_profile_sensor_data)
+        self.place_result_subscription = self.create_subscription(
+            String, self.param('place_result_topic'), self.on_place_result, 10)
+        if self.ring_source_switch_count > 0:
+            self.get_logger().info(
+                f'圆环识别源：{self.ring_centers_topic}'
+                f'（前 {self.ring_source_switch_count} 次放置）'
+                f' -> {self.ring_centers_topic_after}（之后）')
+        else:
+            self.get_logger().info(
+                f'圆环识别源固定为 {self.ring_centers_topic}（未启用切换）')
         self.last_auto_publish = -math.inf
         self.pending_centers = deque(maxlen=10)
         self.last_center_stamp = 0
@@ -308,8 +345,13 @@ class PixelToBaseNode(Node):
             out.channels.append(ChannelFloat32(name='motion_ready', values=list(ready)))
         return out
 
-    def on_ring_centers(self, msg):
-        """把三圆环圆心从图像时刻投影到 ring 平面，输出 gimbal_base 毫米坐标。"""
+    def on_ring_centers(self, msg, source=None):
+        """把三圆环圆心从图像时刻投影到 ring 平面，输出 gimbal_base 毫米坐标。
+
+        ``source`` 用于区分两个识别源；只有当前激活的源才参与投影。
+        """
+        if source is not None and source != self.active_ring_source:
+            return
         if not self.param('auto_project'):
             return
         if 'ring' not in self.planes:
@@ -332,6 +374,62 @@ class PixelToBaseNode(Node):
             self.project_pending_rings()
         except ValueError as error:
             self.get_logger().warning(f'拒绝圆环圆心: {error}', throttle_duration_sec=2.0)
+
+    def on_place_result(self, message):
+        """下位机 0x0B 放置结束：成功后累计第一层放置次数，达到阈值切换识别源。"""
+        try:
+            data = json.loads(message.data)
+            task_id = str(data['task_id'])
+            command_id = int(data['command_id'])
+            success = bool(data['success'])
+        except (ValueError, KeyError, TypeError):
+            return
+        if not success:
+            return
+        if task_id != self.current_task_id:
+            self.current_task_id = task_id
+            self.counted_place_commands.clear()
+            self._set_first_layer_placement_count(0)
+            self._set_active_ring_source(self.ring_centers_topic, '新任务重置')
+        key = (task_id, command_id)
+        if key in self.counted_place_commands:
+            return
+        self.counted_place_commands.add(key)
+        if self.ring_source_switch_count <= 0:
+            return
+        if self.first_layer_placement_count >= self.ring_source_switch_count:
+            # 第一层已计数完成；后续回传属于叠料区，只去重、不再累加。
+            return
+        count = self.first_layer_placement_count + 1
+        self._set_first_layer_placement_count(count)
+        self.get_logger().warning(
+            f'第一层放置计数 {count}/{self.ring_source_switch_count}'
+            f'（task={task_id}, command={command_id}）')
+        if (count >= self.ring_source_switch_count
+                and self.ring_centers_topic_after
+                and self.active_ring_source != self.ring_centers_topic_after):
+            self._set_active_ring_source(
+                self.ring_centers_topic_after,
+                f'第一层放置 {count} 次完成')
+
+    def _set_first_layer_placement_count(self, count):
+        self.first_layer_placement_count = int(count)
+        try:
+            from rclpy.parameter import Parameter
+            self.set_parameters([Parameter(
+                'first_layer_placement_count', Parameter.Type.INTEGER,
+                self.first_layer_placement_count)])
+        except (TypeError, ValueError, RuntimeError) as error:
+            # 参数仅用于调试观测，失败不影响识别源切换。
+            self.get_logger().debug(f'更新放置计数参数失败: {error}')
+
+    def _set_active_ring_source(self, source, reason):
+        if not source or source == self.active_ring_source:
+            return
+        self.active_ring_source = source
+        self.pending_rings.clear()
+        self.last_ring_stamp = 0
+        self.get_logger().warning(f'圆环识别源切换为 {source}（{reason}）')
 
     def validate_ring_centers(self, msg):
         ring_ids = self._channel_values(msg, 'ring_id')

@@ -7,9 +7,14 @@ pixel_to_base:
     camera_frame: camera_optical_frame
     output_topic: /pixel_to_base/point
     centers_topic: /color/centers_pixel
-    # 三环放置坐标的来源：叠放区检测（中间环 + 上边界线合成三个圆心）。
-    # 若改回 '/ring_station/centers_pixel'，则使用三圆环检测节点的输出。
-    ring_centers_topic: /stacked_ring/centers_pixel
+    # 第一层放置：用三圆环检测同时定位三个圆心。
+    # 累计成功放置 ring_source_switch_count 次后，切换到叠放区检测
+    # （中间圆 + 上下边界线合成三个圆心）做微调。
+    # 切换由下位机 0x0B 放置结束回传触发；新任务码会重置回三圆环检测。
+    ring_centers_topic: /ring_station/centers_pixel
+    ring_centers_topic_after: /stacked_ring/centers_pixel
+    ring_source_switch_count: 3
+    place_result_topic: /arm/place_result
     targets_topic: /color/targets_base
     show: false
     tf_wait_sec: 0.5

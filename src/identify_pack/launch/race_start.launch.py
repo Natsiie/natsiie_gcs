@@ -82,6 +82,11 @@ def generate_launch_description():
         DeclareLaunchArgument('publish_arrived', default_value='true'),
         # 任务模式：true=按二维码顺序+抓取确认每个颜色只发一次；false=连续发送坐标（调试通信链路用）。
         DeclareLaunchArgument('task_mode', default_value='true'),
+        # 颜色识别调试日志：仅调试时打开，正常比赛保持 false。
+        # 日志写到 <color_log_dir>/color_debug_YYYYmmdd_HHMMSS.jsonl。
+        DeclareLaunchArgument('debug_color_log', default_value='false'),
+        DeclareLaunchArgument('color_log_dir', default_value=os.path.join(
+            os.getcwd(), 'log', 'color_debug')),
         DeclareLaunchArgument('tf_params_file', default_value=os.path.join(
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
@@ -190,6 +195,19 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
+            }],
+        ),
+
+        # 颜色识别调试日志：仅 debug_color_log:=true 时启动，正常比赛默认关闭。
+        Node(
+            package='identify_pack',
+            executable='color_log_node',
+            name='color_log_node',
+            condition=IfCondition(LaunchConfiguration('debug_color_log')),
+            output='screen',
+            parameters=[{
+                'log_dir': LaunchConfiguration('color_log_dir'),
+                'log_prefix': 'color_debug',
             }],
         ),
 
@@ -303,20 +321,21 @@ def generate_launch_description():
             }],
         ),
 
-        # # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        # Node(
-        #     package='identify_pack',
-        #     executable='ring_station_detect_node',
-        #     name='ring_station_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': secondary_image_topic,
-        #         'show': ParameterValue(show, value_type=bool),
-        #         'camera_frame': 'camera_optical_frame',
-        #         'centers_topic': '/ring_station/centers_pixel',
-        #         'digit_templates': LaunchConfiguration('ring_digit_templates'),
-        #     }],
-        # ),
+        # 三圆环工位检测节点：第一层放置用它的三环同时定位。
+        # 订阅副相机，发布 /ring_station 与 /ring_station/centers_pixel。
+        Node(
+            package='identify_pack',
+            executable='ring_station_detect_node',
+            name='ring_station_detect_node',
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'show': ParameterValue(show, value_type=bool),
+                'camera_frame': 'camera_optical_frame',
+                'centers_topic': '/ring_station/centers_pixel',
+                'digit_templates': LaunchConfiguration('ring_digit_templates'),
+            }],
+        ),
 
         # # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         Node(
