@@ -12,6 +12,8 @@ __IO uint32_t can_pos_raw[7]  = {0};
 __IO uint8_t  can_pos_sign[7] = {0};
 __IO uint16_t can_pos_cnt[7]  = {0};
 __IO uint32_t can_rx_drop     = 0;
+__IO uint32_t can_tx_drop     = 0;   /* 发送丢弃计数: 3 个邮箱全占满且超时放弃的帧数 */
+__IO uint32_t can_rx_ovr      = 0;   /* RX FIFO0 溢出计数: 中断被压住太久导致硬件丢帧 (Watch 应恒 0) */
 
 /* 电机母线电压回包 (0x24 单读 / 0x43 批量读系统状态第0包) 专用槽位 (定义见 bsp_can.h) */
 __IO uint16_t can_vbus_mv[7] = {0};
@@ -62,7 +64,10 @@ void CAN1_Init(void)
     CAN_InitStructure.CAN_AWUM      = DISABLE;
     CAN_InitStructure.CAN_NART      = DISABLE;
     CAN_InitStructure.CAN_RFLM      = DISABLE;
-    CAN_InitStructure.CAN_TXFP      = DISABLE;
+    CAN_InitStructure.CAN_TXFP      = ENABLE;   /* 发送顺序按"写入先后"(FIFO)。
+                                                   原来是 DISABLE = 按报文 ID 仲裁, 广播同步触发帧
+                                                   ExtId=0x0000 会插队到 0x0400(电机4) 之前,
+                                                   导致 4 号轮永远晚一拍执行速度命令 (见 Chassis_SendWheels) */
     CAN_InitStructure.CAN_Mode      = CAN_Mode_Normal;
     CAN_InitStructure.CAN_SJW       = CAN_SJW_1tq;
     CAN_InitStructure.CAN_BS1       = CAN_BS1_9tq;
@@ -94,6 +99,10 @@ void CAN1_Init(void)
 void can_SendCmd(__IO uint8_t *cmd, uint8_t len)
 {
     __IO uint8_t i = 0, j = 0, k = 0, l = 0, packNum = 0;
+    CanTxMsg txMsg;   /* ★ 栈上局部: 不再共用全局 can.CAN_TxMsg。
+                         SIGNALING(prio2, 塔吊5/6) 与 Chassis(prio4, 底盘1~4) 都走本函数,
+                         高优先级任务若在拼包途中抢占, 会把全局缓冲改写成本任务的数据,
+                         回去后接着写 -> 发出一帧地址与数据错配的报文。局部变量彻底消除覆盖。 */
 
     /* 去掉地址字节和功能字节后的数据长度 */
     j = len - 2;
@@ -102,31 +111,32 @@ void can_SendCmd(__IO uint8_t *cmd, uint8_t len)
     {
         k = j - i;
 
-        can.CAN_TxMsg.StdId   = 0x00;
-        can.CAN_TxMsg.ExtId   = ((uint32_t)cmd[0] << 8) | (uint32_t)packNum;
-        can.CAN_TxMsg.Data[0] = cmd[1];
-        can.CAN_TxMsg.IDE     = CAN_Id_Extended;
-        can.CAN_TxMsg.RTR     = CAN_RTR_Data;
+        txMsg.StdId   = 0x00;
+        txMsg.ExtId   = ((uint32_t)cmd[0] << 8) | (uint32_t)packNum;
+        txMsg.Data[0] = cmd[1];
+        txMsg.IDE     = CAN_Id_Extended;
+        txMsg.RTR     = CAN_RTR_Data;
 
         if (k < 8)
         {
-            for (l = 0; l < k; l++, i++) { can.CAN_TxMsg.Data[l + 1] = cmd[i + 2]; }
-            can.CAN_TxMsg.DLC = k + 1;
+            for (l = 0; l < k; l++, i++) { txMsg.Data[l + 1] = cmd[i + 2]; }
+            txMsg.DLC = k + 1;
         }
         else
         {
-            for (l = 0; l < 7; l++, i++) { can.CAN_TxMsg.Data[l + 1] = cmd[i + 2]; }
-            can.CAN_TxMsg.DLC = 8;
+            for (l = 0; l < 7; l++, i++) { txMsg.Data[l + 1] = cmd[i + 2]; }
+            txMsg.DLC = 8;
         }
 
         /* 等一个空闲邮箱再发: CAN 只有 3 个发送邮箱, 连续发多帧时邮箱会占满。
            加超时: 若总线被某个节点堵死/离线, 邮箱一直不空, 到点就放弃本帧,
-           避免整个任务卡死在这里 —— 否则排在后面的电机(如 6 号)命令永远发不出去 */
+           避免整个任务卡死在这里 —— 否则排在后面的电机(如 6 号)命令永远发不出去。
+           can_tx_drop 记次数: 正常应为 0, 变成非 0 说明总线/邮箱真的堵了 */
         {
             uint32_t tx_t = 0;
-            while (CAN_Transmit(CAN1, (CanTxMsg *)(&can.CAN_TxMsg)) == CAN_TxStatus_NoMailBox)
+            while (CAN_Transmit(CAN1, &txMsg) == CAN_TxStatus_NoMailBox)
             {
-                if (++tx_t > 200000) return;   /* 超时: 放弃本帧及后续帧, 继续跑其他任务 */
+                if (++tx_t > 200000) { can_tx_drop++; return; }   /* 超时: 放弃本帧及后续帧, 继续跑其他任务 */
             }
         }
         ++packNum;
@@ -137,6 +147,15 @@ void CAN1_RX0_IRQHandler(void)
 {
     CanRxMsg msg;                     /* 局部变量: 不再直接写共享缓冲 */
     uint8_t  addr;
+
+    /* RX FIFO0 溢出检查: 硬件 FIFO 只有 3 帧深, 若本中断被更高优先级中断/临界区
+       压住太久, 连着到的上报帧会把 FIFO 撑满, 硬件直接丢帧(丢的是后面到的那些)。
+       这里清标志并计数: can_rx_ovr 恒 0, 才能排除"是 MCU 自己漏收", 把锅坐实到电机/线束侧。 */
+    if (CAN1->RF0R & CAN_RF0R_FOVR0)
+    {
+        CAN1->RF0R |= CAN_RF0R_FOVR0;   /* 写 1 清零 */
+        can_rx_ovr++;
+    }
 
     CAN_Receive(CAN1, CAN_FIFO0, &msg);
 

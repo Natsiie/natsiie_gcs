@@ -13,7 +13,9 @@ uint8_t nav_zone = 1;    /* 当前启动区: 1=启动区1, 2=启动区2; Nav_Sta
 NavZoneCoord_t nav_zone_coord[2] = {
     /* [0] 启动区1 (当前默认, 带上原来的值) */
     {
-        .start_x    = -30.0f,    .start_y    = 0.0f,
+        .start_x    = -50.0f,    .start_y    = -10.0f,
+        .start_ret_x = 200.0f,   /* 收车中转点: 暂存区出来先开到 (200, 当前y), 不转向直接去 (-35, 0) */
+        .start_ret_en = 1,       /* 启用新的收车走法 (只有启动区1) */
         .corner_x   = 1070.0f, .corner_y   = -10.0f,
         .mid_x      = 1090.0f, .mid_y      = -1040.0f,
         .material_x = 100.0f,  .material_y = -1100.0f,
@@ -25,6 +27,8 @@ NavZoneCoord_t nav_zone_coord[2] = {
     /* [1] 启动区2 — TODO 现场测量后填入 */
     {
         .start_x    = 0.0f,     .start_y    = 0.0f,
+        .start_ret_x = -200.0f,  /* 未启用 (start_ret_en=0)。启用前现场量: 启动区1 取 200, 这里按镜像先填 -200 */
+        .start_ret_en = 0,       /* 启动区2 先保持旧走法, 现场测过再开 */
         .corner_x   = -1070.0f, .corner_y   = -10.0f,
         .mid_x      = -1090.0f, .mid_y      = -1040.0f,
         .material_x = -1915.0f, .material_y = -1040.0f,
@@ -42,6 +46,10 @@ float nav_staging_mid_dy = 0.0f;      /* 里程计漂移修正量 Y (共用; 现
 float nav_staging_dx = 0.0f;
 float nav_staging_dy = 0.0f;
 
+/* 物料区离站避让 (mm, 世界系 X): 抓完 3 件去粗加工前先平移这么远再转车头, 免得打到转盘。
+   默认取 car_config.h 的 NAV_MATERIAL_LEAVE_DX_MM; 现场可在 Watch 改, 0=关闭。 */
+float nav_mat_leave_dx = NAV_MATERIAL_LEAVE_DX_MM;
+
 /* ================= 导航状态 ================= */
 uint8_t nav_cmd    = 0;    /* 写 1=启动, 2=中止, 3=继续; 处理后自动回 0 */
 uint8_t nav_active = 0;    /* 只读: 1=导航中 */
@@ -55,6 +63,11 @@ uint8_t nav_test_active = 0;    /* 1=测试进行中 */
 float   nav_test_err_x  = 0.0f; /* 最近到点误差 X (里程计-目标) */
 float   nav_test_err_y  = 0.0f; /* 最近到点误差 Y */
 float   nav_test_err_max = 0.0f;/* 全程最大到点误差 */
+
+/* 到站坐标矫正 (视觉微调到底 -> 里程计直接写成目标点; 见 app_nav.h) */
+float    nav_snap_dx  = 0.0f;   /* 只读: 最近一次矫正量 X (mm) */
+float    nav_snap_dy  = 0.0f;   /* 只读: 最近一次矫正量 Y (mm) */
+uint16_t nav_snap_cnt = 0;      /* 只读: 整场矫正次数 */
 
 /* 纯底盘自跑选项 (无视觉/无上层, Keil Watch):
    nav_skip_corner=1: 启动时跳过拐角, 直连物料点(先走X再走Y, 转 material_yaw 后接入全程);
@@ -85,8 +98,9 @@ static const uint8_t nav_direct_route[] = {
 };
 #define NAV_DIRECT_ROUTE_LEN ((int8_t)(sizeof(nav_direct_route) / sizeof(nav_direct_route[0])))
 
-/* 直连路线进场子阶段: 转 -> 走第一轴 -> 转 -> 走第二轴(到点) -> 转 */
+/* 直连路线进场子阶段: (平移) -> 转 -> 走第一轴 -> 转 -> 走第二轴(到点) -> 转 */
 #define NAV_LEG_IDLE     0
+#define NAV_LEG_PRE_SHIFT 7  /* 出发前先平移让位 (物料区离站: 先让开转盘再转车头) */
 #define NAV_LEG_PRE_ROT  1   /* 出发前旋转 */
 #define NAV_LEG_FIRST    2   /* 走第一轴 */
 #define NAV_LEG_MID_ROT  3   /* 中途旋转 */
@@ -100,6 +114,7 @@ static NavPointId nav_leg_to   = NAV_START;
 static float nav_leg_pre_yaw  = 0.0f;
 static float nav_leg_mid_yaw  = 0.0f;
 static float nav_leg_post_yaw = 0.0f;
+static float nav_leg_pre_shift_dx = 0.0f;  /* 出发前先平移的 X 量 (mm, 0=不平移) */
 static char  nav_leg_first_axis = 'x';
 
 static const uint8_t *Nav_ActiveRoute(int8_t *len);
@@ -191,6 +206,29 @@ void Nav_Stop(void)
     nav_skip_phase = 0;
     nav_rotating   = 0;
     nav_leg_phase  = NAV_LEG_IDLE;
+    nav_leg_pre_shift_dx = 0.0f;
+}
+
+/* 整场重来 (长按启动 / 运行中中止): 先 Nav_Stop 停下来, 再把这一场攒下来的
+   轮次/计数/Watch 待触发也清掉, 让新一场和刚上电一样。
+   为什么要单开一个: Nav_Stop 只管"停", nav_round / nav_material_visits /
+   nav_staging_mid_count 这些在 Nav_Start/Nav_StartAt 里才会重新初始化; 中途重启时
+   如果新一场从"直连物料点"起步(不经过 Nav_Start), 上一场跑到第 2 轮留下的轮次会漏进来。
+   不动的: nav_zone (操作员选的启动区)、nav_staging_dx/dy 和 nav_staging_mid_dx/dy (现场微调)。 */
+void Nav_ResetRun(void)
+{
+    Nav_Stop();
+    nav_cmd              = 0;
+    nav_test_run         = 0;    /* Watch 待触发别留到下一场 */
+    nav_auto_run         = 0;
+    nav_round            = 0;
+    nav_material_visits  = 0;
+    nav_staging_mid_count = 0;
+    nav_snap_dx          = 0.0f;   /* 到站坐标矫正的诊断量: 新一场从 0 数 */
+    nav_snap_dy          = 0.0f;
+    nav_snap_cnt         = 0;
+    nav_leg_from         = NAV_START;
+    nav_leg_to           = NAV_START;
 }
 
 /* 从暂停点继续: 推进到下一个路径点 (仅 nav_wait==1 时有效) */
@@ -253,6 +291,29 @@ void Nav_GetPointCoord(NavPointId id, float *x, float *y)
     }
 }
 
+/* 到站坐标矫正: 把里程计世界坐标直接写成该工作点的导航目标坐标。
+   只在粗加工/暂存用 —— 这两个点的视觉微调就是把车对到真实作业位上, 对完车就在目标点上,
+   这一路的累计漂移可以整段抹掉 (下一段走"另一个轴锁当前值"时锁到的也是正确的值)。
+   物料区不做; 跳过本站纠偏(mode_unload=mode_stack=SKIP)时没纠过, 不做;
+   导航精度测试不做 (要测的就是纯里程计漂移, 修了就不用测了)。
+   安全性: 调用方必须保证底盘定位已停 (chassis_flag.pos_active == 0), 这里只改 x/y,
+   yaw 是 IMU 直读、不积分, 不在这里改。 */
+void Nav_SnapOdomToPoint(NavPointId id)
+{
+    float tx, ty;
+
+    if (id != NAV_ROUGH && id != NAV_STAGING) return;   /* 只粗加工/暂存 */
+    if (nav_test_active) return;                        /* 精度测试: 保持纯里程计 */
+
+    Nav_GetPointCoord(id, &tx, &ty);                    /* 含 nav_staging_dx/dy, 就是导航实际开去的那个点 */
+
+    nav_snap_dx = chassis_val.odom_x_mm - tx;           /* 只读诊断: 这次抹掉多少 (正常 = 这一段累计漂移) */
+    nav_snap_dy = chassis_val.odom_y_mm - ty;
+    chassis_val.odom_x_mm = tx;
+    chassis_val.odom_y_mm = ty;
+    if (nav_snap_cnt < 0xFFFF) nav_snap_cnt++;
+}
+
 /* 当前暂停点的下一个路径点 (供中点旋转算朝向; 无则回 START) */
 NavPointId Nav_NextPoint(void)
 {
@@ -279,7 +340,13 @@ static void Nav_GetLegApproach(NavPointId from, NavPointId to,
     if (from == NAV_MATERIAL && to == NAV_ROUGH)
     {
         *pre_yaw     = 0.0f;             /* 车头转 +X */
-        *first_axis  = 'x';              /* 直走 X (rough 与 material 同 y) */
+        /* 点对点直线, 两轴同时按比例到 (2026-11-02 用户要求)。
+           原来是 first_axis='x' "直走 X" —— 那是按"两站同 y"写的; 实测 material_y=-1100、
+           rough_y=-1040 差 60mm, 于是 X 走完还会补一段"车头仍朝 +X 的纯 Y 横移"再转 -90°,
+           横移是麦轮最不准的动作, 到点误差和坐标系漂移都从这里来。
+           定位环本来就是等比限幅走直线(app_chassis.c 点对点定位), 直接给全目标即可;
+           这条腿 60mm 的 y 分量摊在 1.8m 上只有 3.3%, 相当于稍微斜着开过去。 */
+        *first_axis  = 0;
         *post_yaw    = z->rough_yaw;     /* 到点转粗加工朝向 */
     }
     else if (from == NAV_ROUGH && to == NAV_STAGING)
@@ -295,8 +362,17 @@ static void Nav_GetLegApproach(NavPointId from, NavPointId to,
     }
     else if (from == NAV_STAGING && to == NAV_START)
     {
-        *first_axis  = 'x';              /* 收车: 先走 X 直回起点 X */
-        *mid_yaw     = z->material_yaw;  /* 90, 车头朝 +Y, 再走 Y 回起点 Y */
+        *first_axis  = 'x';              /* 收车: 先走 X */
+        if (z->start_ret_en)
+        {
+            /* 新走法 (2026-11-02, 目前只有启动区1): 先开到收车中转点 (start_ret_x, 到站时的 y),
+               再点对点直去起点。中途不转 —— 车头保持到站时的 180°(朝 -X), 第二段靠麦轮横移过去。
+               所以 mid_yaw 保持 NAV_NAN_YAW (函数开头已置)。 */
+        }
+        else
+        {
+            *mid_yaw = z->material_yaw; /* 旧走法: 90, 车头朝 +Y, 再走 Y 回起点 Y */
+        }
     }
     else
     {
@@ -313,6 +389,16 @@ static void Nav_LegSetAxisTarget(uint8_t first)
 {
     float dx, dy;
     Nav_GetPointCoord(nav_leg_to, &dx, &dy);
+
+    /* 收车段 (暂存区 -> 启动区) 的第一段: X 只走到收车中转点, 不直接冲到起点。
+       第二段 (点对点) 再从那里去 (start_x, start_y)。y 仍锁在到站时的实际值。
+       只在 start_ret_en=1 的启动区生效 (目前只有启动区1)。 */
+    if (first && nav_leg_from == NAV_STAGING && nav_leg_to == NAV_START)
+    {
+        NavZoneCoord_t *z = &nav_zone_coord[(nav_zone == 2) ? 1 : 0];
+        if (z->start_ret_en) dx = z->start_ret_x;
+    }
+
     if (first && nav_leg_first_axis != 0)
     {
         if (nav_leg_first_axis == 'x') { chassis_val.pos_target_x_mm = dx; chassis_val.pos_target_y_mm = chassis_val.odom_y_mm; }
@@ -332,7 +418,19 @@ static void Nav_BeginLeg(NavPointId from, NavPointId to)
     nav_leg_to   = to;
     Nav_GetLegApproach(from, to, &nav_leg_pre_yaw, &nav_leg_first_axis, &nav_leg_mid_yaw, &nav_leg_post_yaw);
 
-    if (nav_leg_pre_yaw != NAV_NAN_YAW)
+    /* 物料区离站避让 (2026-11-02 用户要求): 抓完 3 件去粗加工, 车头要从 material_yaw(90°)
+       原地转到 0°, 转这一下会打到转盘。先沿世界 +X 平移 nav_mat_leave_dx (默认 50mm),
+       停稳后再按原来的顺序转车头/走。只对「物料 -> 粗加工」这一段生效 (两轮离站都走它)。 */
+    nav_leg_pre_shift_dx = (from == NAV_MATERIAL && to == NAV_ROUGH) ? nav_mat_leave_dx : 0.0f;
+
+    if (nav_leg_pre_shift_dx != 0.0f)
+    {
+        nav_leg_phase = NAV_LEG_PRE_SHIFT;
+        chassis_val.pos_target_x_mm = chassis_val.odom_x_mm + nav_leg_pre_shift_dx;
+        chassis_val.pos_target_y_mm = chassis_val.odom_y_mm;   /* 只动 X, y 保持当前 */
+        chassis_flag.pos_active = 1;
+    }
+    else if (nav_leg_pre_yaw != NAV_NAN_YAW)
     {
         nav_leg_phase = NAV_LEG_PRE_ROT;
         Chassis_RotateTo(nav_leg_pre_yaw);
@@ -394,6 +492,15 @@ static void Nav_LegUpdate(void)
 
     switch (nav_leg_phase)
     {
+    case NAV_LEG_PRE_SHIFT:
+        /* 先平移让开转盘: 定位停稳 -> 再走原来的出发顺序 (转车头 -> 第一轴/直连) */
+        if (chassis_flag.pos_active == 0)
+        {
+            if (nav_leg_pre_yaw != NAV_NAN_YAW) { nav_leg_phase = NAV_LEG_PRE_ROT; Chassis_RotateTo(nav_leg_pre_yaw); }
+            else if (nav_leg_first_axis != 0)   { nav_leg_phase = NAV_LEG_FIRST;    Nav_LegSetAxisTarget(1); }
+            else                                { nav_leg_phase = NAV_LEG_DIRECT;   Nav_LegSetAxisTarget(0); }
+        }
+        break;
     case NAV_LEG_PRE_ROT:
         if (!chassis_flag.rotate_active)
         {

@@ -78,13 +78,10 @@ static void TJC_SendCmd(const char *cmd)
 
 /* ================= 对外三个接口 (所有送屏操作都走这里) ================= */
 
-void Screen_Init(void)
+/* 三个控件写回上电占位内容 (t0/t2 = 任务码, t1 = 次数) */
+static void TJC_WriteIdleText(void)
 {
     char buf[64];
-
-    /* 先清空屏接收状态, 再发正式指令 (文档第6节) */
-    TJC_SendByte(0x00);
-    TJC_SendEnd();
 
     sprintf(buf, "page0.t0.txt=\"----+----\"");
     TJC_SendCmd(buf);
@@ -94,6 +91,23 @@ void Screen_Init(void)
 
     sprintf(buf, "page0.t1.txt=\"OK:0/6 ERR:0/6\"");
     TJC_SendCmd(buf);
+}
+
+void Screen_Init(void)
+{
+    /* 先清空屏接收状态, 再发正式指令 (文档第6节) */
+    TJC_SendByte(0x00);
+    TJC_SendEnd();
+
+    TJC_WriteIdleText();
+}
+
+/* 运行中重启 (长按一键键): 把上一场留在屏上的任务码/次数清回上电占位内容。
+   不复查屏接收状态 (那个 0x00 引导字节只在屏刚上电时需要), 所以不直接调 Screen_Init。
+   之后 mission 回 IDLE, t1 会被 Screen_ShowZoneBattery 刷成 "ZONE:x xx.xV", t0/t2 保持占位。 */
+void Screen_Clear(void)
+{
+    TJC_WriteIdleText();
 }
 
 void Screen_ShowTaskCode(const char *code_t0, const char *code_t2)
@@ -148,6 +162,28 @@ void Screen_ShowZone(uint8_t zone)
     char buf[32];
 
     sprintf(buf, "page0.t1.txt=\"ZONE:%u\"", (unsigned)(zone == 2 ? 2 : 1));
+    TJC_SendCmd(buf);
+}
+
+/* 启动区 + 电池电压 -> t1, 写成 "ZONE:1 24.3V" (码那边 t0/t2 不占)。
+   只在 mission IDLE (等长按启动) 期间刷。用手算整数避免 %f 拉进浮点 printf。
+   还没读到电压(<1V)时显示 "--.-", 不要显示 0.0 吓人。 */
+void Screen_ShowZoneBattery(uint8_t zone, float volts)
+{
+    char buf[48];
+    int  d10;
+
+    zone = (zone == 2) ? 2 : 1;
+    if (volts < 1.0f)
+    {
+        sprintf(buf, "page0.t1.txt=\"ZONE:%u --.-V\"", (unsigned)zone);
+    }
+    else
+    {
+        if (volts > 99.9f) volts = 99.9f;
+        d10 = (int)(volts * 10.0f + 0.5f);   /* 0.1V 精度 */
+        sprintf(buf, "page0.t1.txt=\"ZONE:%u %d.%dV\"", (unsigned)zone, d10 / 10, d10 % 10);
+    }
     TJC_SendCmd(buf);
 }
 

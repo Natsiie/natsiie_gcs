@@ -17,16 +17,25 @@ typedef struct {
     uint8_t  mode_reload;      /* 回装(粗加工区) 模式 */
     uint8_t  mode_stack;       /* 堆叠(暂存区) 模式 */
     uint8_t  skip_work;        /* 写1=跳过当前工作区塔吊作业直接离站, 跳完自动清0 */
+    uint8_t  restart;          /* 写1=调试重启(同运行中长按一键键): 中止回 IDLE, 车要已搬回启动区; 处理完自动清0 */
     uint8_t  mat_grab;         /* 物料区手动抓取: 写1 -> 塔吊走 kin_flag.cmd=10 固定位完整装货(不走视觉), 执行时自动清0 */
     uint8_t  work_done;        /* 手动debug完成标志: MS_WAIT_MANUAL 里等 Watch 写 1, 消费后自动清 0 */
     uint8_t  state;            /* 只读: 主状态机当前状态 (值与 enum 顺序一致) */
     uint8_t  sub;              /* 只读: 当前状态内子步/第几个 */
-    float    scan_goto_x;      /* 启动区1: 先去的点 X (mm); 启动区2 取 -50 */
-    float    scan_goto_y;      /* 两区共用: 先去的点 Y (mm) */
-    float    scan_stop_x;      /* 启动区1: 慢扫 |X| 上限 (mm); 启动区2 取 -1500 */
-    uint16_t vision_timeout;   /* 工作区视觉超时(10ms/拍), 1000=10s; 超时视为当前点动作完成 */
+    float    scan_goto_y;      /* 启动区扫码停点的 Y (mm), 两区共用; 停点 X 取 nav 表的 corner_x */
+    uint16_t vision_timeout;   /* 工作区视觉超时(10ms/拍), 1000=10s; 超时视为当前点动作完成。
+                                  !! 2026-10-31 临时关闭: app_mission.c 的看门狗只计数不放行, 这个字段目前不生效 */
     uint16_t trim_wait_10ms;   /* 进站等底盘视觉微调 within 的上限(10ms/拍), 500=5s; 等不到就放行 */
-    uint16_t scan_pause_10ms;  /* 扫码直行到 corner x 暂停时长(10ms/拍), 200=2s */
+    uint16_t scan_pause_10ms;  /* 停在扫码停点的时长(10ms/拍), 100=1s; 停完直接回物料区 */
+
+    /* ---- 诊断字段 (只读, 2026-11-02): 进 MS_POSE_DEFAULT 那拍看到的 kin_flag.done ----
+       正常应恒为 0 (上一段链的 done 一定已经在 MS_LOAD/MS_UNLOAD/MS_STACK/MS_RELOAD 里被消费)。
+       若某次看到 1, 说明 done 残留了 —— MS_POSE_DEFAULT 里"发 cmd=4"和"判 done"是同一拍的两个
+       平级 if, 残留 1 会在同一拍直接跳 MS_TRIM -> 塔吊还没摆到探查姿态, 底盘视觉纠偏就先放开了
+       (车会按收到的 corr 一点一点慢慢挪)。pose_early_cnt 是整场累计次数;
+       长按/ mission.restart 重开一场时清零。 */
+    uint8_t  done_at_pose;     /* 只读: 上一次进 MS_POSE_DEFAULT 时 kin_flag.done 的旧值 (0/1) */
+    uint16_t pose_early_cnt;   /* 只读: done_at_pose==1 的累计次数 (=纠偏被提前放开的次数) */
 } Mission_t;
 
 extern Mission_t mission;
@@ -50,16 +59,30 @@ typedef struct {
 extern MissionColor_t mission_color;
 
 void Mission_NoteGrabColor(uint8_t color);   /* 物料区闭夹爪时调 (app_kin 里调): 记一件颜色并对账 */
+/* 按二维码把 3 个槽位的落环填进 kin_tgt.drop_ring (cmd=15 卸货整链用; 没扫到码填 1/2/3) */
+void Mission_ApplyQRDropRing(uint8_t round);
 void Mission_ColorTick(void);                /* 10ms 房务: 处理 Watch 写的 clr=1 */
 
 /* ================= 抓取完成上报 (0x0F PickDone / 0x11 PickColor / 0x10 NextBatch) ================= */
 /* 上位机抓完一个必须收到 0x0F 才会把"期望颜色"推进到下一个; 收不到就一直等同一个颜色、把后面的全跳过。
-   0x0F payload = 序号 1~6 (轮*3+第几个+1), 这是上位机唯一认的东西, 必须和它的 Pick.sequence 对齐。
+   0x0F payload = 序号 1~6 (mission_pick_seq 逐件累加; 收到新任务码时清零, 和上位机 Pick.sequence 对齐),
+   这是上位机唯一认的东西, 必须和它的 Pick.sequence 对齐。
    0x11 payload = 本件颜色号 1~6: 闭爪那拍从 0x08 抄回来的, 上位机暂不解析, 只在日志里显示, 用于两边对账。
+   0x11 是"锦上添花": 那件 0x08 丢了 color 就是 0, 这时 0x0F 照发 (否则上位机永远等不到, 两边互锁), 只是不发 0x11。
    序号报到 3 之后再发 0x10 NextBatch("1") 放行第二批。 */
 extern uint8_t mission_report_pick;   /* 1=上报 (默认); 写 0 整体关闭, 联调兜底 */
 extern uint8_t mission_pick_seq;      /* 已上报序号 0~6; 决定下一件报几号和何时发 0x10, Watch 可改写对齐 */
-void Mission_ReportPickDone(uint8_t color);   /* 一件抓完: 0x0F(序号) + 0x11(颜色), 第 3 件再补 0x10 */
+void Mission_ReportPickDone(uint8_t color);   /* 一件抓完: 0x0F(序号, 无条件) + 0x13(颜色, 仅有效时), 第 3 件再补 0x10 */
+
+/* ================= 放置完成回传 (0x0B) ================= */
+/* 2026-11-09 起视觉改成批量模型: 识别源由 0x11 AlignDone stage 决定 (2=三圆环 3=叠料),
+   0x0B 只是"本阶段整批放完"的信号 (supervisor placements_per_phase=1)。
+   到站只调 NewTask 换 task_id (千万别发帧, 早发会让视觉提前切源、0x0C 的 5 帧均值被打断);
+   整批卸/放完那拍调 Done (发 2 帧, 第一条计满, 第二条冗余)。 */
+void Mission_PlaceFeedNewTask(void);
+void Mission_PlaceFeedFirstLayer(void);   /* 旧接口, 新视觉下不要用 */
+void Mission_PlaceFeedDone(void);
+void Mission_PlaceFeedStacked(void);      /* 旧接口 (台架切叠料源), 不要用 */
 
 void Mission_Update(uint8_t key_pressed);   /* 10ms 主状态机, 在 DATE_Tasks 里调 */
 

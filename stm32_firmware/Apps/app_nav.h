@@ -30,6 +30,12 @@ typedef enum {
 /* 一个启动区的全部路径点坐标 (mm, 世界系) */
 typedef struct {
     float start_x,    start_y;      /* 起点 (通常为里程计原点 0,0) */
+    float   start_ret_x;            /* 收车中转点 X: 暂存区 -> 启动区 的第一段只走到这里 (y 锁在到站时的值),
+                                       之后不转车, 直接点对点去 (start_x, start_y)。
+                                       2026-11-02: 车头全程保持到站时的 180°, 靠麦轮横移过去。 */
+    uint8_t start_ret_en;           /* 1=收车走上面这套 (先到 start_ret_x 再横移去起点, 中途不转);
+                                       0=旧走法 (X 直接走到 start_x, 原地转 90° 朝 +Y, 再走 Y 到起点)。
+                                       目前只启动区1 启用, 启动区2 现场测过再开。 */
     float corner_x,   corner_y;     /* 拐角点 */
     float mid_x,      mid_y;        /* 中点 */
     float material_x, material_y;   /* 物料区 */
@@ -46,6 +52,8 @@ extern float            nav_staging_mid_dx;       /* 里程计漂移修正量 X 
 extern float            nav_staging_mid_dy;       /* 里程计漂移修正量 Y (mm), 现场微调 */
 extern float            nav_staging_dx;           /* 暂存区坐标偏移 X (mm, 直接加在 staging 坐标上), 现场微调 */
 extern float            nav_staging_dy;           /* 暂存区坐标偏移 Y (mm, 直接加在 staging 坐标上), 现场微调 */
+extern float            nav_mat_leave_dx;         /* 物料区离站先沿 +X 平移多少 mm 再转车头 (默认 50, 0=关),
+                                                     初值取 car_config.h 的 NAV_MATERIAL_LEAVE_DX_MM */
 
 /* ================= 导航状态 (Keil Watch) ================= */
 extern uint8_t nav_cmd;    /* 调试: 写 1=启动, 2=中止, 3=继续; 现场用 btn3 启动 */
@@ -71,9 +79,23 @@ extern uint8_t nav_auto_active;  /* 只读: 1=一键纯跑进行中 */
 void Nav_Update(void);      /* 10ms, 由 App_Chassis_Task 调用 */
 void Nav_Start(void);       /* 启动全程导航 */
 void Nav_Stop(void);        /* 中止导航 (交还遥控/手动控制) */
+void Nav_ResetRun(void);    /* 整场重来: Nav_Stop + 清轮次/计数/Watch 待触发 (留 nav_zone 不动) */
 void Nav_Continue(void);    /* 从暂停点继续 (nav_wait==1 时有效) */
 void Nav_StartAt(NavPointId id);  /* 从指定路径点直接接入全程导航(跳过前面路径点), 以 nav_wait=1 状态接入 */
 void       Nav_GetPointCoord(NavPointId id, float *x, float *y);  /* 取某路径点坐标(随 nav_zone) */
 NavPointId Nav_NextPoint(void);  /* 返回当前暂停点的下一个路径点 (供中点旋转算 yaw) */
+
+/* ================= 到站坐标矫正 (2026-11-02) =================
+   粗加工/暂存站: 视觉微调到底之后, 把里程计世界坐标直接写成该点的导航目标坐标。
+   道理: 这两个点的视觉纠偏就是把车对到真实作业位上 —— 对完之后车就在目标点上,
+   这一路攒下来的里程计漂移可以整段抹掉, 后面每一段(以及"另一个轴锁当前值"的走法)
+   从正确的位置起算, 不用再靠 nav_staging_mid_dx/dy 那种固定量去猜。
+   物料区不做 (物料点不靠这个对齐); 跳过本站纠偏(TrimSkipStation)不做 —— 没纠过就没依据;
+   导航精度测试(nav_test_active)不做 —— 要测的就是纯里程计漂移。
+   调用时机: mission MS_TRIM 里 Chassis_TrimDone() 那拍, 且底盘定位已停(pos_active=0)。 */
+void Nav_SnapOdomToPoint(NavPointId id);
+extern float    nav_snap_dx;   /* 只读: 最近一次矫正量 X (mm) = 矫正前里程计 - 目标 (就是这一段的漂移) */
+extern float    nav_snap_dy;   /* 只读: 最近一次矫正量 Y (mm) */
+extern uint16_t nav_snap_cnt;  /* 只读: 整场矫正次数 (一场应 = 到粗加工2次 + 暂存2次 = 4) */
 
 #endif /* __APP_NAV_H */

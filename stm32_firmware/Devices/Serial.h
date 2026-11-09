@@ -3,45 +3,52 @@
 #include <stdint.h>
 
 /* ============================================================
- *  上位机(natsiie_gcs/ROS) <-> 下位机(STM32F4) 串口协议
+ *  上位�(natsiie_gcs/ROS) <-> 下位�(STM32F4) 串口协�
  *
- *  物理层: USART1, PA9=TX, PA10=RX, 115200, 8N1, 无校验
- *  帧格式: 0xFF | TYPE | LEN | PAYLOAD(UTF-8) | CRC8 | 0xFE
- *    - LEN  = payload 字节数 (0~255)
- *    - CRC8 = TYPE ^ LEN ^ PAYLOAD 逐字节异或
- *    - 类型号与上位机 identify_pack/serial/protocol.py 的 TOPIC_TYPES 一致
- *  接收: RXNE 中断 + 帧结构状态机, 收满一帧置 Serial_RxFrameReady=1,
- *        任务里调 Serial_ProcessFrame() 按 type 解析。
+ *  物理�: USART1, PA9=TX, PA10=RX, 115200, 8N1, 无校�
+ *  帧格�: 0xFF | TYPE | LEN | PAYLOAD(UTF-8) | CRC8 | 0xFE
+ *    - LEN  = payload 字节� (0~255)
+ *    - CRC8 = TYPE ^ LEN ^ PAYLOAD 逐字节异�
+ *    - 类型号与上位� identify_pack/serial/protocol.py � TOPIC_TYPES ��
+ *  接收: RXNE �� + 帧结构状态机, 收满�帧置 Serial_RxFrameReady=1,
+ *        任务里调 Serial_ProcessFrame() � type 解析�
  * ============================================================ */
 
 #define SERIAL_HEAD  0xFF
 #define SERIAL_TAIL  0xFE
 
-/* 帧类型 (0x07 是下位机->上位机的反馈, 不接收) */
+/* 帧类� (0x07 �下位�->上位机的反�, 不接�) */
 #define SERIAL_TYPE_COLOR         0x01   /* 色块像素列表: id:cx,cy/id:cx,cy/... */
-#define SERIAL_TYPE_COLOR_MOTION  0x02   /* 转盘运动: state:speed(px/s) */
-#define SERIAL_TYPE_TURNTABLE     0x03   /* 转盘: cx,cy,radius,stable */
-#define SERIAL_TYPE_RING_STATION  0x04   /* 三圆环工位: err_x,err_y,ang,corr_x,corr_y,corr_yaw,within */
-#define SERIAL_TYPE_STACKED_RING  0x05   /* 叠放位: 同 0x04 */
+#define SERIAL_TYPE_COLOR_MOTION  0x02   /* �盘运�: state:speed(px/s) */
+#define SERIAL_TYPE_TURNTABLE     0x03   /* ��: cx,cy,radius,stable */
+#define SERIAL_TYPE_RING_STATION  0x04   /* 三圆�工位: err_x,err_y,ang,corr_x,corr_y,corr_yaw,within */
+#define SERIAL_TYPE_STACKED_RING  0x05   /* 叠放�: � 0x04 */
 #define SERIAL_TYPE_QR_DECODE     0x06   /* QR 任务码字符串 */
-#define SERIAL_TYPE_GIMBAL_YAW    0x07   /* 云台角度反馈 (下位机->上位机) */
-#define SERIAL_TYPE_COLOR_TARGET  0x08   /* 颜色目标点: color_id,x_mm,y_mm,z_mm */
+#define SERIAL_TYPE_GIMBAL_YAW    0x07   /* 云台角度反� (下位�->上位�) */
+#define SERIAL_TYPE_COLOR_TARGET  0x08   /* 颜色�标点: color_id,x_mm,y_mm,z_mm */
 #define SERIAL_TYPE_GRAB_CMD      0x09   /* 夹爪到位授权: payload "1"=授权下降抓取 */
 #define SERIAL_TYPE_PLACE_COMMAND 0x0A
 #define SERIAL_TYPE_PLACE_RESULT  0x0B
-#define SERIAL_TYPE_UNLOAD_COORD  0x0C   /* 卸货坐标: 3 组 x,y (3 个落点, 塔吊系绝对 mm) */
-#define SERIAL_TYPE_PLACE_CONTROL 0x0D   /* 放置阶段控制 (下位机->上位机): start,stage,batch 或 retry,command_id */
-#define SERIAL_TYPE_TURNTABLE_ALIGN 0x0E /* 转盘圆心对齐 (上位机->下位机): corr_x,corr_y,within */
-                                         /* 物料区底盘微调: 只有 3 个字段, 无 err/无 yaw。
-                                          * 轴向与 0x04/0x05 的 corr 完全一致 (同一张 chassis_image_to_motion
-                                          * 矩阵算出来的), corr_yaw 恒为 0 -> 底盘锁当前航向不转。
-                                          * 转盘节点是常开的, 行车途中也会发, 所以单独用
-                                          * Serial_TurntableTrimReady + trim_armed 门控, 只在站上武装后才收。 */
-#define SERIAL_TYPE_PICK_DONE     0x0F   /* 抓取完成序号 (下位机->上位机): ASCII 序号 1~6 */
-#define SERIAL_TYPE_NEXT_BATCH    0x10   /* 第一批 3 次抓取完成、回装就绪 (下位机->上位机): "1" */
-#define SERIAL_TYPE_PICK_COLOR    0x11   /* 本件抓取颜色号 (下位机->上位机): ASCII 颜色 1~6 */
-                                         /* 上位机当前不消费此类型, 只打一条节流的"忽略反馈帧" */
-                                         /* 警告 -> 作用是在视觉日志里能直接看到抓的是哪个颜色 */
+#define SERIAL_TYPE_UNLOAD_COORD  0x0C   /* 卸货坐标: 3 � x,y (3 �落点, 塔吊系绝� mm) */
+#define SERIAL_TYPE_PLACE_CONTROL 0x0D   /* 放置阶�控� (下位�->上位�): start,stage,batch � retry,command_id */
+#define SERIAL_TYPE_TURNTABLE_ALIGN 0x0E /* �盘圆心�齐 (上位�->下位�): corr_x,corr_y,within */
+                                         /* 物料区底盘微�: �� 3 �字�, � err/� yaw�
+                                          * 轴向� 0x04/0x05 � corr 完全�� (同一� chassis_image_to_motion
+                                          * 矩阵算出来的), corr_yaw 恒为 0 -> 底盘锁当前航向不��
+                                          * �盘节点是常开�, 行车途中也会�, �以单��
+                                          * Serial_TurntableTrimReady + trim_armed 门控, �在站上��后才收� */
+#define SERIAL_TYPE_PICK_DONE     0x0F   /* 抓取完成序号 (下位�->上位�): ASCII 序号 1~6 */
+#define SERIAL_TYPE_NEXT_BATCH    0x10   /* ��� 3 次抓取完成�回装就� (下位�->上位�): "1" */
+#define SERIAL_TYPE_ALIGN_DONE    0x11   /* ���������� (��λ��->��λ��): stage,success; 1=����ת�� 2=�ּӹ����� 3=�ݴ���� */
+#define SERIAL_TYPE_PICK_COLOR    0x13   /* ץȡ��ɫ (��λ��->��λ��): 1~6; 0x11 �Ѹ��Ӿ� AlignDone, ��ɫŲ�� 0x13 */
+
+/* ================= AI PID �Զ�����ר��Э�� (0x20~0x23) ================= */
+#define SERIAL_TYPE_PID_SET       0x20   /* ��λ��->��λ��: �趨���� payload: type,val1,val2,val3 */
+#define SERIAL_TYPE_PID_STEP      0x21   /* ��λ��->��λ��: ������Ծ���� payload: type,target,duration_ms */
+#define SERIAL_TYPE_PID_DATA      0x22   /* ��λ��->��λ��: ��Ծ������ݻش� */
+#define SERIAL_TYPE_PID_ACK       0x23   /* ��λ��->��λ��: ����ȷ�� */
+                                         /* 上位机当前不消费此类�, �打一条节流的"忽略反�帧" */
+                                         /* 警告 -> 作用�在��日志里能直接看到抓的是��颜色 */
 
 #define SERIAL_RX_PAYLOAD_MAX     128    /* Includes UUID and placement XYZ. */
 
@@ -53,28 +60,28 @@ typedef struct {
     float x_mm, y_mm, z_mm;  /* gimbal_base; not the Kin ground-origin frame */
 } Serial_PlaceCommand_t;
 
-/* 旧 TX 数据包 (Serial_SendPacket 用, 8 字节) */
+/* � TX 数据� (Serial_SendPacket �, 8 字节) */
 #define SERIAL_TX_DATA_LEN        8
 extern uint8_t Serial_TxPacket[SERIAL_TX_DATA_LEN];
 
-/* 接收原始帧 (ISR 填, 任务消费) */
+/* 接收原�帧 (ISR �, 任务消费) */
 typedef struct {
     uint8_t type;
     uint8_t len;
-    uint8_t payload[SERIAL_RX_PAYLOAD_MAX + 1];   /* +1 存 '\0' */
+    uint8_t payload[SERIAL_RX_PAYLOAD_MAX + 1];   /* +1 � '\0' */
 } Serial_RxFrame_t;
 
-/* 解析结果 (Serial_ProcessFrame 按 type 填充, 业务层读) */
+/* 解析结果 (Serial_ProcessFrame � type ��, 业务层�) */
 typedef struct {
-    uint8_t type;                       /* 最近一帧的 type */
+    uint8_t type;                       /* �近一帧的 type */
 
     /* 0x08 ColorTarget */
     uint8_t target_color_id;
     float   target_x_mm, target_y_mm, target_z_mm;
 
     /* 0x09 GrabCmd */
-    uint8_t grab_cmd;                   /* 1=有一帧未消费的抓取授权 (app_kin 闭爪时清0) */
-    uint16_t grab_cmd_cnt;              /* 收到过的 0x09 帧数 (只增: Watch 看它涨=视觉又发了一次) */
+    uint8_t grab_cmd;                   /* 1=有一帧未消费的抓取授� (app_kin ��时清0) */
+    uint16_t grab_cmd_cnt;              /* 收到过的 0x09 帧数 (��: Watch 看它�=视�又发了��) */
 
     /* 0x02 ColorMotion */
     uint8_t motion_state;
@@ -89,11 +96,11 @@ typedef struct {
     float   ring_corr_x, ring_corr_y, ring_corr_yaw;
     uint8_t ring_within;
 
-    /* 0x0C 卸货坐标 (3 个落点, 塔吊系绝对 mm) */
+    /* 0x0C 卸货坐标 (3 �落点, 塔吊系绝� mm) */
     float   unload_x[3], unload_y[3];
     uint8_t unload_count;
 
-    /* 0x01 Color 像素列表 (最多 6 段) */
+    /* 0x01 Color 像素列表 (�� 6 �) */
     uint8_t color_count;
     uint8_t color_id[6];
     int16_t color_cx[6], color_cy[6];
@@ -102,46 +109,64 @@ typedef struct {
     char    str[SERIAL_RX_PAYLOAD_MAX + 1];
 } Serial_RxData_t;
 
-extern volatile uint8_t Serial_RxFrameReady;  /* 1 = 收到完整一帧待处理 */
+extern volatile uint8_t Serial_RxFrameReady;  /* 1 = 收到完整�帧待处理 */
 extern Serial_RxFrame_t  Serial_RxFrame;
 extern Serial_RxData_t   Serial_RxData;
 
-/* 0x0C 卸货坐标(3 组 xy) 帧已解析 -> 塔吊卸货落点; 0x04/0x05 偏移坐标 corr -> 底盘微调。
- * 每收到对应帧置 1, 由业务层消费后清 0 (Kin 清 UnloadCoord, 底盘清 ChassisTrim)。 */
-extern volatile uint8_t Serial_UnloadCoordReady;  /* 1 = 新卸货坐标(0x0C 3 组 xy) 待消费 */
-extern volatile uint8_t Serial_ChassisTrimReady;  /* 1 = 新底盘微调(0x04/0x05 corr) 待消费 */
-extern volatile uint8_t Serial_TurntableTrimReady;/* 1 = 新转盘纠偏(0x0E corr) 待消费 */
-                                                  /* 与 0x04/0x05 分开一个标志: 0x0E 的发送方(转盘节点)
-                                                   * 是常开的, 行车途中也发帧, 必须配合 trim_armed 才收;
-                                                   * 0x04/0x05 保持原行为不受影响。 */
+/* 0x0C 卸货坐标(3 � xy) 帧已解析 -> 塔吊卸货落点; 0x04/0x05 偏移坐标 corr -> 底盘�调�
+ * 每收到�应帧置 1, 由业务层消费后清 0 (Kin � UnloadCoord, 底盘� ChassisTrim)� */
+extern volatile uint8_t Serial_UnloadCoordReady;  /* 1 = 新卸货坐�(0x0C 3 � xy) 待消� */
+extern volatile uint8_t Serial_ChassisTrimReady;  /* 1 = 新底盘微�(0x04/0x05 corr) 待消� */
+extern volatile uint8_t Serial_TurntableTrimReady;/* 1 = 新转盘纠�(0x0E corr) 待消� */
+                                                  /* � 0x04/0x05 分开��标志: 0x0E 的发送方(�盘节�)
+                                                   * �常开�, 行车途中也发�, 必须配合 trim_armed 才收;
+                                                   * 0x04/0x05 保持原�为不受影响� */
 
-/* 0x08 颜色目标点 / 0x06 二维码: 供全自动流程(mission) 消费 */
-extern volatile uint8_t Serial_ColorTargetReady;  /* 1 = 新颜色目标点(0x08) 待消费 (mission 清) */
-extern volatile uint8_t Serial_QRReady;           /* 1 = 新二维码(0x06) 待解析 (mission 清) */
+/* 0x08 颜色�标点 / 0x06 二维�: 供全�动流�(mission) 消费 */
+extern volatile uint8_t Serial_ColorTargetReady;  /* 1 = 新�色�标点(0x08) 待消� (mission �) */
+extern volatile uint8_t Serial_QRReady;           /* 1 = 新二维码(0x06) 待解� (mission �) */
 
-/* 工作视觉指令(0x04/05/08/09/0C)新帧标志: 供 mission 视觉超时看门狗 (mission 清) */
+/* 工作视�指�(0x04/05/08/09/0C)新帧标志: � mission 视�超时看门狗 (mission �) */
 extern volatile uint8_t Serial_VisionCmd;
 
-void     Serial_Init(void);                        /* 初始化 USART1            */
-void     Serial_SendByte(uint8_t byte);            /* 阻塞发送 1 字节          */
+void     Serial_Init(void);                        /* 初�化 USART1            */
+void     Serial_SendByte(uint8_t byte);            /* 阻�发� 1 字节          */
 void     Serial_SendArray(uint8_t *array, uint16_t len);
 void     Serial_SendString(char *str);
 void     Serial_SendPacket(void);                  /* 0xFF + 8 字节 + 0xFE     */
-void     Serial_SendGimbalYaw(float angle_deg);    /* 云台角度 -> 上位机 (0x07) */
-void     Serial_ProcessFrame(void);                /* 任务里调用: 按 type 解析一帧 */
+void     Serial_SendGimbalYaw(float angle_deg);    /* 云台角度 -> 上位� (0x07) */
+void     Serial_ProcessFrame(void);                /* 任务里调�: � type 解析�� */
 /* Poll once when ready to execute. Complete only after release and retreat.
  * These functions retain/deduplicate commands; they do not drive actuators.
  * Both must run in the same task as Serial_ProcessFrame(). */
 uint8_t Serial_TakePlaceCommand(Serial_PlaceCommand_t *out);
 void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8_t success);
+/* 0x0B ԭʼ���� (���� 0x0A ����Լ��): ֻ��"����ж/����"��һ�̷�, �Ӿ� supervisor
+ * �յ�һ���ɹ�֡���ƽ���һ�׶� (placements_per_phase=1)��task_id ���� 32 λСд hex�� */
+void Serial_SendPlaceResultRaw(const char *task_id, uint32_t command_id, uint8_t success);
 void Serial_SendPlaceControlStart(uint8_t stage, uint8_t batch);  /* 0x0D: start,<stage>,<batch> */
 void Serial_SendPlaceControlRetry(uint32_t command_id);           /* 0x0D: retry,<command_id> */
-/* 0x0F: 抓取完成序号 1~6 -> 上位机 pick_task.complete() 依此推进"期望颜色"
- * (不发就一直等同一个颜色; 序号/状态对不上会被忽略)。payload 只能是纯 ASCII 数字。 */
+/* 0x0F: 抓取完成序号 1~6 -> 上位� pick_task.complete() 依�推�"期望颜色"
+ * (不发就一直等同一�颜色; 序号/状��不上会�忽略)。payload �能是� ASCII 数字� */
 void Serial_SendPickDone(uint8_t seq);
-/* 0x10: 第一批(前 3 次抓取)完成、可以进第二批 -> 上位机只接受 payload "1" */
+/* 0x10: ���(� 3 次抓�)完成、可以进�二批 -> 上位机只接受 payload "1" */
 void Serial_SendNextBatch(uint8_t batch);
-/* 0x11: 本件抓取颜色号 1~6 (下位机从 0x08 抄回来的) -> 上位机暂不解析, 只在日志里显示 */
+/* 0x13: ץȡ��ɫ 1~6 (��λ���� 0x08 ��������) -> �Ӿ��ݲ�����, ֻ����־����ʾ;
+   0x11 ������ AlignDone, ��ɫ������ 0x11, �����Ӿ��ᵱ�Ƿ� AlignDone ���� */
 void Serial_SendPickColor(uint8_t color);
+
+/* ================= ���������ɻش� (0x11, �����Ӿ� race_supervisor) ================= */
+/* ÿ��վ(Chassis_TrimArm)����һ��: �����е�λ(�Ӿ� within �� ���� trim_conv)��һ�ķ� success=1,
+   �Ӿ��յ���������һ�׶� (������->��ɫʶ��, �ּӹ�/�ݴ�->����)��ʧ�ܲ��� (�Ӿ��յ� 0 ֻ����־������)��
+   Serial_AlignDoneEn: 1=��(Ĭ��) 0=�� (���������Ӿ�ʱ����)�� */
+extern uint8_t Serial_AlignDoneEn;
+extern volatile uint8_t Serial_TrimFrameType;   /* ���һ֡��ƫ֡���� (0x04/0x05/0x0E), �� AlignDone ʱ�� stage */
+void Serial_SendAlignDone(uint8_t stage, uint8_t success);
+
+
+/* PID �Զ����ν����ӿ� */
+void Serial_SendPidAck(uint8_t ok, const char *msg);
+void Serial_PidTune_Tick(void);
+void Serial_FeedByte(uint8_t b);
 
 #endif

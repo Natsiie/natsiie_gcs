@@ -14,7 +14,7 @@ void Chassis_ApplyVisionTrim(void); /* 视觉底盘微调: 0x04/0x05 corr -> 底
 
 /* ================= 底盘打包变量 (Keil Watch 只看 chassis_flag/chassis_cfg/chassis_val) ================= */
 
-/* 标志位: 位域打包, 15 个标志叠进 1 个 uint32 */
+/* 标志位: 位域打包, 全部叠进 1 个 uint32 (Keil Watch 只看 chassis_flag) */
 typedef struct {
     uint32_t test_mode       : 3;   /* 0停 1前进 2后退 3左移 4右移 5顺时针 6逆时针 */
     uint32_t yaw_enable      : 1;   /* 1=平移时用陀螺仪修正车头 */
@@ -35,6 +35,17 @@ typedef struct {
     uint32_t trim_hold       : 1;   /* 1=暂不应用视觉纠偏 (塔吊还在摆探查姿态, 等姿态到位再放开) */
     uint32_t trim_armed      : 1;   /* 1=本次进站已武装: 只认武装之后收到的 within, 不吃上一站残留 */
     uint32_t trim_fresh      : 1;   /* 只读: 武装后已收到过 0x04/0x05 帧 */
+    uint32_t trim_conv       : 1;   /* 只读: 底盘自判到位 (要纠的量已落进底盘自己的死区, 再纠车也不会动,
+                                       连续 CHASSIS_TRIM_CONV_FRAMES 帧成立才置1);
+                                       视觉 within 是它的容差(叠加位 2mm), 比底盘死区(10mm)紧, 光等它会永远等不到 */
+    uint32_t trim_block      : 1;   /* 1=本站纠偏彻底封死 (电机6 已伸出去会挡摄像头, 再来帧一律不收);
+                                       由 Chassis_TrimBlock() 置1, 下一次 Chassis_TrimArm() (进新站) 清0 */
+    uint32_t autorep_rearm_en: 1;   /* 1=每秒给四个电机全量重发上膛命令; 0=默认关。
+                                       实测: 全量重发会把四轮上报相位对齐 -> 每 20ms 一起撞仲裁,
+                                       ID 小的永远赢, 3/4 号停报 (stale 13% vs 0.2%)。见 docs/decisions/010。
+                                       日常靠 Chassis_Odom_Update 里"谁 100ms 没新帧就单独补一条"兜底 */
+    uint32_t odom_poll       : 1;   /* 1=里程计改"主动轮询读位置": 每 10ms 轮流问一个轮子(0x36),
+                                       不用电机自己的定时上报 (它经实测会自己停), 见 Chassis_Odom_PollTick */
 } ChassisFlag_t;
 
 /* 整定/标定参数 (现场 Watch 改) */
@@ -53,6 +64,16 @@ typedef struct {
     int8_t   odom_yaw_invert;
     uint16_t odom_update_cycles;
     float    pos_kp, pos_max_speed, pos_deadzone_mm, pos_fwd_mm;
+    float    pos_decel, pos_taper_mm;  /* 定位速度规划 (car_config.h 的 CHASSIS_POS_*):
+                                          pos_decel = 刹车减速度 mm/s² (0=退回老 P 控, 用上面的 pos_kp);
+                                          pos_taper_mm = 末端线性收口半径 mm (须 > pos_deadzone_mm) */
+    float    pos_min_speed;          /* 定位速度下限 (轮速 RPM): 0=关(纯 P 控, 到点前自然减速);
+                                        >0 时误差还大就按等比放大保到至少这个速度, 方向不变。
+                                        给"不停车通过"用 (mission 开/关); 2026-11-09 起启动区改成
+                                        到点停车, 目前没有流程在用, 机制保留 */
+    float    pos_creep;              /* 末端蠕动下限 (轮速 RPM): 还在死区外就保证至少这个速度,
+                                        防收口段命令被截断成 0/1RPM 后车停在死区外不动。
+                                        0=关; car_config.h 的 CHASSIS_POS_CREEP_RPM */
     float    trim_gain_x, trim_gain_y, trim_gain_yaw;
     float    qr_scan_speed;
     uint8_t  acc;                    /* 速度命令加速度档位 0~255 */
@@ -84,13 +105,19 @@ void    Chassis_ResetHeading(void);      /* 记录当前 yaw 为车头基准 + �
 uint8_t Chassis_TrimSkipStation(NavPointId id); /* 该工作点是否跳过视觉纠偏(bit 位图) */
 
 /* 进站视觉微调武装 (mission MS_TRIM / kin_flag.cmd=11 共用):
-   Arm -> 清 within/fresh, 挂起纠偏(姿态期间不收帧)
+   Arm -> 清 within/fresh/block, 挂起纠偏(姿态期间不收帧)
    Release -> 姿态到位, 放开纠偏, 丢掉积压旧帧
    Done -> 1 = 放开之后真的收到 within=1 的新帧
+   Block -> 微调已到位、电机6 要伸出去作业: 本站彻底不再收任何纠偏帧, 直到下一次 Arm
    Disarm -> 离站/停止, 退回原来的"收到就自动纠偏" */
 void    Chassis_TrimArm(void);
 void    Chassis_TrimRelease(void);
 void    Chassis_TrimDisarm(void);
+void    Chassis_TrimBlock(void);
 uint8_t Chassis_TrimDone(void);
+
+/* 立即失能四轮(松轴) 并同步 chassis_flag.en=0: 运行中出问题长按一键键中止时用,
+   让操作员能直接把车搬回启动区; 下次 IDLE 长按启动会 chassis_flag.en=1 重新锁轴。 */
+void    Chassis_DisableMotors(void);
 
 #endif

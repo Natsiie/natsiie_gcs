@@ -1,5 +1,9 @@
 #include "stm32f4xx.h"
 #include "Serial.h"
+#include "app_chassis.h"
+#include "elrs_Remote.h"
+#include "bsp_usart.h"
+#include "imu.h"
 #include "app_kin.h"
 #include "app_tower.h"
 #include "tjc_screen.h"
@@ -8,25 +12,27 @@
 #include <string.h>
 
 /* ============================================================
- *  上位机(natsiie_gcs/ROS) <-> STM32 串口通信
- *  帧: 0xFF | TYPE | LEN | PAYLOAD | CRC8 | 0xFE
+ *  上位�(natsiie_gcs/ROS) <-> STM32 串口通信
+ *  �: 0xFF | TYPE | LEN | PAYLOAD | CRC8 | 0xFE
  * ============================================================ */
 
-uint8_t Serial_TxPacket[SERIAL_TX_DATA_LEN];   /* 待发送数据包 (8 字节) */
+uint8_t Serial_TxPacket[SERIAL_TX_DATA_LEN];   /* 待发送数�� (8 字节) */
 
-/* 接收帧 + 解析结果: ISR 写 Serial_RxFrame 并置 Serial_RxFrameReady,
- * 任务里调 Serial_ProcessFrame() 消费并按 type 解析到 Serial_RxData。 */
+/* 接收� + 解析结果: ISR � Serial_RxFrame 并置 Serial_RxFrameReady,
+ * 任务里调 Serial_ProcessFrame() 消费并按 type 解析� Serial_RxData� */
 volatile uint8_t Serial_RxFrameReady = 0;
 Serial_RxFrame_t  Serial_RxFrame;
 Serial_RxData_t   Serial_RxData;
-volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 组 xy) 新帧标志 */
-volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘微调(corr) 新帧标志 */
-volatile uint8_t Serial_TurntableTrimReady = 0;/* 0x0E 转盘纠偏(corr) 新帧标志 */
-volatile uint8_t Serial_ColorTargetReady = 0;  /* 0x08 颜色目标点 新帧标志 */
-volatile uint8_t Serial_QRReady = 0;           /* 0x06 二维码 新帧标志 */
-volatile uint8_t Serial_VisionCmd = 0;         /* 工作视觉指令(0x04/05/08/09/0C)新帧标志, 供 mission 视觉超时看门狗 */
+volatile uint8_t Serial_UnloadCoordReady = 0;  /* 0x0C 卸货坐标(3 � xy) 新帧标志 */
+volatile uint8_t Serial_ChassisTrimReady = 0;  /* 0x04/0x05 底盘��(corr) 新帧标志 */
+volatile uint8_t Serial_TurntableTrimReady = 0;/* 0x0E �盘纠�(corr) 新帧标志 */
+volatile uint8_t Serial_ColorTargetReady = 0;  /* 0x08 颜色�标点 新帧标志 */
+volatile uint8_t Serial_QRReady = 0;           /* 0x06 二维� 新帧标志 */
+volatile uint8_t Serial_VisionCmd = 0;         /* 工作视�指�(0x04/05/08/09/0C)新帧标志, � mission 视�超时看门狗 */
+volatile uint8_t Serial_TrimFrameType = 0;     /* ���һ֡��ƫ֡���� (0x04/0x05/0x0E), �� 0x11 AlignDone ʱ�� stage */
+uint8_t Serial_AlignDoneEn = 1;                /* 1=��(Ĭ��): ÿ��վ��λ��һ�� 0x11 AlignDone; 0=�� */
 
-/* RX 状态机: 0=等帧头 1=收TYPE 2=收LEN 3=收载荷 4=收CRC 5=收帧尾 */
+/* RX 状�机: 0=等帧� 1=收TYPE 2=收LEN 3=收载� 4=收CRC 5=收帧� */
 static uint8_t s_rx_state = 0;
 static uint8_t s_rx_idx   = 0;
 static uint8_t s_rx_crc   = 0;
@@ -50,7 +56,7 @@ static void Serial_SendPlaceResult(const char *task_id, uint32_t command_id, uin
     Serial_SendByte(SERIAL_TAIL);
 }
 
-/* 组帧发送: 0xFF TYPE LEN PAYLOAD CRC(异或) 0xFE */
+/* 组帧发�: 0xFF TYPE LEN PAYLOAD CRC(异或) 0xFE */
 static void Serial_SendFramed(uint8_t type, const char *payload, uint8_t len)
 {
     uint8_t crc = type ^ len, i;
@@ -62,7 +68,7 @@ static void Serial_SendFramed(uint8_t type, const char *payload, uint8_t len)
     Serial_SendByte(SERIAL_TAIL);
 }
 
-/* 0x0D PlaceControl: 下位机触发上位机放置阶段 (start 或 retry) */
+/* 0x0D PlaceControl: 下位机触发上位机放置阶� (start � retry) */
 void Serial_SendPlaceControlStart(uint8_t stage, uint8_t batch)
 {
     char payload[12];
@@ -77,8 +83,8 @@ void Serial_SendPlaceControlRetry(uint32_t command_id)
     Serial_SendFramed(SERIAL_TYPE_PLACE_CONTROL, payload, len);
 }
 
-/* 0x0F PickDone: 抓取完成序号 (1~6)。上位机 pick_task.Pick.sequence = 批次*3 + 第几个 + 1,
- * 只有序号和它当前期望值一致才推进 (否则回 "忽略抓取完成序号")。payload 只能是纯 ASCII 数字。 */
+/* 0x0F PickDone: 抓取完成序号 (1~6)。上位机 pick_task.Pick.sequence = 批�*3 + �几个 + 1,
+ * �有序号和它当前期望�一致才推进 (否则� "忽略抓取完成序号")。payload �能是� ASCII 数字� */
 void Serial_SendPickDone(uint8_t seq)
 {
     char payload[8];
@@ -86,10 +92,8 @@ void Serial_SendPickDone(uint8_t seq)
     Serial_SendFramed(SERIAL_TYPE_PICK_DONE, payload, len);
 }
 
-/* 0x11 PickColor: 本件抓取颜色号 (1~6)。
- * 下位机不识别颜色, 只是把 0x08 ColorTarget 里的 color_id 原样抄回来。
- * 上位机目前不消费这个类型, 会打一条节流的 "忽略反馈帧 type=0x11 payload='5'" 警告 ——
- * 目的就是在视觉日志里能直接看到"这一件抓的是什么颜色", 便于两边对账。 */
+/* 0x13 PickColor: Ӳ��ץȡ��ɫ (1~6), �� 0x08 ColorTarget �� color_id ԭ����������
+   0x11 ������ AlignDone (���������ɻش�), ��ɫŲ�� 0x13; �Ӿ��ݲ�����, ֻ����־����ʾ�� */
 void Serial_SendPickColor(uint8_t color)
 {
     char payload[8];
@@ -97,8 +101,19 @@ void Serial_SendPickColor(uint8_t color)
     Serial_SendFramed(SERIAL_TYPE_PICK_COLOR, payload, len);
 }
 
-/* 0x10 NextBatch: 第一批(前 3 次抓取)完成、回装就绪。上位机 next_batch() 只接受 "1"，
- * 收到后才从 WAIT_NEXT_BATCH 放行第二批 (序号 4/5/6)。 */
+/* 0x11 AlignDone: ���������� (��λ��->��λ��, �����Ӿ� race_supervisor_node)
+   payload "stage,success": stage 1=����ת��(0x0E) 2=�ּӹ�����(0x04) 3=�ݴ����(0x05),
+   success ֻ�� 1 (�Ӿ��յ� 0 ֻ�����־������)��ÿ��վ���һ���� */
+void Serial_SendAlignDone(uint8_t stage, uint8_t success)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u,%u", (unsigned)stage, (unsigned)(success != 0));
+    Serial_SendFramed(SERIAL_TYPE_ALIGN_DONE, payload, len);
+}
+
+
+/* 0x10 NextBatch: ���(� 3 次抓�)完成、回装就�。上位机 next_batch() �接受 "1"�
+ * 收到后才� WAIT_NEXT_BATCH 放��二批 (序号 4/5/6)� */
 void Serial_SendNextBatch(uint8_t batch)
 {
     char payload[8];
@@ -122,8 +137,18 @@ void Serial_CompletePlaceCommand(const char *task_id, uint32_t command_id, uint8
     Serial_SendPlaceResult(s_place.task_id, s_place.command_id, success);
 }
 
+/* 0x0B ԭʼ����: ���� s_place ����Լ����2026-11-09 �Ӿ��ĳ�����ģ�ͺ�, 0x0B ֻ��ʾ
+ * "���׶���������" (race_supervisor ��һ���ɹ�֡���ƽ���һ�׶�, ʶ��Դ�� 0x11
+ * AlignDone �� stage ����)����վʱ��Ҫ��, ֻ������ж/������һ�̷���
+ * �Ӿ�ֻУ�� task_id(32 λСд hex)/command_id(1~2^31-1)/success(0/1)�� */
+void Serial_SendPlaceResultRaw(const char *task_id, uint32_t command_id, uint8_t success)
+{
+    if (!task_id) return;
+    Serial_SendPlaceResult(task_id, command_id, success);
+}
+
 /**
-  * @brief  初始化 USART1：PA9(TX)/PA10(RX)，115200，8N1，RXNE 接收中断
+  * @brief  初�化 USART1：PA9(TX)/PA10(RX)�115200�8N1，RXNE 接收��
   */
 void Serial_Init(void)
 {
@@ -154,9 +179,9 @@ void Serial_Init(void)
 
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
 
-    /* NVIC_PriorityGroupConfig 由工程统一设置 (FreeRTOS Group4), 这里不再调 */
+    /* NVIC_PriorityGroupConfig 由工程统�设置 (FreeRTOS Group4), 这里不再� */
     NVIC_InitStructure.NVIC_IRQChannel                   = USART1_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 6;   /* 低优先级，别抢 FreeRTOS */
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 6;   /* 低优先级，别� FreeRTOS */
     NVIC_InitStructure.NVIC_IRQChannelSubPriority        = 0;
     NVIC_InitStructure.NVIC_IRQChannelCmd                = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
@@ -165,12 +190,13 @@ void Serial_Init(void)
 }
 
 /**
-  * @brief  阻塞发送 1 字节
+  * @brief  阻�发� 1 字节
   */
 void Serial_SendByte(uint8_t byte)
 {
     USART_SendData(USART1, byte);
     while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+
 }
 
 void Serial_SendArray(uint8_t *array, uint16_t len)
@@ -187,7 +213,7 @@ void Serial_SendString(char *str)
         Serial_SendByte((uint8_t)str[i]);
 }
 
-/* float -> 定点字符串 (最多 1 位小数), 不依赖 %f (MicroLib) */
+/* float -> 定点字�串 (�� 1 位小�), 不依� %f (MicroLib) */
 static uint8_t Serial_FormatAngle(float angle, char *buf)
 {
     int32_t scaled = (int32_t)(angle * 10.0f + (angle >= 0.0f ? 0.5f : -0.5f));
@@ -214,7 +240,7 @@ static uint8_t Serial_FormatAngle(float angle, char *buf)
     return pos;
 }
 
-/* 发送云台舵机角度给上位机 (0x07 GimbalYaw) */
+/* 发�云台舵机�度给上位机 (0x07 GimbalYaw) */
 void Serial_SendGimbalYaw(float angle_deg)
 {
     char    payload[16];
@@ -234,7 +260,7 @@ void Serial_SendGimbalYaw(float angle_deg)
     Serial_SendByte(SERIAL_TAIL);
 }
 
-/* 发送一帧数据包: 0xFF + 8 字节 + 0xFE (旧接口, 保留) */
+/* 发�一帧数��: 0xFF + 8 字节 + 0xFE (旧接�, 保留) */
 void Serial_SendPacket(void)
 {
     Serial_SendByte(SERIAL_HEAD);
@@ -242,7 +268,7 @@ void Serial_SendPacket(void)
     Serial_SendByte(SERIAL_TAIL);
 }
 
-/* ---- 手动数值解析 (MicroLib 无 sscanf %f) ---- */
+/* ---- 手动数�解� (MicroLib � sscanf %f) ---- */
 
 static uint8_t Serial_Expect(const char **pp, char c)
 {
@@ -351,10 +377,137 @@ static void Serial_ReceivePlaceCommand(const char *payload)
 }
 
 /**
-  * @brief  按 type 解析 Serial_RxFrame, 结果写 Serial_RxData。
-  *         0x08 点位解析成功后自动触发 kin_cmd=1 (GotoXY)。
-  *         在任务里调用 (每 10ms, 收到帧后)。
+  * @brief  � type 解析 Serial_RxFrame, 结果� Serial_RxData�
+  *         0x08 点位解析成功后自动触� kin_cmd=1 (GotoXY)�
+  *         在任务里调用 (� 10ms, 收到帧后)�
   */
+
+/* ================= PID �Զ�����״̬�� ================= */
+typedef struct {
+    uint8_t  active;
+    uint8_t  is_yaw;       /* 1=Yaw��Ծ, 0=Pos��Ծ */
+    uint16_t t_cur_ms;
+    uint16_t t_max_ms;
+    uint8_t  decim;        /* ������Ƶ: ÿ 2 �� (20ms) ��һ�� */
+    float    init_val;
+    float    target_val;
+} PidTuneSession_t;
+
+static PidTuneSession_t s_pid_tune = {0};
+
+void Serial_SendPidAck(uint8_t ok, const char *msg)
+{
+    char payload[64];
+    uint8_t len = 0;
+    const char *status = ok ? "OK" : "ERR";
+    while (*status) payload[len++] = *status++;
+    payload[len++] = ',';
+    if (msg)
+    {
+        while (*msg && len < 60) payload[len++] = *msg++;
+    }
+    payload[len] = '\0';
+    Serial_SendFramed(SERIAL_TYPE_PID_ACK, payload, len);
+}
+
+void Serial_PidTune_Tick(void)
+{
+    char buf[64];
+    uint8_t len;
+    float cur_val, cur_out;
+    uint16_t t;
+
+    if (!s_pid_tune.active) return;
+
+    /* ================= ң������ȫ����: ң����ӵ��һƱ���Ȩ ================= */
+    if (ELRS_RC.online)
+    {
+        /* 1. ң����δ�����򲦸������� (sw[0] != 2) -> ǿ����ֹ��Ծ���� */
+        if (chassis_flag.need_sw_unlock && ELRS_RC.sw[0] != 2)
+        {
+            s_pid_tune.active = 0;
+            chassis_flag.rotate_active = 0;
+            chassis_flag.pos_active = 0;
+            Serial_SendPidAck(0, "ABORT_REMOTE_LOCKED");
+            return;
+        }
+        /* 2. ң���Ƹ��˹����� (ҡ��ƫ�� > 0.2) -> ���������̿���Ȩ�黹�˹� */
+        if (fabsf(ELRS_RC.Lx) > 0.2f || fabsf(ELRS_RC.Rx) > 0.2f || fabsf(ELRS_RC.Ry) > 0.2f)
+        {
+            s_pid_tune.active = 0;
+            chassis_flag.rotate_active = 0;
+            chassis_flag.pos_active = 0;
+            Serial_SendPidAck(0, "ABORT_RC_OVERRIDE");
+            return;
+        }
+    }
+
+
+    s_pid_tune.t_cur_ms += 10;
+    s_pid_tune.decim++;
+
+    if (s_pid_tune.is_yaw)
+    {
+        cur_val = Imu_GetYaw();
+        cur_out = chassis_val.yaw_out;
+        /* �쳣����: ���ƫת��ɢ���� 90 �ȣ�������ͣ */
+        if (fabsf(cur_val - s_pid_tune.init_val) > 90.0f)
+        {
+            s_pid_tune.active = 0;
+            chassis_flag.rotate_active = 0;
+            chassis_val.yaw_target = cur_val;
+            Serial_SendPidAck(0, "ABORT_YAW_DIVERGE");
+            return;
+        }
+    }
+    else
+    {
+        cur_val = chassis_val.odom_x_mm;
+        cur_out = chassis_val.odom_vx_mmps;
+        /* �쳣����: ���ƽ�Ƴ��̳��� 2000mm��������ͣ */
+        if (fabsf(cur_val - s_pid_tune.init_val) > 2000.0f)
+        {
+            s_pid_tune.active = 0;
+            chassis_flag.pos_active = 0;
+            Serial_SendPidAck(0, "ABORT_POS_OVERRUN");
+            return;
+        }
+    }
+
+    /* ÿ 20ms ����һ�δ������ */
+    if (s_pid_tune.decim >= 2)
+    {
+        s_pid_tune.decim = 0;
+        t = s_pid_tune.t_cur_ms;
+
+        len = (uint8_t)sprintf(buf, "%u,", (unsigned)t);
+        len += Serial_FormatAngle(s_pid_tune.target_val, buf + len);
+        buf[len++] = ',';
+        len += Serial_FormatAngle(cur_val, buf + len);
+        buf[len++] = ',';
+        len += Serial_FormatAngle(cur_out, buf + len);
+        buf[len] = '\0';
+
+        Serial_SendFramed(SERIAL_TYPE_PID_DATA, buf, len);
+    }
+
+    /* ����ʱ������ */
+    if (s_pid_tune.t_cur_ms >= s_pid_tune.t_max_ms)
+    {
+        s_pid_tune.active = 0;
+        if (s_pid_tune.is_yaw)
+        {
+            chassis_flag.rotate_active = 0;
+            chassis_val.yaw_target = cur_val;
+        }
+        else
+        {
+            chassis_flag.pos_active = 0;
+        }
+        Serial_SendFramed(SERIAL_TYPE_PID_DATA, "DONE", 4);
+    }
+}
+
 void Serial_ProcessFrame(void)
 {
     const char *p;
@@ -367,6 +520,133 @@ void Serial_ProcessFrame(void)
 
     switch (Serial_RxFrame.type)
     {
+    case SERIAL_TYPE_PID_SET: /* 0x20 */
+    {
+        if (strncmp(p, "STOP", 4) == 0)
+        {
+            s_pid_tune.active = 0;
+            chassis_flag.rotate_active = 0;
+            chassis_flag.pos_active = 0;
+            Serial_SendPidAck(1, "STOPPED");
+        }
+        else if (strncmp(p, "YAW,", 4) == 0)
+        {
+            float kp, kd_rate, ki;
+            p += 4;
+            if (Serial_ParseFloatTok(&p, &kp) && Serial_Expect(&p, ',') &&
+                Serial_ParseFloatTok(&p, &kd_rate) && Serial_Expect(&p, ',') &&
+                Serial_ParseFloatTok(&p, &ki))
+            {
+                if (kp < 0.0f) kp = 0.0f;
+                if (kp > 10.0f) kp = 10.0f;
+                if (kd_rate > 0.0f) kd_rate = 0.0f;
+                if (kd_rate < -5.0f) kd_rate = -5.0f;
+                if (ki < 0.0f) ki = 0.0f;
+                if (ki > 1.0f) ki = 1.0f;
+
+                chassis_cfg.yaw_kp = kp;
+                chassis_cfg.yaw_kd_rate = kd_rate;
+                chassis_cfg.yaw_ki = ki;
+                Serial_SendPidAck(1, "YAW_PID_UPDATED");
+            }
+            else
+            {
+                Serial_SendPidAck(0, "PARSE_ERR");
+            }
+        }
+        else if (strncmp(p, "POS,", 4) == 0)
+        {
+            float kp, dz, spd;
+            p += 4;
+            if (Serial_ParseFloatTok(&p, &kp) && Serial_Expect(&p, ',') &&
+                Serial_ParseFloatTok(&p, &dz) && Serial_Expect(&p, ',') &&
+                Serial_ParseFloatTok(&p, &spd))
+            {
+                if (kp < 0.0f) kp = 0.0f;
+                if (kp > 3.0f) kp = 3.0f;
+                if (dz < 0.5f) dz = 0.5f;
+                if (dz > 100.0f) dz = 100.0f;
+                if (spd < 5.0f) spd = 5.0f;
+                if (spd > 150.0f) spd = 150.0f;
+
+                chassis_cfg.pos_kp = kp;
+                chassis_cfg.pos_deadzone_mm = dz;
+                chassis_cfg.pos_max_speed = spd;
+                Serial_SendPidAck(1, "POS_PID_UPDATED");
+            }
+            else
+            {
+                Serial_SendPidAck(0, "PARSE_ERR");
+            }
+        }
+        break;
+    }
+
+    case SERIAL_TYPE_PID_STEP: /* 0x21 */
+    {
+        if (strncmp(p, "YAW,", 4) == 0)
+        {
+            float delta;
+            int dur;
+            p += 4;
+            if (Serial_ParseFloatTok(&p, &delta) && Serial_Expect(&p, ',') &&
+                Serial_ParseIntTok(&p, &dur))
+            {
+                if (dur < 200) dur = 200;
+                if (dur > 5000) dur = 5000;
+                if (delta > 90.0f) delta = 90.0f;
+                if (delta < -90.0f) delta = -90.0f;
+
+                s_pid_tune.active = 1;
+                s_pid_tune.is_yaw = 1;
+                s_pid_tune.t_cur_ms = 0;
+                s_pid_tune.t_max_ms = (uint16_t)dur;
+                s_pid_tune.decim = 0;
+                s_pid_tune.init_val = Imu_GetYaw();
+                s_pid_tune.target_val = s_pid_tune.init_val + delta;
+
+                Chassis_RotateTo(s_pid_tune.target_val);
+                Serial_SendPidAck(1, "STEP_YAW_STARTED");
+            }
+            else
+            {
+                Serial_SendPidAck(0, "PARSE_ERR");
+            }
+        }
+        else if (strncmp(p, "POS,", 4) == 0)
+        {
+            float delta;
+            int dur;
+            p += 4;
+            if (Serial_ParseFloatTok(&p, &delta) && Serial_Expect(&p, ',') &&
+                Serial_ParseIntTok(&p, &dur))
+            {
+                if (dur < 200) dur = 200;
+                if (dur > 10000) dur = 10000;
+                if (delta > 2000.0f) delta = 2000.0f;
+                if (delta < -2000.0f) delta = -2000.0f;
+
+                s_pid_tune.active = 1;
+                s_pid_tune.is_yaw = 0;
+                s_pid_tune.t_cur_ms = 0;
+                s_pid_tune.t_max_ms = (uint16_t)dur;
+                s_pid_tune.decim = 0;
+                s_pid_tune.init_val = chassis_val.odom_x_mm;
+                s_pid_tune.target_val = s_pid_tune.init_val + delta;
+
+                chassis_val.pos_target_x_mm = s_pid_tune.target_val;
+                chassis_val.pos_target_y_mm = chassis_val.odom_y_mm;
+                chassis_flag.pos_active = 1;
+                Serial_SendPidAck(1, "STEP_POS_STARTED");
+            }
+            else
+            {
+                Serial_SendPidAck(0, "PARSE_ERR");
+            }
+        }
+        break;
+    }
+
     case SERIAL_TYPE_PLACE_COMMAND:
         Serial_ReceivePlaceCommand(p);
         break;
@@ -421,7 +701,7 @@ void Serial_ProcessFrame(void)
     }
 
     case SERIAL_TYPE_RING_STATION:   /* 0x04: err_x,err_y,ang,corr_x,corr_y,corr_yaw,within */
-    case SERIAL_TYPE_STACKED_RING:   /* 0x05: 同 0x04 */
+    case SERIAL_TYPE_STACKED_RING:   /* 0x05: � 0x04 */
     {
         float ex, ey, ang, cx, cy, cyaw; int w;
         if (Serial_ParseFloatTok(&p, &ex)   && Serial_Expect(&p, ',') &&
@@ -440,23 +720,24 @@ void Serial_ProcessFrame(void)
             Serial_RxData.ring_corr_yaw = cyaw;
             Serial_RxData.ring_within   = (uint8_t)w;
 
-            /* 通知业务层: corr=底盘微调(底盘); err 是偏移坐标, 由上层按需使用 */
+            /* 通知业务�: corr=底盘��(底盘); err �偏移坐标, 由上层按�使用 */
+            Serial_TrimFrameType = Serial_RxFrame.type;
             Serial_ChassisTrimReady = 1;
             Serial_VisionCmd = 1;
         }
         break;
     }
 
-    case SERIAL_TYPE_TURNTABLE_ALIGN:   /* 0x0E: corr_x,corr_y,within (物料区转盘, 无 err/无 yaw) */
+    case SERIAL_TYPE_TURNTABLE_ALIGN:   /* 0x0E: corr_x,corr_y,within (物料区转�, � err/� yaw) */
     {
         float cx, cy; int w;
         if (Serial_ParseFloatTok(&p, &cx) && Serial_Expect(&p, ',') &&
             Serial_ParseFloatTok(&p, &cy) && Serial_Expect(&p, ',') &&
             Serial_ParseIntTok(&p, &w))
         {
-            /* 复用 ring_* 槽位: 下游 Chassis_ApplyVisionTrim 只认这一组 corr。
-               转盘帧没有 err 和 yaw, 必须显式清 0, 否则会留着上一条 0x04/0x05 的旧值
-               (yaw 残留会让底盘按旧的 corr_yaw 转过头)。 */
+            /* 复用 ring_* 槽位: 下游 Chassis_ApplyVisionTrim �认这�� corr�
+               �盘帧没有 err � yaw, 必须显式� 0, 否则会留�上一� 0x04/0x05 的旧�
+               (yaw 残留会�底盘按旧的 corr_yaw �过头)� */
             Serial_RxData.ring_err_x    = 0.0f;
             Serial_RxData.ring_err_y    = 0.0f;
             Serial_RxData.ring_ang_err  = 0.0f;
@@ -465,19 +746,20 @@ void Serial_ProcessFrame(void)
             Serial_RxData.ring_corr_yaw = 0.0f;
             Serial_RxData.ring_within   = (uint8_t)w;
 
-            /* 单独标志: 转盘节点常开, 由底盘侧配合 chassis_flag.trim_armed 才收 */
+            /* 单独标志: �盘节点常�, 由底盘侧配合 chassis_flag.trim_armed 才收 */
+            Serial_TrimFrameType = SERIAL_TYPE_TURNTABLE_ALIGN;
             Serial_TurntableTrimReady = 1;
             Serial_VisionCmd = 1;
         }
         break;
     }
 
-    case SERIAL_TYPE_UNLOAD_COORD:   /* 0x0C: 三组 x,y (3 个卸货落点, 塔吊系绝对 mm) */
+    case SERIAL_TYPE_UNLOAD_COORD:   /* 0x0C: 三组 x,y (3 �卸货落点, 塔吊系绝� mm) */
     {
         float v[6];
         uint8_t k = 0, i;
 
-        /* 容忍分隔符 (, ; / 和空白), 顺序读 6 个数 -> 3 组 (x,y) */
+        /* 容忍分隔� (, ; / 和空�), 顺序� 6 �� -> 3 � (x,y) */
         while (k < 6)
         {
             while (*p == ',' || *p == ';' || *p == '/' ||
@@ -502,13 +784,13 @@ void Serial_ProcessFrame(void)
         break;
     }
 
-    case SERIAL_TYPE_QR_DECODE:   /* 0x06: 任务码字符串 -> 解析 4 组显示到屏 t0/t2 */
+    case SERIAL_TYPE_QR_DECODE:   /* 0x06: 任务码字符串 -> 解析 4 组显示到� t0/t2 */
     {
         uint8_t i;
         for (i = 0; i < n; i++) Serial_RxData.str[i] = (char)Serial_RxFrame.payload[i];
         Serial_RxData.str[n] = '\0';
-        Screen_ShowQRCode(Serial_RxData.str);   /* t0=前两组 t2=后两组, 覆盖占位 */
-        Serial_QRReady = 1;                     /* 通知 mission 解析环序 */
+        Screen_ShowQRCode(Serial_RxData.str);   /* t0=前两� t2=后两�, 覆盖占位 */
+        Serial_QRReady = 1;                     /* 通知 mission 解析�� */
         break;
     }
 
@@ -525,27 +807,27 @@ void Serial_ProcessFrame(void)
             Serial_RxData.target_y_mm = y;
             Serial_RxData.target_z_mm = z;
 
-            /* 只存坐标, 不动: 上层只给 (x,y), z 由 kin_cal.grab_z_mm 定死; 等 Watch 写 kin_flag.cmd=1 才走。
-               抓取执行中(kin_flag.active)拒绝新 0x08, 防视觉误识别覆盖正在用的目标坐标 */
+            /* �存坐�, 不动: 上层�� (x,y), z � kin_cal.grab_z_mm 定�; � Watch � kin_flag.cmd=1 才走�
+               抓取执�中(kin_flag.active)拒绝� 0x08, 防���识别覆盖正在用的�标坐� */
             if (!kin_flag.active)
             {
                 kin_tgt.target_x = x;
                 kin_tgt.target_y = y;
-                Serial_ColorTargetReady = 1;   /* 通知 mission: 新颜色目标点已锁存 */
+                Serial_ColorTargetReady = 1;   /* 通知 mission: 新�色�标点已锁� */
             }
             Serial_VisionCmd = 1;
         }
         break;
     }
 
-    case SERIAL_TYPE_GRAB_CMD:   /* 0x09: "1"=视觉授权抓取 (物料停稳/夹爪到位) */
+    case SERIAL_TYPE_GRAB_CMD:   /* 0x09: "1"=视�授权抓� (物料停稳/夹爪到位) */
     {
         int v = 0;
         if (Serial_ParseIntTok(&p, &v) && v != 0)
         {
-            Serial_RxData.grab_cmd = 1;   /* 待消费标志: app_kin 闭爪时清 0, 不会一直挂 1 */
-            if (Serial_RxData.grab_cmd_cnt < 60000) Serial_RxData.grab_cmd_cnt++;   /* 到达计数, 只增不清 */
-            grab_cmd = 1;   /* 装货流程: 电机5 从550降到447 下探抓取 */
+            Serial_RxData.grab_cmd = 1;   /* 待消费标�: app_kin ��时清 0, 不会�直挂 1 */
+            if (Serial_RxData.grab_cmd_cnt < 60000) Serial_RxData.grab_cmd_cnt++;   /* 到达计数, �增不� */
+            grab_cmd = 1;   /* 装货流程: 电机5 �550降到447 下探抓取 */
             Serial_VisionCmd = 1;
         }
         break;
@@ -557,9 +839,50 @@ void Serial_ProcessFrame(void)
 }
 
 /**
-  * @brief  USART1 接收中断: 帧结构状态机
-  *         0=等帧头 1=TYPE 2=LEN 3=载荷 4=CRC 5=帧尾
+  * @brief  USART1 接收��: 帧结构状态机
+  *         0=等帧� 1=TYPE 2=LEN 3=载荷 4=CRC 5=帧尾
   */
+
+/* ͨ���ֽڽ���״̬�� (�� USART1 �� USART6 ��ͬ����) */
+void Serial_FeedByte(uint8_t b)
+{
+    switch (s_rx_state)
+    {
+    case 0:
+        if (b == SERIAL_HEAD) s_rx_state = 1;
+        break;
+    case 1:
+        Serial_RxFrame.type = b;
+        s_rx_crc = b;
+        s_rx_state = 2;
+        break;
+    case 2:
+        Serial_RxFrame.len = b;
+        s_rx_crc ^= b;
+        s_rx_idx = 0;
+        if (b == 0) s_rx_state = 4;
+        else if (b <= SERIAL_RX_PAYLOAD_MAX) s_rx_state = 3;
+        else s_rx_state = 0;
+        break;
+    case 3:
+        Serial_RxFrame.payload[s_rx_idx++] = b;
+        s_rx_crc ^= b;
+        if (s_rx_idx >= Serial_RxFrame.len) s_rx_state = 4;
+        break;
+    case 4:
+        if (b == s_rx_crc) s_rx_state = 5;
+        else s_rx_state = 0;
+        break;
+    case 5:
+        if (b == SERIAL_TAIL) Serial_RxFrameReady = 1;
+        s_rx_state = 0;
+        break;
+    default:
+        s_rx_state = 0;
+        break;
+    }
+}
+
 void USART1_IRQHandler(void)
 {
     uint8_t d;
@@ -570,7 +893,7 @@ void USART1_IRQHandler(void)
 
         switch (s_rx_state)
         {
-        case 0:   /* 等帧头 */
+        case 0:   /* 等帧� */
             if (d == SERIAL_HEAD) s_rx_state = 1;
             break;
 
@@ -600,7 +923,7 @@ void USART1_IRQHandler(void)
 
         case 4:   /* CRC */
             if (d == s_rx_crc) s_rx_state = 5;
-            else s_rx_state = 0;   /* CRC 错, 重新同步 */
+            else s_rx_state = 0;   /* CRC �, 重新同� */
             break;
 
         case 5:   /* 帧尾 */
@@ -616,7 +939,7 @@ void USART1_IRQHandler(void)
         USART_ClearITPendingBit(USART1, USART_IT_RXNE);
     }
 
-    /* 最后清 ORE(溢出): 必须在 RXNE 之后清, 否则会把待读字节丢掉 (读 SR 再读 DR 才清 ORE) */
+    /* �后清 ORE(溢出): 必须� RXNE 之后�, 否则会把待�字节丢� (� SR 再� DR 才清 ORE) */
     if (USART_GetFlagStatus(USART1, USART_FLAG_ORE) == SET)
     {
         volatile uint32_t tmp = USART1->SR; (void)tmp;

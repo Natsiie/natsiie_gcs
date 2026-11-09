@@ -18,6 +18,11 @@ void Platform_Test_Task(void);  /* 10ms 周期调用: 物料平台角度调试 (
 void Tower_Boot_Task(void);     /* 10ms 周期调用: 上电默认状态 (电机5<400先归位20再升600, >=400直接升600; 云台135->270, 电机6伸550) */
 extern uint8_t boot_enable;   /* 1=上电默认状态接管上层, 0=关闭 (Watch) */
 extern uint8_t boot_step;     /* 只读: 0=云台135等电机5到位 1=云台去270 2=完成 */
+/* Tower_Boot_Task 最终姿态 (Watch 可调)。Kin_BootPosture 直接用它,
+   保证"长按一键键回 IDLE"和上电引导是同一姿态, 不会各写一套数 */
+extern float boot_gimbal_angle2;   /* 云台默认最终角 270 */
+extern float boot_hoist_height;    /* 电机5 高度 600 */
+extern float boot_extend_pos;      /* 电机6 伸出 550 */
 void Motor56_Test_Task(void);   /* 10ms 周期调用: 电机5/6 测试 (位置/速度模式) */
 void Gripper_Test_Task(void);   /* 10ms 周期调用: 夹爪角度调试 (Watch 写 gripper_test_angle) */
 void Test_Task(void);           /* 10ms 周期调用: 集中测试入口 (内部按需注释) */
