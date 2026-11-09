@@ -1,8 +1,9 @@
 """总启动入口：相机、颜色识别、停稳 OK、投影、转盘检测与串口桥。
 
 各功能用 ``start_*`` / ``enable_*`` / ``*_show`` 参数单独开关。
-当前默认启用主/副相机、颜色识别、像素投影、转盘外圆与圆心对齐、
-串口桥和叠放位检测；粉色夹爪到位与三圆环工位检测保持注释。
+当前默认启用副相机、颜色识别、像素投影、转盘外圆与圆心对齐、
+串口桥和叠放位检测；主相机（扫码）默认关闭，粉色夹爪到位与三圆环
+工位检测保持注释。
 """
 import os
 
@@ -51,6 +52,7 @@ def generate_launch_description():
         DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
             share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
+        # 当前先关闭主相机，单独验证转盘位姿矫正；需要扫码时再设为 true。
         DeclareLaunchArgument('start_main_camera', default_value='true'),
         # 副相机用于颜色/工位识别，默认打开；如果已经由其他终端启动，可改为 false。
         DeclareLaunchArgument('start_secondary_camera', default_value='true'),
@@ -80,6 +82,11 @@ def generate_launch_description():
         DeclareLaunchArgument('publish_arrived', default_value='true'),
         # 任务模式：true=按二维码顺序+抓取确认每个颜色只发一次；false=连续发送坐标（调试通信链路用）。
         DeclareLaunchArgument('task_mode', default_value='true'),
+        # 颜色识别调试日志：仅调试时打开，正常比赛保持 false。
+        # 日志写到 <color_log_dir>/color_debug_YYYYmmdd_HHMMSS.jsonl。
+        DeclareLaunchArgument('debug_color_log', default_value='false'),
+        DeclareLaunchArgument('color_log_dir', default_value=os.path.join(
+            os.getcwd(), 'log', 'color_debug')),
         DeclareLaunchArgument('tf_params_file', default_value=os.path.join(
             share, 'config', 'tf_transform.yaml')),
         DeclareLaunchArgument('pixel_params_file', default_value=os.path.join(
@@ -88,7 +95,7 @@ def generate_launch_description():
         DeclareLaunchArgument('pixel_show', default_value='false'),
         # 转盘外圆检测 + 圆心对齐：检测结果经串口桥转发 0x03/0x0E。
         DeclareLaunchArgument('start_turntable_detect', default_value='true'),
-        DeclareLaunchArgument('turntable_show', default_value='false'),
+        DeclareLaunchArgument('turntable_show', default_value='true'),
         DeclareLaunchArgument('enable_turntable_seed', default_value='true'),
         # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
         DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
@@ -188,6 +195,22 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
+                # 常驻休眠：由 supervisor 按流程使能。
+                'enabled': False,
+                'enable_topic': '/color/enable',
+            }],
+        ),
+
+        # 颜色识别调试日志：仅 debug_color_log:=true 时启动，正常比赛默认关闭。
+        Node(
+            package='identify_pack',
+            executable='color_log_node',
+            name='color_log_node',
+            condition=IfCondition(LaunchConfiguration('debug_color_log')),
+            output='screen',
+            parameters=[{
+                'log_dir': LaunchConfiguration('color_log_dir'),
+                'log_prefix': 'color_debug',
             }],
         ),
 
@@ -270,6 +293,9 @@ def generate_launch_description():
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
                 'arrived_topic': LaunchConfiguration('arrived_topic'),
+                # 颜色节点已经按“物块停稳”判断到位；这里不再等转盘/底盘
+                # within=1，避免同一套到位判断重复。转盘纠偏仍由 0x0E 下发。
+                'require_turntable_align': False,
             }],
         ),
 
@@ -298,23 +324,30 @@ def generate_launch_description():
                     LaunchConfiguration('enable_turntable_seed'), value_type=bool),
                 'show': ParameterValue(
                     LaunchConfiguration('turntable_show'), value_type=bool),
+                # 常驻休眠：由 supervisor 按流程使能。
+                'enabled': False,
+                'enable_topic': '/turntable/enable',
             }],
         ),
 
-        # # 三圆环工位检测节点：订阅副相机（发布 /ring_station，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
-        # Node(
-        #     package='identify_pack',
-        #     executable='ring_station_detect_node',
-        #     name='ring_station_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': secondary_image_topic,
-        #         'show': ParameterValue(show, value_type=bool),
-        #         'camera_frame': 'camera_optical_frame',
-        #         'centers_topic': '/ring_station/centers_pixel',
-        #         'digit_templates': LaunchConfiguration('ring_digit_templates'),
-        #     }],
-        # ),
+        # 三圆环工位检测节点：第一层放置用它的三环同时定位。
+        # 订阅副相机，发布 /ring_station 与 /ring_station/centers_pixel。
+        Node(
+            package='identify_pack',
+            executable='ring_station_detect_node',
+            name='ring_station_detect_node',
+            output='screen',
+            parameters=[{
+                'image_topic': secondary_image_topic,
+                'show': ParameterValue(show, value_type=bool),
+                'camera_frame': 'camera_optical_frame',
+                'centers_topic': '/ring_station/centers_pixel',
+                'digit_templates': LaunchConfiguration('ring_digit_templates'),
+                # 常驻休眠：由 supervisor 按流程使能。
+                'enabled': False,
+                'enable_topic': '/ring_station/enable',
+            }],
+        ),
 
         # # 叠放位（堆料）检测节点：订阅副相机（发布 /stacked_ring，格式 dx_mm,dy_mm,dyaw_deg,corr_*,within）
         Node(
@@ -327,11 +360,14 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'camera_frame': 'camera_optical_frame',
                 'centers_topic': '/stacked_ring/centers_pixel',
+                # 启动时休眠，等 pixel_to_base 在第 3 次放置后发
+                # /stacked_ring/enable=true 再订阅图像，降低并行负载。
+                'enabled': False,
+                'enable_topic': '/stacked_ring/enable',
             }],
         ),
 
-        # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
-        # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。
+        # 放置/堆料任务协调（0x0A 逐件命令）：当前用 0x0C 批量模型，暂不启动。
         # Node(
         #     package='identify_pack',
         #     executable='place_task',
@@ -339,6 +375,15 @@ def generate_launch_description():
         #     output='screen',
         #     parameters=[LaunchConfiguration('place_task_params_file')],
         # ),
+
+        # 比赛流程 supervisor：按批次/区域切换检测节点、累积 5 帧像素均值，
+        # 等待下位机 0x11 AlignDone 后启动放置阶段。
+        Node(
+            package='identify_pack',
+            executable='race_supervisor_node',
+            name='race_supervisor_node',
+            output='screen',
+        ),
 
         # ROI 叠加节点：订阅副相机（调试用）
         # Node(

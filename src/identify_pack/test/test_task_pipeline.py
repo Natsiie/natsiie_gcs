@@ -37,6 +37,15 @@ class TaskPipelineTests(unittest.TestCase):
         self.bridge._publish_task_status = SerialBridgeNode._publish_task_status.__get__(self.bridge)
         self.bridge.motion_stamp_ns = 0
         self.bridge.grab_cmd_sent = False
+        self.bridge.grab_cmd_pending = False
+        self.bridge.require_turntable_align = False
+        self.bridge.turntable_within = True
+        self.bridge.turntable_within_time = 0.0
+        self.bridge.turntable_align_max_age = 1.0
+        for name in ('_try_send_grab_cmd', '_turntable_ready',
+                     '_update_turntable_align', '_reset_turntable_gate'):
+            setattr(self.bridge, name,
+                    getattr(SerialBridgeNode, name).__get__(self.bridge))
         self.bridge.ready_since_ns = 0
         self.bridge.motion_ready = False
         self.bridge.motion_receive_time = -float('inf')

@@ -1,11 +1,22 @@
-# 相机固定名绑定：优先用序列号，没有序列号的用 VID/PID。
+# 相机/串口固定名绑定：优先用序列号，没有序列号的用 VID/PID。
 # 安装：
 #   sudo install -m 0644 udev/99-camera-symlinks.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules
 #   sudo udevadm trigger --action=add --subsystem-match=video4linux
+#   sudo udevadm trigger --action=add --subsystem-match=tty
+#
+# 2026-11-06 在 gcs-desktop（Ubuntu 24.04）上核对通过：
+#   前相机 UNIQUESKY_CAR_CAMERA  1bcf:0b09        → /dev/video0 (capture)
+#   上相机 HJ USB 2.0 Camera     0c45:636b/SN0001 → /dev/video2 (capture)
+#   串口   CH340                 1a86:7523        → /dev/ttyUSB0（无序列号）
 
-# HJ USB 2.0 Camera（序列号 SN0001）→ /dev/camera_upper（上相机，照圆环）
-SUBSYSTEM=="video4linux", ATTRS{serial}=="SN0001", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_upper"
+# HJ USB 2.0 Camera（0c45:636b，序列号 SN0001）→ /dev/camera_upper（上相机，照圆环）
+SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", ATTRS{idVendor}=="0c45", ATTRS{idProduct}=="636b", ATTRS{serial}=="SN0001", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_upper"
 
 # UNIQUESKY_CAR_CAMERA（1bcf:0b09，无序列号）→ /dev/camera_front（主相机，扫二维码）
-SUBSYSTEM=="video4linux", ATTRS{idVendor}=="1bcf", ATTRS{idProduct}=="0b09", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_front"
+SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", ATTRS{idVendor}=="1bcf", ATTRS{idProduct}=="0b09", ENV{ID_V4L_CAPABILITIES}=="*capture*", MODE="0666", SYMLINK+="camera_front"
+
+# STM32 下位机串口（CH340，1a86:7523，无序列号）→ /dev/race_controller
+# 注意：gcs 不在 dialout 组，MODE=0666 保证免 sudo 可读写。
+# 项目默认仍用 /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0（同一节点，权限同样生效）。
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666", SYMLINK+="race_controller"

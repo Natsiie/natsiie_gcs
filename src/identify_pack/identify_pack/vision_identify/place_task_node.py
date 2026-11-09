@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -12,7 +13,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
 from rcl_interfaces.msg import ParameterDescriptor
-from sensor_msgs.msg import PointCloud
+from geometry_msgs.msg import Point32
+from sensor_msgs.msg import ChannelFloat32, PointCloud
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -86,6 +88,8 @@ class PlaceTaskNode(Node):
             'require_aligned': True, 'item_height_configured': True,
             'item_height_mm': 60.0,
             'phase_order': list(DEFAULT_PHASES),
+            # 收到 start 后先累积该帧数，再按点逐点取像素均值冻结。
+            'average_frames': 5, 'average_timeout_sec': 3.0,
         }
         for stage in STAGES:
             defaults.update({f'{stage}.height_configured': False,
@@ -117,6 +121,14 @@ class PlaceTaskNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.observations = {}
+        self.average_frames = int(self.param('average_frames'))
+        self.average_timeout = float(self.param('average_timeout_sec'))
+        if (self.average_frames < 1 or not math.isfinite(self.average_timeout)
+                or self.average_timeout <= 0):
+            raise ValueError('average_frames/average_timeout_sec are invalid')
+        self.center_buffers = {
+            stage: deque(maxlen=self.average_frames) for stage in STAGES}
+        self.pending_start = None
         self.frozen_observation = None
         self.phase_started_ns = self.get_clock().now().nanoseconds
         self.command_pub = self.create_publisher(String, '/arm/place_command', 10)
@@ -219,9 +231,17 @@ class PlaceTaskNode(Node):
             task_id = data.get('task_id') or self.task.task_id
             if data['action'] == 'start':
                 self.validate_heights(data['stage'])
-                self.commit(lambda: self.task.start(task_id, data['stage'], data['batch']))
-                self.phase_started_ns = self.get_clock().now().nanoseconds
-                self.frozen_observation = self._freeze_observation(data['stage'])
+                if self.pending_start is not None:
+                    raise ValueError('Previous start is still collecting ring centers')
+                stage = data['stage']
+                self.center_buffers[stage].clear()
+                self.frozen_observation = None
+                self.pending_start = {
+                    'task_id': task_id, 'stage': stage,
+                    'batch': data['batch'], 'since': time.monotonic()}
+                self.get_logger().info(
+                    f'{stage} 收到 start，等待累积 {self.average_frames} 帧'
+                    f'圆环中心后取像素均值')
             elif data['action'] == 'retry':
                 command = self.commit(lambda: self.task.retry(
                     task_id, data['command_id'], time.monotonic()))
@@ -274,12 +294,78 @@ class PlaceTaskNode(Node):
 
     def on_centers(self, stage, message):
         self.observations[stage] = (message, time.monotonic())
+        pending = self.pending_start
+        if (pending is not None and pending['stage'] == stage
+                and len(message.points) == 3):
+            self.center_buffers[stage].append(message)
+            if len(self.center_buffers[stage]) >= self.average_frames:
+                try:
+                    self._finish_pending_start()
+                except (ValueError, OSError) as error:
+                    self.reject(error)
+
+    def _finish_pending_start(self):
+        """start 后累积足够帧，逐点取像素均值并冻结，再启动 place_task 阶段。"""
+        pending = self.pending_start
+        if pending is None:
+            return
+        self.pending_start = None
+        stage = pending['stage']
+        buffer = list(self.center_buffers[stage])
+        if not buffer:
+            self.reject(ValueError(f'{stage} 未收到圆环中心，无法放置'))
+            return
+        averaged = self._average_centers(buffer)
+        received = time.monotonic()
+        self.observations[stage] = (averaged, received)
+        self.phase_started_ns = (
+            averaged.header.stamp.sec * 10**9
+            + averaged.header.stamp.nanosec)
+        self.commit(lambda: self.task.start(
+            pending['task_id'], stage, pending['batch']))
+        self.frozen_observation = (averaged, received)
+        self.get_logger().info(
+            f'{stage} 已累积 {len(buffer)} 帧，像素均值已冻结')
+
+    @staticmethod
+    def _average_centers(messages):
+        """三环圆心逐点取像素均值；header/channels 用最新一帧。"""
+        latest = messages[-1]
+        points = []
+        for index in range(len(latest.points)):
+            xs = [m.points[index].x for m in messages]
+            ys = [m.points[index].y for m in messages]
+            points.append(Point32(
+                x=float(sum(xs) / len(xs)),
+                y=float(sum(ys) / len(ys)),
+                z=0.0))
+        out = PointCloud()
+        out.header = copy.deepcopy(latest.header)
+        out.header.frame_id = latest.header.frame_id
+        out.points = points
+        out.channels = [
+            ChannelFloat32(name=channel.name, values=list(channel.values))
+            for channel in latest.channels]
+        return out
 
     def tick(self):
         try:
             if self.task.check_timeout(time.monotonic()):
                 self.task.save(self.path)
                 self.publish_status()
+            if self.pending_start is not None:
+                pending = self.pending_start
+                if time.monotonic() - pending['since'] > self.average_timeout:
+                    stage = pending['stage']
+                    if self.center_buffers[stage]:
+                        self.get_logger().warning(
+                            f'{stage} 圆环中心累积超时，使用已收到的 '
+                            f'{len(self.center_buffers[stage])} 帧')
+                        self._finish_pending_start()
+                    else:
+                        self.pending_start = None
+                        self.reject(ValueError(f'{stage} 圆环中心累积超时'))
+                return
             if not self.enabled or self.task.state != 'WAIT_TARGET':
                 return
             stage = self.task.stage

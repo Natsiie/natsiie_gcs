@@ -47,6 +47,8 @@
 五、保存内容（回写 ring_station_detector.json）
 =====================================================================
   reference.ring_centers_px           三环参考圆心（像素）
+                                      auto 模式：中环 y 使用上下边线约束（距离），
+                                      左右环与原 yaw 仍按三环椭圆逻辑
   reference.station_yaw_deg           参考角度（deg）
   reference.image_to_station_affine   像素→毫米 2x2 矩阵
                                       = center_spacing_mm / 平均像素间距，对角近似
@@ -90,6 +92,7 @@ from ring_station_detector import (  # noqa: E402
     draw_ring_station_detection, load_ring_station_config,
     save_ring_station_config,
 )
+from stacked_ring_detector import load_stacked_ring_config  # noqa: E402
 
 DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, 'ring_station_detector.json')
 
@@ -165,6 +168,9 @@ def parse_args():
     parser.add_argument('--fourcc', default='MJPG')
     parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--config', default=DEFAULT_CONFIG)
+    parser.add_argument('--stacked-config', default='',
+                        help='叠料区配置（默认同目录 stacked_ring_detector.json）；'
+                             '只复用其中的上下边线检测参数')
     parser.add_argument('--flip-code', type=int, choices=(-1, 0, 1), default=0,
                         help='画面翻转：-1=上下颠倒(180°)，1=左右镜像，0=不翻转（与 launch 一致）')
     return parser.parse_args()
@@ -177,7 +183,17 @@ def run(args):
     except (OSError, json.JSONDecodeError) as error:
         raise RingStationCalibrationError(f'无法读取配置 {config_path}：{error}') from error
     config = load_ring_station_config(config_path)
-    detector = RingStationDetector(config)
+    line_config = None
+    if config.line_constraint_enabled:
+        stacked_path = (Path(args.stacked_config).expanduser()
+                        if args.stacked_config
+                        else config_path.parent / 'stacked_ring_detector.json')
+        try:
+            line_config = load_stacked_ring_config(stacked_path)
+            print(f'边线约束已启用：{stacked_path}')
+        except (OSError, ValueError, KeyError, RuntimeError) as error:
+            print(f'警告：叠料区配置加载失败，使用纯椭圆标定：{error}')
+    detector = RingStationDetector(config, line_config=line_config)
     require_display()
     camera = open_camera(args.device, args.width, args.height, args.fps,
                          args.fourcc, args.timeout)
@@ -222,7 +238,11 @@ def run(args):
 
             lines = ['Ring station zero calibration']
             if result.detected and len(result.centers_px) == 3:
+                line_state = 'Y' if result.line_constraint_applied else 'N'
+                line_q = (result.line_quality
+                          if result.line_quality is not None else -1.0)
                 lines.append(f"auto: {'STABLE' if result.stable else 'DETECTED'}  "
+                             f"line={line_state} q={line_q:.2f}  "
                              f"centers={result.centers_px}")
             else:
                 lines.append('auto: SEARCHING')
@@ -268,8 +288,11 @@ def run(args):
                     message = f'保存失败：{error}'
                     print(message)
                     continue
-                message = (f'已保存参考零点（{source}）：yaw={yaw:+.2f}deg  '
-                           f'mm/px={mm_per_px:.4f}')
+                line_note = (
+                    ' / 边线约束 y'
+                    if source == 'auto' and result.line_constraint_applied else '')
+                message = (f'已保存参考零点（{source}{line_note}）：'
+                           f'yaw={yaw:+.2f}deg  mm/px={mm_per_px:.4f}')
                 print(message)
     finally:
         camera.release()

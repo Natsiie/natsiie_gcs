@@ -2,9 +2,11 @@
 #include <string.h>
 #include "stm32f4xx.h"
 #include "Serial.h"
+#include "app_kin.h"
 
 TestUSART test_usart;
-float kin_target_x, kin_target_y;
+KinFlag_t kin_flag;
+KinTgt_t  kin_tgt;
 uint8_t grab_cmd;
 static uint8_t sent[256];
 static unsigned sent_count;

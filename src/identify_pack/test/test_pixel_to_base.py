@@ -1,5 +1,7 @@
+import json
 import math
 import time
+from collections import deque
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -7,8 +9,9 @@ from unittest.mock import Mock
 import cv2
 import numpy as np
 from builtin_interfaces.msg import Time as Stamp
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import Point32, TransformStamped
 from rclpy.clock import Clock, ClockType
+from sensor_msgs.msg import ChannelFloat32, PointCloud
 from rclpy.time import Time
 from tf2_ros import Buffer
 
@@ -108,6 +111,68 @@ class PixelToBaseTests(unittest.TestCase):
     def test_out_of_image_click_rejected(self):
         with self.assertRaisesRegex(ValueError, 'outside'):
             PixelToBaseNode.project_click(self.node, self.sample, (640, 238))
+
+    def test_place_result_switches_ring_source_after_three_successes(self):
+        node = SimpleNamespace(
+            ring_centers_topic='/ring_station/centers_pixel',
+            ring_centers_topic_after='/stacked_ring/centers_pixel',
+            ring_source_switch_count=3,
+            active_ring_source='/ring_station/centers_pixel',
+            first_layer_placement_count=0,
+            current_task_id=None,
+            counted_place_commands=set(),
+            pending_rings=deque(),
+            last_ring_stamp=0,
+            get_logger=lambda: Mock(),
+            set_parameters=lambda params: None,
+        )
+        node._set_first_layer_placement_count = (
+            lambda count: setattr(node, 'first_layer_placement_count', int(count)))
+        node._set_active_ring_source = (
+            lambda source, reason: setattr(node, 'active_ring_source', source))
+
+        def result(task_id, command_id, success=True):
+            PixelToBaseNode.on_place_result(node, SimpleNamespace(data=json.dumps({
+                'task_id': task_id, 'command_id': command_id,
+                'success': success})))
+
+        result('task-1', 1)
+        result('task-1', 2)
+        self.assertEqual(node.first_layer_placement_count, 2)
+        self.assertEqual(node.active_ring_source, '/ring_station/centers_pixel')
+        result('task-1', 2)  # 重复回传不重复计数
+        self.assertEqual(node.first_layer_placement_count, 2)
+        result('task-1', 3)
+        self.assertEqual(node.first_layer_placement_count, 3)
+        self.assertEqual(node.active_ring_source, '/stacked_ring/centers_pixel')
+        result('task-1', 4)  # 第一层已完成，后续叠料区不再累加
+        self.assertEqual(node.first_layer_placement_count, 3)
+        result('task-1', 5, success=False)  # 失败不计数
+        self.assertEqual(node.first_layer_placement_count, 3)
+        result('task-2', 1)  # 新任务重置回三圆环
+        self.assertEqual(node.first_layer_placement_count, 1)
+        self.assertEqual(node.active_ring_source, '/ring_station/centers_pixel')
+
+    def test_robust_ring_centers_rejects_outliers(self):
+        messages = []
+        for dx in (0.0, 1.0, 2.0, 3.0, 100.0):
+            message = PointCloud()
+            message.header.frame_id = 'camera'
+            message.points = [
+                Point32(x=100.0 + dx, y=200.0, z=0.0),
+                Point32(x=300.0 + dx, y=200.0, z=0.0),
+                Point32(x=500.0 + dx, y=200.0, z=0.0),
+            ]
+            message.channels = [
+                ChannelFloat32(name='ring_id', values=[1.0, 2.0, 3.0])]
+            messages.append(message)
+        averaged, rejected, kept = PixelToBaseNode._robust_centers(
+            messages, 20.0, 3)
+        self.assertEqual(rejected, 3)   # 每环剔除 dx=100 的那一帧
+        self.assertEqual(kept, 4)
+        np.testing.assert_allclose(
+            [point.x for point in averaged.points], [101.5, 301.5, 501.5])
+        self.assertEqual(averaged.header.frame_id, 'camera')
 
 
 if __name__ == '__main__':

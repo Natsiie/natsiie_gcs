@@ -29,3 +29,6 @@ place_task:
     stacked_ring.height_configured: true
     stacked_ring.plane_z_mm: -116.0
     stacked_ring.first_release_z_mm: -66.0
+    # 收到 start 后先累积 average_frames 帧圆环中心，逐点取像素均值再冻结。
+    average_frames: 5
+    average_timeout_sec: 3.0

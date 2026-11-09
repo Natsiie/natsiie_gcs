@@ -20,7 +20,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, PointCloud
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from cv_bridge import CvBridge
 import cv2
 
@@ -41,6 +41,8 @@ class RingStationDetectNode(Node):
 
         self.declare_parameter('image_topic', '/camera/image_raw')
         self.declare_parameter('ring_station_config', '')  # ring_station_detector.json 路径（空=自动定位）
+        # 仅复用叠料区配置里的上下边线检测参数，不改叠料区检测逻辑。
+        self.declare_parameter('stacked_ring_config', '')
         self.declare_parameter('show', True)
         self.declare_parameter('camera_frame', 'camera_optical_frame')
         self.declare_parameter('centers_topic', '/ring_station/centers_pixel')
@@ -49,10 +51,17 @@ class RingStationDetectNode(Node):
         self.declare_parameter('digit_min_confidence', 0.55)
         self.declare_parameter('digit_min_margin', 0.08)
         self.declare_parameter('digits_topic', '/ring_station/digits')
+        # 常驻休眠：启动时不订阅图像；收到 enable_topic=true 才创建订阅。
+        self.declare_parameter('enabled', False)
+        self.declare_parameter('enable_topic', '/ring_station/enable')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.ring_station_config = self.get_parameter('ring_station_config').get_parameter_value().string_value
+        self.stacked_ring_config = self.get_parameter('stacked_ring_config').get_parameter_value().string_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
+        self.image_topic = image_topic
+        self.enabled = bool(self.get_parameter('enabled').value)
+        enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
 
         self.detector = self._build_detector()
         inner, minimum, margin = (self.get_parameter(name).value for name in
@@ -69,12 +78,36 @@ class RingStationDetectNode(Node):
         self.last_stamp_ns = None
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
+        self.sub = None
         self.pub = self.create_publisher(String, 'ring_station', 10)
         self.pub_centers = self.create_publisher(
             PointCloud, self.get_parameter('centers_topic').value, 10)
         self.pub_digits = self.create_publisher(String, self.get_parameter('digits_topic').value, 10)
-        self.get_logger().info(f'三圆环工位检测订阅 {image_topic}')
+        self.enable_sub = self.create_subscription(
+            Bool, enable_topic, self.on_enable, 10)
+        if self.enabled:
+            self._enable_image_subscription()
+        else:
+            self.get_logger().info(
+                f'三圆环检测已启动（暂停，等待 {enable_topic} 使能）')
+
+    def _enable_image_subscription(self):
+        if self.sub is None:
+            self.sub = self.create_subscription(
+                Image, self.image_topic, self.image_cb, qos_profile_sensor_data)
+            self.get_logger().info(f'三圆环检测已启用，订阅 {self.image_topic}')
+
+    def on_enable(self, msg):
+        enabled = bool(msg.data)
+        if enabled and self.sub is None:
+            self._enable_image_subscription()
+        elif not enabled and self.sub is not None:
+            self.destroy_subscription(self.sub)
+            self.sub = None
+            self.detector.reset()
+            self.digit_tracker.reset()
+            self.last_stamp_ns = None
+            self.get_logger().info('三圆环检测已暂停')
 
     def _resolve_config(self, param_value, filename):
         if param_value:
@@ -92,8 +125,21 @@ class RingStationDetectNode(Node):
         except Exception as error:
             raise RuntimeError(f'三圆环工位配置加载失败：{error}') from error
         self.get_logger().info('已加载三圆环工位配置')
+        line_config = None
+        if config.line_constraint_enabled:
+            try:
+                from identify_pack.scripts.stacked_ring_detector import (
+                    load_stacked_ring_config,
+                )
+                line_config = load_stacked_ring_config(self._resolve_config(
+                    self.stacked_ring_config, 'stacked_ring_detector.json'))
+                self.get_logger().info('三圆环检测已启用上下边线约束')
+            except (OSError, ValueError, KeyError, RuntimeError) as error:
+                self.get_logger().warning(
+                    f'边线约束配置加载失败，回退三环拟合：{error}')
         # Both stations are always observed in left-to-right 1/2/3 order.
-        return RingStationDetector(replace(config, ring1_side='left'), use_hough=True)
+        return RingStationDetector(replace(config, ring1_side='left'),
+                                   use_hough=True, line_config=line_config)
 
     def image_cb(self, msg: Image):
         try:
@@ -136,7 +182,9 @@ class RingStationDetectNode(Node):
                 f'err=({result.error_x_mm:.2f},{result.error_y_mm:.2f})mm '
                 f'yaw={result.angle_error_deg:.2f}deg '
                 f'conf={result.confidence:.2f} stable={result.stable} '
-                f'within={result.within_tolerance} scope={result.detection_scope}',
+                f'within={result.within_tolerance} scope={result.detection_scope} '
+                f'line={int(result.line_constraint_applied)} '
+                f'line_q={(result.line_quality if result.line_quality is not None else -1):.2f}',
                 throttle_duration_sec=1.0)
         else:
             self.get_logger().info(f'三圆环工位未检出：{result.detail}',

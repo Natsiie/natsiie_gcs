@@ -23,29 +23,29 @@
     "roi_fallback_after_failures": 4
   },
   "reference": {
-    "station_yaw_deg": -1.7633,
+    "station_yaw_deg": -1.8322,
     "ring_centers_px": [
       [
-        196.88,
-        259.78
+        192.52,
+        265.8
       ],
       [
-        330.31,
-        256.14
+        325.57,
+        261.67
       ],
       [
-        466.93,
-        251.46
+        460.84,
+        257.21
       ]
     ],
     "image_to_station_affine": [
       [
-        1.110406,
+        1.117504,
         0.0
       ],
       [
         0.0,
-        1.110406
+        1.117504
       ]
     ],
     "minimum_confidence": 0.5,
@@ -79,5 +79,11 @@
         -1.07260951
       ]
     ]
+  },
+  "line_constraint": {
+    "enabled": true,
+    "minimum_line_quality": 0.5,
+    "require_both_lines": true,
+    "maximum_line_y_difference_px": 30.0
   }
 }
