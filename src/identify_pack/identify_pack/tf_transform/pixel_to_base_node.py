@@ -80,6 +80,9 @@ class PixelToBaseNode(Node):
             # 上下边界线）做微调。0 = 不切换，始终用第一个话题。
             'ring_centers_topic_after': '/stacked_ring/centers_pixel',
             'ring_source_switch_count': 3,
+            # 0x0C ring 投影开关：false 时不订阅三环中心、不发布
+            # /ring_station/targets_base；颜色目标 0x08 不受影响。
+            'ring_project_enabled': False,
             # 下位机放置结束回传（0x0B -> 串口桥 -> /arm/place_result）。
             'place_result_topic': '/arm/place_result',
             # 叠放区检测节点按需使能：切过去时发 true，新任务重置时发 false。
@@ -171,10 +174,14 @@ class PixelToBaseNode(Node):
         self.center_subscription = self.create_subscription(
             PointCloud, self.param('centers_topic'), self.on_color_centers,
             qos_profile_sensor_data)
-        self.ring_target_publisher = self.create_publisher(
-            PointCloud, self.param('ring_targets_topic'), 10)
-        self.stacked_enable_publisher = self.create_publisher(
-            Bool, self.param('stacked_enable_topic'), 10)
+        self.ring_project_enabled = bool(self.param('ring_project_enabled'))
+        self.ring_target_publisher = None
+        self.stacked_enable_publisher = None
+        if self.ring_project_enabled:
+            self.ring_target_publisher = self.create_publisher(
+                PointCloud, self.param('ring_targets_topic'), 10)
+            self.stacked_enable_publisher = self.create_publisher(
+                Bool, self.param('stacked_enable_topic'), 10)
         self.ring_centers_topic = self.param('ring_centers_topic')
         self.ring_centers_topic_after = self.param('ring_centers_topic_after')
         self.ring_source_switch_count = int(self.param('ring_source_switch_count'))
@@ -185,28 +192,37 @@ class PixelToBaseNode(Node):
         self.current_task_id = None
         self.counted_place_commands = set()
         self.declare_parameter('first_layer_placement_count', 0)
-        self.ring_center_subscription = self.create_subscription(
-            PointCloud, self.ring_centers_topic,
-            lambda message: self.on_ring_centers(message, self.ring_centers_topic),
-            qos_profile_sensor_data)
+        self.ring_center_subscription = None
         self.ring_center_after_subscription = None
-        if (self.ring_centers_topic_after
-                and self.ring_centers_topic_after != self.ring_centers_topic):
-            self.ring_center_after_subscription = self.create_subscription(
-                PointCloud, self.ring_centers_topic_after,
+        self.place_result_subscription = None
+        if self.ring_project_enabled:
+            self.ring_center_subscription = self.create_subscription(
+                PointCloud, self.ring_centers_topic,
                 lambda message: self.on_ring_centers(
-                    message, self.ring_centers_topic_after),
+                    message, self.ring_centers_topic),
                 qos_profile_sensor_data)
-        self.place_result_subscription = self.create_subscription(
-            String, self.param('place_result_topic'), self.on_place_result, 10)
-        if self.ring_source_switch_count > 0:
-            self.get_logger().info(
-                f'圆环识别源：{self.ring_centers_topic}'
-                f'（前 {self.ring_source_switch_count} 次放置）'
-                f' -> {self.ring_centers_topic_after}（之后）')
+            if (self.ring_centers_topic_after
+                    and self.ring_centers_topic_after != self.ring_centers_topic):
+                self.ring_center_after_subscription = self.create_subscription(
+                    PointCloud, self.ring_centers_topic_after,
+                    lambda message: self.on_ring_centers(
+                        message, self.ring_centers_topic_after),
+                    qos_profile_sensor_data)
+            self.place_result_subscription = self.create_subscription(
+                String, self.param('place_result_topic'),
+                self.on_place_result, 10)
+            if self.ring_source_switch_count > 0:
+                self.get_logger().info(
+                    f'圆环识别源：{self.ring_centers_topic}'
+                    f'（前 {self.ring_source_switch_count} 次放置）'
+                    f' -> {self.ring_centers_topic_after}（之后）')
+            else:
+                self.get_logger().info(
+                    f'圆环识别源固定为 {self.ring_centers_topic}（未启用切换）')
         else:
             self.get_logger().info(
-                f'圆环识别源固定为 {self.ring_centers_topic}（未启用切换）')
+                'ring 投影已关闭（0x0C 不再发送）；颜色目标 0x08 正常；'
+                '叠料使能由 supervisor 负责')
         self.last_auto_publish = -math.inf
         self.pending_centers = deque(maxlen=10)
         self.last_center_stamp = 0

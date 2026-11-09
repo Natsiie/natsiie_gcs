@@ -15,6 +15,9 @@ pixel_to_base:
     ring_centers_topic_after: /stacked_ring/centers_pixel
     ring_source_switch_count: 3
     place_result_topic: /arm/place_result
+    # 0x0C 三环中心投影开关：新流程用 place_task 的 0x0A/0x0B，
+    # 这里关闭 0x0C；颜色目标 0x08 不受影响。
+    ring_project_enabled: false
     targets_topic: /color/targets_base
     show: false
     tf_wait_sec: 0.5
