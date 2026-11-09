@@ -39,7 +39,7 @@ pixel_to_base:
     # 三环几何约束：以中间环为锚点，按已知中心距重建左右两环。
     # 重建后三环严格共线等距；整体平移/旋转校正由下位机负责，上位机不做补偿。
     ring_geometry_enforce: true
-    ring_center_spacing_mm: 156.0
+    ring_center_spacing_mm: 150.0
     # 备选校正：视觉系与塔吊系有 yaw 偏置时，发 0x0C 前绕转轴原点旋转该角度。
     # 正负号按实测落点方向试一次；0 = 不校正（推荐优先改下位机 gimbal_theta_offset）。
     ring_frame_yaw_offset_deg: -6.40
