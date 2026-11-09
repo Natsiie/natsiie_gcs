@@ -115,7 +115,8 @@ class RingStationDetectNode(Node):
             self.destroy_subscription(self.sub)
             self.sub = None
             self.detector.reset()
-            self.digit_tracker.reset()
+            if self.digit_tracker is not None:
+                self.digit_tracker.reset()
             self.last_stamp_ns = None
             self.get_logger().info('三圆环检测已暂停')
 
