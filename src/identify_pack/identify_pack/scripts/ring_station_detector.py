@@ -94,6 +94,7 @@ class RingStationDetection:
     detail: str = "尚未识别"
     line_constraint_applied: bool = False
     line_quality: float | None = None
+    line_segments: tuple = ()
 
 
 @dataclass
@@ -753,6 +754,7 @@ class RingStationDetector:
         # 原椭圆检测，负责横向居中与 yaw，避免用边线 yaw 重建三环导致过度纠偏。
         line_applied = False
         line_quality = None
+        line_segments = ()
         if (self.line_config is not None and config.line_constraint_enabled
                 and stable):
             try:
@@ -774,6 +776,7 @@ class RingStationDetector:
                     require_both=config.line_constraint_require_both)
                 line_quality = float(observation.get('line_quality', 0.0))
                 segments = observation.get('segments', ())
+                line_segments = tuple(segments)
                 if (has_both_reference_lines(observation)
                         and line_quality >= config.line_constraint_min_quality
                         and len(segments) == 2):
@@ -841,6 +844,7 @@ class RingStationDetector:
             detail=detail,
             line_constraint_applied=line_applied,
             line_quality=line_quality,
+            line_segments=line_segments,
         )
 
 
@@ -868,12 +872,19 @@ def draw_ring_station_detection(frame, result: RingStationDetection):
             cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA,
         )
     cv2.polylines(frame, [np.asarray(points, np.int32)], False, (255, 0, 255), 2)
+    line_color = ((0, 255, 0) if result.line_constraint_applied
+                  else (0, 200, 255))
+    for segment in getattr(result, 'line_segments', ()):
+        cv2.line(frame, tuple(segment[0]), tuple(segment[1]), line_color, 2,
+                 cv2.LINE_AA)
     lines = (
         f"Ring: {'STABLE' if result.stable else 'WAITING'}  "
         f"dX={result.error_x_mm:+.2f}mm dY={result.error_y_mm:+.2f}mm "
         f"dYaw={result.angle_error_deg:+.2f}deg",
         f"Confidence={result.confidence:.3f} residual={result.affine_residual:.3f} "
-        f"perspective={result.perspective_ratio:.3f} {result.processing_ms:.1f}ms",
+        f"perspective={result.perspective_ratio:.3f} {result.processing_ms:.1f}ms "
+        f"lines={'Y' if result.line_constraint_applied else 'N'}"
+        f" q={(result.line_quality if result.line_quality is not None else -1):.2f}",
     )
     cv2.rectangle(frame, (10, 65), (frame.shape[1] - 10, 145), (0, 0, 0), -1)
     for index, text in enumerate(lines):

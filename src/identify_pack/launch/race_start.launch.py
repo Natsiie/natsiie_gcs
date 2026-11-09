@@ -343,6 +343,8 @@ def generate_launch_description():
                 'camera_frame': 'camera_optical_frame',
                 'centers_topic': '/ring_station/centers_pixel',
                 'digit_templates': LaunchConfiguration('ring_digit_templates'),
+                # 0x0C 流程不需要数字模板识别，关闭以提升帧率。
+                'enable_digit_recognition': False,
                 # 常驻休眠：由 supervisor 按流程使能。
                 'enabled': False,
                 'enable_topic': '/ring_station/enable',

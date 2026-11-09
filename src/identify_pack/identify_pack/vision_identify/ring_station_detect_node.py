@@ -43,6 +43,8 @@ class RingStationDetectNode(Node):
         self.declare_parameter('ring_station_config', '')  # ring_station_detector.json 路径（空=自动定位）
         # 仅复用叠料区配置里的上下边线检测参数，不改叠料区检测逻辑。
         self.declare_parameter('stacked_ring_config', '')
+        # 数字模板识别每帧做模板匹配；0x0C 流程用不到，关闭可显著提速。
+        self.declare_parameter('enable_digit_recognition', True)
         self.declare_parameter('show', True)
         self.declare_parameter('camera_frame', 'camera_optical_frame')
         self.declare_parameter('centers_topic', '/ring_station/centers_pixel')
@@ -61,6 +63,8 @@ class RingStationDetectNode(Node):
         self.show = self.get_parameter('show').get_parameter_value().bool_value
         self.image_topic = image_topic
         self.enabled = bool(self.get_parameter('enabled').value)
+        self.enable_digit = bool(
+            self.get_parameter('enable_digit_recognition').value)
         enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
 
         self.detector = self._build_detector()
@@ -69,12 +73,18 @@ class RingStationDetectNode(Node):
         if not (0.1 <= inner <= 0.85 and 0 <= minimum <= 1 and 0 <= margin <= 2):
             raise ValueError('Invalid printed digit extraction or matching thresholds')
         self.digit_options = (inner, minimum, margin)
-        self.templates, _ = load_templates(Path(self._resolve_config(
-            self.get_parameter('digit_templates').value, 'ring_station_digit_templates')),
-            allow_builtin=False)
-        self.digit_tracker = DigitMappingTracker(
-            self.detector.config.stable_frame_count,
-            self.detector.config.maximum_center_jitter_px, expected_digits=(1, 2, 3))
+        if self.enable_digit:
+            self.templates, _ = load_templates(Path(self._resolve_config(
+                self.get_parameter('digit_templates').value,
+                'ring_station_digit_templates')), allow_builtin=False)
+            self.digit_tracker = DigitMappingTracker(
+                self.detector.config.stable_frame_count,
+                self.detector.config.maximum_center_jitter_px,
+                expected_digits=(1, 2, 3))
+        else:
+            self.templates = None
+            self.digit_tracker = None
+            self.get_logger().info('数字模板识别已关闭（0x0C 流程不需要）')
         self.last_stamp_ns = None
 
         self.br = CvBridge()
@@ -151,19 +161,25 @@ class RingStationDetectNode(Node):
         stamp_ns = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
         if self.last_stamp_ns is not None and stamp_ns <= self.last_stamp_ns:
             self.detector.reset()
-            self.digit_tracker.reset()
+            if self.digit_tracker is not None:
+                self.digit_tracker.reset()
             return
         if self.last_stamp_ns is not None and stamp_ns - self.last_stamp_ns > 500000000:
             self.detector.reset()
-            self.digit_tracker.reset()
+            if self.digit_tracker is not None:
+                self.digit_tracker.reset()
         self.last_stamp_ns = stamp_ns
         result = self.detector.detect(img)
-        report, _ = recognize_detection(img, result, self.templates, *self.digit_options)
-        self.digit_tracker.update(report, img.shape[1::-1])
-        report.update({'stamp_ns': stamp_ns, 'frame_id': msg.header.frame_id or
-                       self.get_parameter('camera_frame').value,
-                       'image_size': list(img.shape[1::-1])})
-        self.pub_digits.publish(String(data=json.dumps(report, allow_nan=False)))
+        report = None
+        if self.enable_digit:
+            report, _ = recognize_detection(
+                img, result, self.templates, *self.digit_options)
+            self.digit_tracker.update(report, img.shape[1::-1])
+            report.update({'stamp_ns': stamp_ns, 'frame_id': msg.header.frame_id or
+                           self.get_parameter('camera_frame').value,
+                           'image_size': list(img.shape[1::-1])})
+            self.pub_digits.publish(
+                String(data=json.dumps(report, allow_nan=False)))
         self.pub_centers.publish(ring_centers_message(
             msg.header, result, img.shape[1::-1], self.get_parameter('camera_frame').value, report))
         if result.detected:
@@ -184,7 +200,8 @@ class RingStationDetectNode(Node):
                 f'conf={result.confidence:.2f} stable={result.stable} '
                 f'within={result.within_tolerance} scope={result.detection_scope} '
                 f'line={int(result.line_constraint_applied)} '
-                f'line_q={(result.line_quality if result.line_quality is not None else -1):.2f}',
+                f'line_q={(result.line_quality if result.line_quality is not None else -1):.2f} '
+                f'proc={result.processing_ms:.0f}ms',
                 throttle_duration_sec=1.0)
         else:
             self.get_logger().info(f'三圆环工位未检出：{result.detail}',
@@ -192,11 +209,14 @@ class RingStationDetectNode(Node):
 
         if self.show:
             draw_ring_station_detection(img, result)
-            for ring in report['rings']:
-                x, y = (int(round(value)) for value in ring['center_px'])
-                cv2.putText(img, f"R{ring['ring_id'] or '?'} digit={ring['digit'] or '?'}",
-                            (max(0, x - 40), min(img.shape[0] - 8, y + 30)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            if report is not None:
+                for ring in report['rings']:
+                    x, y = (int(round(value)) for value in ring['center_px'])
+                    cv2.putText(
+                        img,
+                        f"R{ring['ring_id'] or '?'} digit={ring['digit'] or '?'}",
+                        (max(0, x - 40), min(img.shape[0] - 8, y + 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             cv2.imshow('ring_station', img)
             cv2.waitKey(1)
 
