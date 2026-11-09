@@ -1,4 +1,5 @@
 import json
+from collections import deque
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -89,6 +90,11 @@ class PlacePipelineTests(unittest.TestCase):
         node.task.load('156+231+516+312')
         node.phase_started_ns = 41 * 10**9
         node.observations = {}
+        node.average_frames = 1
+        node.average_timeout = 3.0
+        node.center_buffers = {
+            stage: deque(maxlen=1) for stage in ('ring_station', 'stacked_ring')}
+        node.pending_start = None
         node.frozen_observation = None
         node.command_pub = Mock()
         node.status_pub = Mock()
@@ -206,11 +212,12 @@ class PlacePipelineTests(unittest.TestCase):
     def test_start_freezes_stopped_centers_and_ignores_later_motion(self):
         with tempfile.TemporaryDirectory() as directory:
             node = self.node(Path(directory) / 'progress.json')
-            # 车停稳，圆心观测先到。
-            node.on_centers('ring_station', self.observation())
-            # 下位机停到位发 start，冻结这份停稳观测。
+            # 下位机停到位发 start；start 后累积帧再冻结（测试用 1 帧）。
             node.on_control(String(data=json.dumps(
                 {'action': 'start', 'stage': 'ring_station', 'batch': 1})))
+            self.assertIsNone(node.frozen_observation)
+            # 车停稳，圆心观测到达，累积后冻结。
+            node.on_centers('ring_station', self.observation())
             self.assertIsNotNone(node.frozen_observation)
             # 后续运动导致圆心漂移，实时观测被更新（不应被采用）。
             moved = self.observation()

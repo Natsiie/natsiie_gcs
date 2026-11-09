@@ -195,6 +195,9 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
+                # 常驻休眠：由 supervisor 按流程使能。
+                'enabled': False,
+                'enable_topic': '/color/enable',
             }],
         ),
 
@@ -318,6 +321,9 @@ def generate_launch_description():
                     LaunchConfiguration('enable_turntable_seed'), value_type=bool),
                 'show': ParameterValue(
                     LaunchConfiguration('turntable_show'), value_type=bool),
+                # 常驻休眠：由 supervisor 按流程使能。
+                'enabled': False,
+                'enable_topic': '/turntable/enable',
             }],
         ),
 
@@ -334,6 +340,9 @@ def generate_launch_description():
                 'camera_frame': 'camera_optical_frame',
                 'centers_topic': '/ring_station/centers_pixel',
                 'digit_templates': LaunchConfiguration('ring_digit_templates'),
+                # 常驻休眠：由 supervisor 按流程使能。
+                'enabled': False,
+                'enable_topic': '/ring_station/enable',
             }],
         ),
 
@@ -348,18 +357,31 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'camera_frame': 'camera_optical_frame',
                 'centers_topic': '/stacked_ring/centers_pixel',
+                # 启动时休眠，等 pixel_to_base 在第 3 次放置后发
+                # /stacked_ring/enable=true 再订阅图像，降低并行负载。
+                'enabled': False,
+                'enable_topic': '/stacked_ring/enable',
             }],
         ),
 
         # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
         # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。
-        # Node(
-        #     package='identify_pack',
-        #     executable='place_task',
-        #     name='place_task',
-        #     output='screen',
-        #     parameters=[LaunchConfiguration('place_task_params_file')],
-        # ),
+        Node(
+            package='identify_pack',
+            executable='place_task',
+            name='place_task',
+            output='screen',
+            parameters=[LaunchConfiguration('place_task_params_file')],
+        ),
+
+        # 比赛流程 supervisor：按批次/区域切换检测节点、累积 5 帧像素均值，
+        # 等待下位机 0x11 AlignDone 后启动放置阶段。
+        Node(
+            package='identify_pack',
+            executable='race_supervisor_node',
+            name='race_supervisor_node',
+            output='screen',
+        ),
 
         # ROI 叠加节点：订阅副相机（调试用）
         # Node(

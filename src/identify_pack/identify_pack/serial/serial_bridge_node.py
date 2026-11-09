@@ -21,8 +21,9 @@ from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, extract_frames,
     make_frame, COLOR_TARGET_TYPE, RING_TARGET_TYPE,
     PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE,
-    PICK_DONE_TYPE, NEXT_BATCH_TYPE, TURNTABLE_ALIGN_TYPE,
-    parse_place_result, parse_place_control, place_command_payload,
+    PICK_DONE_TYPE, NEXT_BATCH_TYPE, TURNTABLE_ALIGN_TYPE, ALIGN_DONE_TYPE,
+    parse_place_result, parse_place_control, parse_align_done,
+    place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
 from identify_pack.scripts.color_config import PICKUP_COLOR_IDS
@@ -137,6 +138,7 @@ class SerialBridgeNode(Node):
         self.pub_place_result = self.create_publisher(String, '/arm/place_result', 10)
         self.pub_pick_done = self.create_publisher(UInt32, '/arm/pick_done', 10)
         self.pub_next_batch = self.create_publisher(UInt32, '/arm/next_batch', 10)
+        self.pub_align_done = self.create_publisher(String, '/arm/align_done', 10)
         self.create_subscription(String, '/arm/place_command', self._on_place_command, 10)
         self.declare_parameter('place_control_topic', '/arm/place_control')
         self.pub_place_control = self.create_publisher(
@@ -345,6 +347,17 @@ class SerialBridgeNode(Node):
                 except (TypeError, ValueError) as error:
                     self.get_logger().warning(
                         f'忽略非法 NextBatch payload={payload!r}: {error}')
+                continue
+            if type_byte == ALIGN_DONE_TYPE:
+                try:
+                    done = parse_align_done(payload)
+                    self.pub_align_done.publish(String(data=json.dumps(done)))
+                    self.get_logger().info(
+                        f'RX AlignDone: stage={done["stage"]} '
+                        f'success={done["success"]}')
+                except ValueError as error:
+                    self.get_logger().warning(
+                        f'忽略非法 AlignDone payload={payload!r}: {error}')
                 continue
             if type_byte != self.yaw_feedback_type:
                 self.get_logger().warning(

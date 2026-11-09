@@ -15,7 +15,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from cv_bridge import CvBridge
 import cv2
 
@@ -46,6 +46,9 @@ class TurntableDetectNode(Node):
         self.declare_parameter('show', True)
         self.declare_parameter('align_config', '')   # turntable_align.json 路径（空=自动定位）
         self.declare_parameter('ring_config', '')    # ring_station_detector.json 路径（底盘纠偏矩阵）
+        # 常驻休眠：启动时不订阅图像；收到 enable_topic=true 才创建订阅。
+        self.declare_parameter('enabled', False)
+        self.declare_parameter('enable_topic', '/turntable/enable')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.turntable_config = self.get_parameter('turntable_config').get_parameter_value().string_value
@@ -55,15 +58,42 @@ class TurntableDetectNode(Node):
         self.show = self.get_parameter('show').get_parameter_value().bool_value
         self.align_config_path = self.get_parameter('align_config').get_parameter_value().string_value
         self.ring_config_path = self.get_parameter('ring_config').get_parameter_value().string_value
+        self.image_topic = image_topic
+        self.enabled = bool(self.get_parameter('enabled').value)
+        enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
 
         self.detector = self._build_detector()
         self.align_config, self.chassis_matrix = self._build_align()
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
+        self.sub = None
         self.pub = self.create_publisher(String, 'Turntable', 10)
         self.pub_align = self.create_publisher(String, 'TurntableAlign', 10)
-        self.get_logger().info(f'转盘检测订阅 {image_topic}')
+        self.enable_sub = self.create_subscription(
+            Bool, enable_topic, self.on_enable, 10)
+        if self.enabled:
+            self._enable_image_subscription()
+        else:
+            self.get_logger().info(
+                f'转盘检测已启动（暂停，等待 {enable_topic} 使能）')
+
+    def _enable_image_subscription(self):
+        if self.sub is None:
+            self.sub = self.create_subscription(
+                Image, self.image_topic, self.image_cb, qos_profile_sensor_data)
+            self.get_logger().info(f'转盘检测已启用，订阅 {self.image_topic}')
+
+    def on_enable(self, msg):
+        enabled = bool(msg.data)
+        if enabled and self.sub is None:
+            self._enable_image_subscription()
+        elif not enabled and self.sub is not None:
+            self.destroy_subscription(self.sub)
+            self.sub = None
+            reset = getattr(self.detector, 'reset', None)
+            if callable(reset):
+                reset()
+            self.get_logger().info('转盘检测已暂停')
 
     def _resolve_config(self, param_value, filename):
         if param_value:

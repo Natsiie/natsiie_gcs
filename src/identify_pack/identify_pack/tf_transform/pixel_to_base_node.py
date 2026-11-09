@@ -18,7 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from identify_pack.config_paths import data_path
@@ -82,6 +82,8 @@ class PixelToBaseNode(Node):
             'ring_source_switch_count': 3,
             # 下位机放置结束回传（0x0B -> 串口桥 -> /arm/place_result）。
             'place_result_topic': '/arm/place_result',
+            # 叠放区检测节点按需使能：切过去时发 true，新任务重置时发 false。
+            'stacked_enable_topic': '/stacked_ring/enable',
             # 三环几何约束：以中间环为锚点，按已知中心距重建左右两环，
             # 消除三环各自投影误差。整体平移/旋转校正由下位机负责。
             'ring_geometry_enforce': True,
@@ -171,6 +173,8 @@ class PixelToBaseNode(Node):
             qos_profile_sensor_data)
         self.ring_target_publisher = self.create_publisher(
             PointCloud, self.param('ring_targets_topic'), 10)
+        self.stacked_enable_publisher = self.create_publisher(
+            Bool, self.param('stacked_enable_topic'), 10)
         self.ring_centers_topic = self.param('ring_centers_topic')
         self.ring_centers_topic_after = self.param('ring_centers_topic_after')
         self.ring_source_switch_count = int(self.param('ring_source_switch_count'))
@@ -429,6 +433,12 @@ class PixelToBaseNode(Node):
         self.active_ring_source = source
         self.pending_rings.clear()
         self.last_ring_stamp = 0
+        # 叠放区检测节点按需启用：切到叠放源时为 true，切回三圆环时为 false。
+        try:
+            self.stacked_enable_publisher.publish(
+                Bool(data=source == self.ring_centers_topic_after))
+        except (AttributeError, RuntimeError) as error:
+            self.get_logger().debug(f'发布叠放位使能失败: {error}')
         self.get_logger().warning(f'圆环识别源切换为 {source}（{reason}）')
 
     def validate_ring_centers(self, msg):

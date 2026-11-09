@@ -92,6 +92,9 @@ class ColorDetectNode(Node):
         self.declare_parameter('show', True)           # 是否弹窗显示
         self.declare_parameter('centers_topic', '/color/centers_pixel')
         self.declare_parameter('camera_frame', 'camera_optical_frame')
+        # 常驻休眠：启动时不订阅图像；收到 enable_topic=true 才创建订阅。
+        self.declare_parameter('enabled', False)
+        self.declare_parameter('enable_topic', '/color/enable')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.color_config = self.get_parameter('color_config').get_parameter_value().string_value
@@ -101,6 +104,9 @@ class ColorDetectNode(Node):
         self.lock_dominant = self.get_parameter('lock_dominant_color').get_parameter_value().bool_value
         self.show = self.get_parameter('show').get_parameter_value().bool_value
         self.require_single_roi = self.get_parameter('require_single_roi').value
+        self.image_topic = image_topic
+        self.enabled = bool(self.get_parameter('enabled').value)
+        enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
 
         self.color_cfg = self._load_color_config()
         self.color_roi = self._resolve_roi()
@@ -118,7 +124,7 @@ class ColorDetectNode(Node):
         self._last_required_frames = None
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
+        self.sub = None
         self.pub_color = self.create_publisher(String, 'Color', 10)
         self.centers_topic = self.get_parameter('centers_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
@@ -129,9 +135,31 @@ class ColorDetectNode(Node):
         self.pub_centers = self.create_publisher(PointCloud, self.centers_topic, 10)
         self.pub_motion = self.create_publisher(String, 'ColorMotion', 10)
         self.pub_arrived = self.create_publisher(Bool, self.arrived_topic, 10)
-        self.get_logger().info(
-            f'色块识别订阅 {image_topic}；停稳 OK -> {self.arrived_topic}'
-            f'（{"启用" if self.publish_arrived else "关闭"}）')
+        self.enable_sub = self.create_subscription(
+            Bool, enable_topic, self.on_enable, 10)
+        if self.enabled:
+            self._enable_image_subscription()
+        else:
+            self.get_logger().info(
+                f'颜色识别已启动（暂停，等待 {enable_topic} 使能）；'
+                f'停稳 OK -> {self.arrived_topic}')
+
+    def _enable_image_subscription(self):
+        if self.sub is None:
+            self.sub = self.create_subscription(
+                Image, self.image_topic, self.image_cb, qos_profile_sensor_data)
+            self.get_logger().info(f'颜色识别已启用，订阅 {self.image_topic}')
+
+    def on_enable(self, msg):
+        enabled = bool(msg.data)
+        if enabled and self.sub is None:
+            self._enable_image_subscription()
+        elif not enabled and self.sub is not None:
+            self.destroy_subscription(self.sub)
+            self.sub = None
+            self.stationary.reset()
+            self._arrived_armed = True
+            self.get_logger().info('颜色识别已暂停')
         if self.require_single_roi and (not self.color_roi or len(self.color_roi) != 1):
             self.get_logger().error('任务抓取模式需要且仅允许一个 ROI；请重新圈定，当前禁止输出目标')
 

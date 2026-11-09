@@ -37,12 +37,15 @@ TOPIC_TYPES = {
     'TurntableAlign': 0x0E,  # 上位机 -> 下位机，转盘圆心对齐纠偏 corr_x,corr_y,within(0/1)
     'PickDone':      0x0F,  # 下位机 -> 上位机，抓取完成序号 1~6
     'NextBatch':     0x10,  # 下位机 -> 上位机，第一批完成回装就绪，payload "1"
+    # 下位机 -> 上位机，底盘/区域矫正完成回传：stage,success(0/1)
+    # stage: 1=转盘区, 2=三圆环区, 3=叠料区
+    'AlignDone':     0x11,
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl', 'PickDone', 'NextBatch')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl', 'PickDone', 'NextBatch', 'AlignDone')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
@@ -54,6 +57,7 @@ RING_TARGET_TYPE = TOPIC_TYPES['RingTarget']
 PICK_DONE_TYPE = TOPIC_TYPES['PickDone']
 NEXT_BATCH_TYPE = TOPIC_TYPES['NextBatch']
 TURNTABLE_ALIGN_TYPE = TOPIC_TYPES['TurntableAlign']
+ALIGN_DONE_TYPE = TOPIC_TYPES['AlignDone']
 
 
 def validate_place_identity(task_id, command_id):
@@ -123,6 +127,24 @@ def parse_place_control(payload):
             raise ValueError('Invalid placement command ID')
         return {'action': 'retry', 'command_id': command_id}
     raise ValueError('Unknown placement control action')
+
+
+ALIGN_STAGE_NAMES = {1: 'turntable', 2: 'ring_station', 3: 'stacked_ring'}
+
+
+def parse_align_done(payload):
+    """下位机 -> 上位机 的矫正完成回传：``stage,success``。
+
+    stage: 1=转盘区, 2=三圆环区, 3=叠料区；success: 0/1。
+    """
+    parts = payload.split(',')
+    if (len(parts) != 2 or not parts[0].strip().isdigit()
+            or parts[1].strip() not in ('0', '1')):
+        raise ValueError('Invalid align done')
+    stage = int(parts[0].strip())
+    if stage not in ALIGN_STAGE_NAMES:
+        raise ValueError('Invalid align stage')
+    return {'stage': stage, 'success': parts[1].strip() == '1'}
 
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}

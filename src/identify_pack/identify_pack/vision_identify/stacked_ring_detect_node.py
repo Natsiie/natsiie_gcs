@@ -16,7 +16,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, PointCloud
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from cv_bridge import CvBridge
 import cv2
 
@@ -44,8 +44,14 @@ class StackedRingDetectNode(Node):
         self.declare_parameter('show', True)
         self.declare_parameter('camera_frame', 'camera_optical_frame')
         self.declare_parameter('centers_topic', '/stacked_ring/centers_pixel')
+        # 默认休眠：不订阅图像、不逐帧检测；等 /stacked_ring/enable 为 true 再启用。
+        self.declare_parameter('enabled', False)
+        self.declare_parameter('enable_topic', '/stacked_ring/enable')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
+        self.image_topic = image_topic
+        self.enabled = bool(self.get_parameter('enabled').value)
+        enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
         self.stacked_ring_config = self.get_parameter('stacked_ring_config').get_parameter_value().string_value
         self.ring_station_config = self.get_parameter('ring_station_config').get_parameter_value().string_value
         self.width = self.get_parameter('width').get_parameter_value().integer_value
@@ -55,11 +61,34 @@ class StackedRingDetectNode(Node):
         self.detector = self._build_detector()
 
         self.br = CvBridge()
-        self.sub = self.create_subscription(Image, image_topic, self.image_cb, qos_profile_sensor_data)
+        self.sub = None
         self.pub = self.create_publisher(String, 'stacked_ring', 10)
         self.pub_centers = self.create_publisher(
             PointCloud, self.get_parameter('centers_topic').value, 10)
-        self.get_logger().info(f'叠放位检测订阅 {image_topic}')
+        self.enable_sub = self.create_subscription(
+            Bool, enable_topic, self.on_enable, 10)
+        if self.enabled:
+            self._enable_image_subscription()
+        else:
+            self.get_logger().info(
+                f'叠放位检测已启动（暂停，等待 {enable_topic} 使能）')
+
+    def _enable_image_subscription(self):
+        if self.sub is None:
+            self.sub = self.create_subscription(
+                Image, self.image_topic, self.image_cb, qos_profile_sensor_data)
+            self.get_logger().info(f'叠放位检测已启用，订阅 {self.image_topic}')
+
+    def on_enable(self, msg):
+        """按需启用/暂停图像订阅；检测逻辑本身保持不变。"""
+        enabled = bool(msg.data)
+        if enabled and self.sub is None:
+            self._enable_image_subscription()
+        elif not enabled and self.sub is not None:
+            self.destroy_subscription(self.sub)
+            self.sub = None
+            self.detector.reset()
+            self.get_logger().info('叠放位检测已暂停')
 
     def _resolve_config(self, param_value, filename):
         if param_value:
