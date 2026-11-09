@@ -46,7 +46,8 @@ class RaceSupervisorNode(Node):
             'ring_enable_topic': '/ring_station/enable',
             'stacked_enable_topic': '/stacked_ring/enable',
             'picks_per_batch': 3,
-            'placements_per_phase': 3,
+            # 0x0C 批量模型：下位机放完一批 3 件后回一次 0x0B。
+            'placements_per_phase': 1,
         }.items():
             self.declare_parameter(name, value)
 
@@ -63,9 +64,6 @@ class RaceSupervisorNode(Node):
             'stacked_ring': self.create_publisher(
                 Bool, self.param('stacked_enable_topic'), 10),
         }
-        self.place_control_pub = self.create_publisher(
-            String, self.param('place_control_topic'), 10)
-
         self.create_subscription(
             String, self.param('qr_topic'), self._on_qr, 10)
         self.create_subscription(
@@ -125,14 +123,11 @@ class RaceSupervisorNode(Node):
 
         phase = self._phase()
         if self.step == 'ALIGN' and phase is not None and stage == phase[0]:
-            self._start_placement(phase)
-
-    def _start_placement(self, phase):
-        self.place_control_pub.publish(String(data=json.dumps({
-            'action': 'start', 'stage': phase[0], 'batch': phase[1]})))
-        self.step = 'PLACE'
-        self.place_keys.clear()
-        self.log(f'{phase[0]} 矫正完成，已启动放置（place_task 累积 5 帧均值）')
+            self.step = 'PLACE'
+            self.place_keys.clear()
+            self.log(
+                f'{phase[0]} 矫正完成，pixel_to_base 累积 5 帧均值后发 0x0C，'
+                f'等待本批 0x0B 完成')
 
     def _on_pick_done(self, message):
         if self.step != 'COLOR':

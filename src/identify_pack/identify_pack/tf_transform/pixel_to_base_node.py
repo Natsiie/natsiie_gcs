@@ -83,6 +83,10 @@ class PixelToBaseNode(Node):
             # 0x0C ring 投影开关：false 时不订阅三环中心、不发布
             # /ring_station/targets_base；颜色目标 0x08 不受影响。
             'ring_project_enabled': False,
+            # align_done 后累积的帧数，逐点取像素均值后只发一次 0x0C；
+            # 0 = 保持逐帧投影旧行为。
+            'ring_average_frames': 5,
+            'align_done_topic': '/arm/align_done',
             # 下位机放置结束回传（0x0B -> 串口桥 -> /arm/place_result）。
             'place_result_topic': '/arm/place_result',
             # 叠放区检测节点按需使能：切过去时发 true，新任务重置时发 false。
@@ -175,13 +179,17 @@ class PixelToBaseNode(Node):
             PointCloud, self.param('centers_topic'), self.on_color_centers,
             qos_profile_sensor_data)
         self.ring_project_enabled = bool(self.param('ring_project_enabled'))
+        self.ring_average_frames = int(self.param('ring_average_frames'))
+        if self.ring_average_frames < 0:
+            raise ValueError('ring_average_frames must be >= 0')
+        self.measure_pending = False
+        self.measure_source = None
+        self.measure_buffer = deque(maxlen=max(1, self.ring_average_frames))
         self.ring_target_publisher = None
         self.stacked_enable_publisher = None
         if self.ring_project_enabled:
             self.ring_target_publisher = self.create_publisher(
                 PointCloud, self.param('ring_targets_topic'), 10)
-            self.stacked_enable_publisher = self.create_publisher(
-                Bool, self.param('stacked_enable_topic'), 10)
         self.ring_centers_topic = self.param('ring_centers_topic')
         self.ring_centers_topic_after = self.param('ring_centers_topic_after')
         self.ring_source_switch_count = int(self.param('ring_source_switch_count'))
@@ -195,6 +203,7 @@ class PixelToBaseNode(Node):
         self.ring_center_subscription = None
         self.ring_center_after_subscription = None
         self.place_result_subscription = None
+        self.align_done_subscription = None
         if self.ring_project_enabled:
             self.ring_center_subscription = self.create_subscription(
                 PointCloud, self.ring_centers_topic,
@@ -208,17 +217,25 @@ class PixelToBaseNode(Node):
                     lambda message: self.on_ring_centers(
                         message, self.ring_centers_topic_after),
                     qos_profile_sensor_data)
-            self.place_result_subscription = self.create_subscription(
-                String, self.param('place_result_topic'),
-                self.on_place_result, 10)
+            self.align_done_subscription = self.create_subscription(
+                String, self.param('align_done_topic'),
+                self.on_align_done, 10)
             if self.ring_source_switch_count > 0:
+                self.stacked_enable_publisher = self.create_publisher(
+                    Bool, self.param('stacked_enable_topic'), 10)
+                self.place_result_subscription = self.create_subscription(
+                    String, self.param('place_result_topic'),
+                    self.on_place_result, 10)
                 self.get_logger().info(
                     f'圆环识别源：{self.ring_centers_topic}'
                     f'（前 {self.ring_source_switch_count} 次放置）'
                     f' -> {self.ring_centers_topic_after}（之后）')
-            else:
+            if self.ring_average_frames > 0:
                 self.get_logger().info(
-                    f'圆环识别源固定为 {self.ring_centers_topic}（未启用切换）')
+                    f'ring 投影：align_done 后累积 '
+                    f'{self.ring_average_frames} 帧像素均值，发送一次 0x0C')
+            else:
+                self.get_logger().info('ring 投影：逐帧发送 0x0C')
         else:
             self.get_logger().info(
                 'ring 投影已关闭（0x0C 不再发送）；颜色目标 0x08 正常；'
@@ -390,10 +407,73 @@ class PixelToBaseNode(Node):
                 return
             self.validate_ring_centers(msg)
             self.last_ring_stamp = stamp_ns
+            if self.ring_average_frames > 0:
+                if self.measure_pending and source == self.measure_source:
+                    self.measure_buffer.append(msg)
+                    if len(self.measure_buffer) >= self.ring_average_frames:
+                        self._publish_averaged_rings()
+                return
             self.pending_rings.append((msg, time.monotonic()))
             self.project_pending_rings()
         except ValueError as error:
             self.get_logger().warning(f'拒绝圆环圆心: {error}', throttle_duration_sec=2.0)
+
+    def on_align_done(self, message):
+        """下位机区域矫正完成：切到对应识别源并开始累积像素均值。"""
+        if not self.ring_project_enabled:
+            return
+        try:
+            data = json.loads(message.data)
+            stage = int(data['stage'])
+            success = bool(data['success'])
+        except (ValueError, KeyError, TypeError):
+            return
+        if not success or stage not in (2, 3):
+            return
+        source = (self.ring_centers_topic if stage == 2
+                  else self.ring_centers_topic_after)
+        if not source:
+            return
+        self.active_ring_source = source
+        self.measure_source = source
+        self.measure_buffer.clear()
+        self.measure_pending = True
+        self.get_logger().info(
+            f'区域矫正完成 stage={stage}，开始累积 '
+            f'{self.ring_average_frames} 帧圆环中心')
+
+    def _publish_averaged_rings(self):
+        buffer = list(self.measure_buffer)
+        self.measure_pending = False
+        self.measure_buffer.clear()
+        if not buffer:
+            return
+        averaged = self._average_centers(buffer)
+        self.pending_rings.append((averaged, time.monotonic()))
+        self.project_pending_rings()
+        self.get_logger().info(
+            f'{len(buffer)} 帧像素均值已投影，发送 0x0C（三个环中心）')
+
+    @staticmethod
+    def _average_centers(messages):
+        """三环圆心逐点取像素均值；header/channels 用最新一帧。"""
+        latest = messages[-1]
+        points = []
+        for index in range(len(latest.points)):
+            xs = [m.points[index].x for m in messages]
+            ys = [m.points[index].y for m in messages]
+            points.append(Point32(
+                x=float(sum(xs) / len(xs)),
+                y=float(sum(ys) / len(ys)),
+                z=0.0))
+        out = PointCloud()
+        out.header = copy.deepcopy(latest.header)
+        out.header.frame_id = latest.header.frame_id
+        out.points = points
+        out.channels = [
+            ChannelFloat32(name=channel.name, values=list(channel.values))
+            for channel in latest.channels]
+        return out
 
     def on_place_result(self, message):
         """下位机 0x0B 放置结束：成功后累计第一层放置次数，达到阈值切换识别源。"""

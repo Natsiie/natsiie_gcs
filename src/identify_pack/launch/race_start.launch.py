@@ -364,15 +364,14 @@ def generate_launch_description():
             }],
         ),
 
-        # 放置/堆料任务协调：按阶段顺序把环/叠放位中心换算成放置指令发布到 /arm/place_command，
-        # 由下方统一串口桥转发（0x0A）并接收下位机完成反馈（0x0B -> /arm/place_result）。
-        Node(
-            package='identify_pack',
-            executable='place_task',
-            name='place_task',
-            output='screen',
-            parameters=[LaunchConfiguration('place_task_params_file')],
-        ),
+        # 放置/堆料任务协调（0x0A 逐件命令）：当前用 0x0C 批量模型，暂不启动。
+        # Node(
+        #     package='identify_pack',
+        #     executable='place_task',
+        #     name='place_task',
+        #     output='screen',
+        #     parameters=[LaunchConfiguration('place_task_params_file')],
+        # ),
 
         # 比赛流程 supervisor：按批次/区域切换检测节点、累积 5 帧像素均值，
         # 等待下位机 0x11 AlignDone 后启动放置阶段。
