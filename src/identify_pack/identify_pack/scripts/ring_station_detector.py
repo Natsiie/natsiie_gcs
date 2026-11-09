@@ -60,6 +60,13 @@ class RingStationConfig:
     chassis_image_to_motion: tuple[tuple[float, float, float], ...] | None
     # 叠放位等使用 ring_config 做样本稳定性时，允许的椭圆轴长逐帧偏差（px）。
     maximum_axes_jitter_px: float = 2.0
+    # 上下边线约束：复用叠料区的边线检测，抑制三环独立拟合造成的过度纠偏。
+    # 边线缺失或质量不足时自动回退原三环拟合逻辑。
+    line_constraint_enabled: bool = True
+    line_constraint_min_quality: float = 0.5
+    line_constraint_require_both: bool = True
+    # 中环椭圆 y 与边线 mid-y 的最大允许偏差；超过则认为边线误检，回退椭圆。
+    line_constraint_max_y_diff_px: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,8 @@ class RingStationDetection:
     processing_ms: float = 0.0
     detection_scope: str = "full"
     detail: str = "尚未识别"
+    line_constraint_applied: bool = False
+    line_quality: float | None = None
 
 
 @dataclass
@@ -126,6 +135,7 @@ def load_ring_station_config(path: Path | str) -> RingStationConfig:
         detection = raw["detection"]
         reference = raw["reference"]
         acceptance = raw["acceptance"]
+        line_constraint = raw.get("line_constraint", {})
         centers = tuple(
             (float(center[0]), float(center[1]))
             for center in reference["ring_centers_px"]
@@ -193,6 +203,18 @@ def load_ring_station_config(path: Path | str) -> RingStationConfig:
                 acceptance["maximum_angle_error_deg"]
             ),
             chassis_image_to_motion=correction,
+            line_constraint_enabled=bool(
+                line_constraint.get("enabled", True)
+            ),
+            line_constraint_min_quality=float(
+                line_constraint.get("minimum_line_quality", 0.5)
+            ),
+            line_constraint_require_both=bool(
+                line_constraint.get("require_both_lines", True)
+            ),
+            line_constraint_max_y_diff_px=float(
+                line_constraint.get("maximum_line_y_difference_px", 30.0)
+            ),
         )
     except RingStationDetectionError:
         raise
@@ -220,6 +242,12 @@ def load_ring_station_config(path: Path | str) -> RingStationConfig:
         raise RingStationDetectionError("稳定窗口至少需要2帧")
     if config.maximum_axes_jitter_px <= 0:
         raise RingStationDetectionError('maximum_axes_jitter_px must be positive')
+    if not 0.0 <= config.line_constraint_min_quality <= 1.0:
+        raise RingStationDetectionError(
+            'line_constraint.minimum_line_quality must be within 0~1')
+    if config.line_constraint_max_y_diff_px <= 0:
+        raise RingStationDetectionError(
+            'line_constraint.maximum_line_y_difference_px must be positive')
     if config.maximum_center_jitter_px <= 0:
         raise RingStationDetectionError("圆心抖动门槛必须大于0")
     if len(config.perspective_ratio_range) != 2:
@@ -575,9 +603,13 @@ def _median_angle_deg(angles):
 class RingStationDetector:
     """全图搜索后转入 ROI，并只由连续直接观测产生稳定结果。"""
 
-    def __init__(self, config: RingStationConfig, use_hough=False):
+    def __init__(self, config: RingStationConfig, use_hough=False,
+                 line_config=None):
         self.config = config
         self.use_hough = use_hough
+        # 叠料区检测配置（StackedRingConfig）；仅用于复用上下边线检测。
+        self.line_config = line_config
+        self._last_line_detail = None
         self._samples = deque(maxlen=config.stable_frame_count)
         self._tracking_roi = None
         self._roi_failures = 0
@@ -717,6 +749,47 @@ class RingStationDetector:
         angle_error = float(np.median(yaw_errors))
         yaw = _normalize_angle(config.reference_yaw_deg + angle_error)
 
+        # 上下边线约束：中环 + 上下边线只约束纵深（中环 y）；左右环保持
+        # 原椭圆检测，负责横向居中与 yaw，避免用边线 yaw 重建三环导致过度纠偏。
+        line_applied = False
+        line_quality = None
+        if (self.line_config is not None and config.line_constraint_enabled
+                and stable):
+            try:
+                from identify_pack.scripts.stacked_ring_detector import (
+                    _segment_y_at_x, detect_scaled_reference_lines,
+                    has_both_reference_lines, stacked_edge_image,
+                )
+                line_cal = self.line_config.search_calibration or {}
+                observation = detect_scaled_reference_lines(
+                    frame, ellipses[1], self.line_config,
+                    float(line_cal.get('outer_diameter_mm',
+                                       config.outer_diameter_mm)),
+                    float(line_cal.get('line_offset_mm', 75.0)),
+                    float(line_cal.get('line_yaw_deg',
+                                       config.reference_yaw_deg)),
+                    float(line_cal.get('search_half_width_diameters', 2.7)),
+                    float(line_cal.get('band_half_height_diameters', 0.14)),
+                    edge_image=stacked_edge_image(frame, self.line_config),
+                    require_both=config.line_constraint_require_both)
+                line_quality = float(observation.get('line_quality', 0.0))
+                segments = observation.get('segments', ())
+                if (has_both_reference_lines(observation)
+                        and line_quality >= config.line_constraint_min_quality
+                        and len(segments) == 2):
+                    middle_x = centers[1][0]
+                    mid_y = 0.5 * (
+                        _segment_y_at_x(segments[0], middle_x)
+                        + _segment_y_at_x(segments[1], middle_x))
+                    # 边线只修正纵深；偏差过大视为误检，保留椭圆中环。
+                    if abs(mid_y - centers[1][1]) <= config.line_constraint_max_y_diff_px:
+                        centers = (centers[0], (middle_x, mid_y), centers[2])
+                        line_applied = True
+                self._last_line_detail = (
+                    'line-distance' if line_applied else 'line-fallback')
+            except (ValueError, cv2.error) as error:
+                self._last_line_detail = f'line-fallback: {error}'
+
         affine = np.asarray(config.image_to_station_affine)
         # 图像像素偏差乘2x2标定矩阵，得到工位平面上的毫米偏差。
         metric_errors = []
@@ -724,7 +797,10 @@ class RingStationDetector:
             pixel_error = np.asarray(center) - np.asarray(reference)
             metric_errors.append(affine @ pixel_error)
         metric_errors = tuple(metric_errors)
-        error_x, error_y = (float(v) for v in metric_errors[1])
+        # 横向居中取左右环平均（左右环保持原椭圆检测）；
+        # 纵深取中环 y（已被上下边线约束）。
+        error_x = float(0.5 * (metric_errors[0][0] + metric_errors[2][0]))
+        error_y = float(metric_errors[1][1])
         position_error = max(float(np.linalg.norm(error)) for error in metric_errors)
         within = bool(
             stable
@@ -763,6 +839,8 @@ class RingStationDetector:
             processing_ms=elapsed_ms,
             detection_scope=scope,
             detail=detail,
+            line_constraint_applied=line_applied,
+            line_quality=line_quality,
         )
 
 
