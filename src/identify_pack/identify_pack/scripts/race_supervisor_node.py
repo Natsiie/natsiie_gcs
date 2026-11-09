@@ -83,7 +83,8 @@ class RaceSupervisorNode(Node):
         return self.get_parameter(name).value
 
     def log(self, text):
-        self.get_logger().info(
+        # 状态机/阶段计数用 warning，终端黄色更显眼，方便现场盯流程。
+        self.get_logger().warning(
             f'[supervisor] step={self.step} phase={self.phase_index} {text}')
 
     def _phase(self):
