@@ -22,9 +22,11 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, String, UInt32
 
+# 4 次放置：前三次都是平地圆环区（三圆环 + 上下边线约束），
+# 只有最后一次是叠料（stacked_ring）。
 PHASES = (
     ('ring_station', 1),
-    ('stacked_ring', 1),
+    ('ring_station', 1),
     ('ring_station', 2),
     ('stacked_ring', 2),
 )
@@ -78,6 +80,9 @@ class RaceSupervisorNode(Node):
         self.pick_seqs = set()
         self.place_keys = set()
         self.log('等待二维码解码')
+        self.log(
+            '阶段: 粗加工区1(ring_station) -> 暂存区1(ring_station) -> '
+            '粗加工区2(ring_station) -> 暂存区2码垛(stacked_ring)')
 
     def param(self, name):
         return self.get_parameter(name).value
