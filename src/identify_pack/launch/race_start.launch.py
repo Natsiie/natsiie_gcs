@@ -293,6 +293,9 @@ def generate_launch_description():
                 'centers_topic': '/color/centers_pixel',
                 'camera_frame': 'camera_optical_frame',
                 'arrived_topic': LaunchConfiguration('arrived_topic'),
+                # 颜色节点已经按“物块停稳”判断到位；这里不再等转盘/底盘
+                # within=1，避免同一套到位判断重复。转盘纠偏仍由 0x0E 下发。
+                'require_turntable_align': False,
             }],
         ),
 

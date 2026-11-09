@@ -510,13 +510,15 @@ class SerialBridgeNode(Node):
         if not self._send(GRAB_CMD_TYPE, 'GrabCmd', '1'):
             return
         self.grab_cmd_pending = False
+        align_note = ('转盘已到位' if self.require_turntable_align
+                      else '颜色已到位')
         if self.task_mode:
             self.grab_cmd_sent = True
             self.get_logger().warning(
                 f'颜色顺序匹配：序号 {expected.sequence} 颜色 {expected.color}，'
-                '转盘已到位，已下发 GrabCmd')
+                f'{align_note}，已下发 GrabCmd')
         else:
-            self.get_logger().warning('转盘已到位，下发 GrabCmd')
+            self.get_logger().warning(f'{align_note}，下发 GrabCmd')
 
     def _on_arrived(self, msg):
         """收到夹爪到位信号 -> 颜色匹配后挂起，等转盘矫正 within=1 再发 GrabCmd。"""
