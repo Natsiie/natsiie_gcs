@@ -9,8 +9,9 @@ from unittest.mock import Mock
 import cv2
 import numpy as np
 from builtin_interfaces.msg import Time as Stamp
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import Point32, TransformStamped
 from rclpy.clock import Clock, ClockType
+from sensor_msgs.msg import ChannelFloat32, PointCloud
 from rclpy.time import Time
 from tf2_ros import Buffer
 
@@ -151,6 +152,27 @@ class PixelToBaseTests(unittest.TestCase):
         result('task-2', 1)  # 新任务重置回三圆环
         self.assertEqual(node.first_layer_placement_count, 1)
         self.assertEqual(node.active_ring_source, '/ring_station/centers_pixel')
+
+    def test_robust_ring_centers_rejects_outliers(self):
+        messages = []
+        for dx in (0.0, 1.0, 2.0, 3.0, 100.0):
+            message = PointCloud()
+            message.header.frame_id = 'camera'
+            message.points = [
+                Point32(x=100.0 + dx, y=200.0, z=0.0),
+                Point32(x=300.0 + dx, y=200.0, z=0.0),
+                Point32(x=500.0 + dx, y=200.0, z=0.0),
+            ]
+            message.channels = [
+                ChannelFloat32(name='ring_id', values=[1.0, 2.0, 3.0])]
+            messages.append(message)
+        averaged, rejected, kept = PixelToBaseNode._robust_centers(
+            messages, 20.0, 3)
+        self.assertEqual(rejected, 3)   # 每环剔除 dx=100 的那一帧
+        self.assertEqual(kept, 4)
+        np.testing.assert_allclose(
+            [point.x for point in averaged.points], [101.5, 301.5, 501.5])
+        self.assertEqual(averaged.header.frame_id, 'camera')
 
 
 if __name__ == '__main__':

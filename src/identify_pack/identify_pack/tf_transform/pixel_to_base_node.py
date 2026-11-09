@@ -83,9 +83,11 @@ class PixelToBaseNode(Node):
             # 0x0C ring 投影开关：false 时不订阅三环中心、不发布
             # /ring_station/targets_base；颜色目标 0x08 不受影响。
             'ring_project_enabled': False,
-            # align_done 后累积的帧数，逐点取像素均值后只发一次 0x0C；
-            # 0 = 保持逐帧投影旧行为。
-            'ring_average_frames': 5,
+            # align_done 后观察窗口（秒）：窗口内剔除离群样本后逐点取均值，
+            # 只发一次 0x0C。0 = 保持逐帧投影旧行为。
+            'ring_measure_window_sec': 1.0,
+            'ring_outlier_threshold_px': 20.0,
+            'ring_min_samples': 3,
             'align_done_topic': '/arm/align_done',
             # 下位机放置结束回传（0x0B -> 串口桥 -> /arm/place_result）。
             'place_result_topic': '/arm/place_result',
@@ -179,12 +181,19 @@ class PixelToBaseNode(Node):
             PointCloud, self.param('centers_topic'), self.on_color_centers,
             qos_profile_sensor_data)
         self.ring_project_enabled = bool(self.param('ring_project_enabled'))
-        self.ring_average_frames = int(self.param('ring_average_frames'))
-        if self.ring_average_frames < 0:
-            raise ValueError('ring_average_frames must be >= 0')
+        self.ring_measure_window = float(self.param('ring_measure_window_sec'))
+        self.ring_outlier_px = float(self.param('ring_outlier_threshold_px'))
+        self.ring_min_samples = int(self.param('ring_min_samples'))
+        if (not math.isfinite(self.ring_measure_window)
+                or self.ring_measure_window < 0
+                or not math.isfinite(self.ring_outlier_px)
+                or self.ring_outlier_px <= 0
+                or self.ring_min_samples < 1):
+            raise ValueError('ring measurement settings are invalid')
         self.measure_pending = False
         self.measure_source = None
-        self.measure_buffer = deque(maxlen=max(1, self.ring_average_frames))
+        self.measure_started = 0.0
+        self.measure_buffer = deque(maxlen=300)
         self.ring_target_publisher = None
         self.stacked_enable_publisher = None
         if self.ring_project_enabled:
@@ -230,10 +239,12 @@ class PixelToBaseNode(Node):
                     f'圆环识别源：{self.ring_centers_topic}'
                     f'（前 {self.ring_source_switch_count} 次放置）'
                     f' -> {self.ring_centers_topic_after}（之后）')
-            if self.ring_average_frames > 0:
+            if self.ring_measure_window > 0:
                 self.get_logger().info(
-                    f'ring 投影：align_done 后累积 '
-                    f'{self.ring_average_frames} 帧像素均值，发送一次 0x0C')
+                    f'ring 投影：align_done 后观察 '
+                    f'{self.ring_measure_window:.1f}s，剔除离群样本'
+                    f'（>{self.ring_outlier_px:g}px）后取均值，发送一次 0x0C')
+                self.create_timer(0.05, self._measure_tick)
             else:
                 self.get_logger().info('ring 投影：逐帧发送 0x0C')
         else:
@@ -407,10 +418,12 @@ class PixelToBaseNode(Node):
                 return
             self.validate_ring_centers(msg)
             self.last_ring_stamp = stamp_ns
-            if self.ring_average_frames > 0:
+            if self.ring_measure_window > 0:
                 if self.measure_pending and source == self.measure_source:
-                    self.measure_buffer.append(msg)
-                    if len(self.measure_buffer) >= self.ring_average_frames:
+                    if (time.monotonic() - self.measure_started
+                            <= self.ring_measure_window):
+                        self.measure_buffer.append(msg)
+                    else:
                         self._publish_averaged_rings()
                 return
             self.pending_rings.append((msg, time.monotonic()))
@@ -437,35 +450,65 @@ class PixelToBaseNode(Node):
         self.active_ring_source = source
         self.measure_source = source
         self.measure_buffer.clear()
+        self.measure_started = time.monotonic()
         self.measure_pending = True
         self.get_logger().info(
-            f'区域矫正完成 stage={stage}，开始累积 '
-            f'{self.ring_average_frames} 帧圆环中心')
+            f'区域矫正完成 stage={stage}，开始观察 '
+            f'{self.ring_measure_window:.1f}s 的圆环中心')
+
+    def _measure_tick(self):
+        if (not self.ring_project_enabled or self.ring_measure_window <= 0
+                or not self.measure_pending):
+            return
+        if time.monotonic() - self.measure_started < self.ring_measure_window:
+            return
+        self._publish_averaged_rings()
 
     def _publish_averaged_rings(self):
         buffer = list(self.measure_buffer)
         self.measure_pending = False
         self.measure_buffer.clear()
         if not buffer:
+            self.get_logger().warning(
+                f'观察窗口 {self.ring_measure_window:.1f}s 内没有圆环中心，'
+                f'未发送 0x0C')
             return
-        averaged = self._average_centers(buffer)
+        averaged, rejected, kept = self._robust_centers(
+            buffer, self.ring_outlier_px, self.ring_min_samples)
         self.pending_rings.append((averaged, time.monotonic()))
         self.project_pending_rings()
-        self.get_logger().info(
-            f'{len(buffer)} 帧像素均值已投影，发送 0x0C（三个环中心）')
+        self.get_logger().warning(
+            f'观察 {self.ring_measure_window:.1f}s 收到 {len(buffer)} 帧，'
+            f'剔除 {rejected} 个离群样本（每环至少保留 {kept} 个），'
+            f'已发送 0x0C')
 
     @staticmethod
-    def _average_centers(messages):
-        """三环圆心逐点取像素均值；header/channels 用最新一帧。"""
+    def _robust_centers(messages, threshold_px, min_samples):
+        """逐环取中值，剔除偏离中值超过阈值的样本，再对剩余样本取均值。"""
         latest = messages[-1]
         points = []
+        rejected = 0
+        kept_counts = []
         for index in range(len(latest.points)):
-            xs = [m.points[index].x for m in messages]
-            ys = [m.points[index].y for m in messages]
+            xs = np.asarray([m.points[index].x for m in messages], dtype=float)
+            ys = np.asarray([m.points[index].y for m in messages], dtype=float)
+            median_x = float(np.median(xs))
+            median_y = float(np.median(ys))
+            distances = np.hypot(xs - median_x, ys - median_y)
+            keep = distances <= threshold_px
+            kept = int(np.count_nonzero(keep))
+            if kept < min_samples:
+                # 样本太少或全被判离群：退回中值，避免把正确点也删掉。
+                points.append(Point32(x=median_x, y=median_y, z=0.0))
+                rejected += len(xs) - 1
+                kept_counts.append(1)
+                continue
+            rejected += len(xs) - kept
             points.append(Point32(
-                x=float(sum(xs) / len(xs)),
-                y=float(sum(ys) / len(ys)),
+                x=float(np.mean(xs[keep])),
+                y=float(np.mean(ys[keep])),
                 z=0.0))
+            kept_counts.append(kept)
         out = PointCloud()
         out.header = copy.deepcopy(latest.header)
         out.header.frame_id = latest.header.frame_id
@@ -473,7 +516,7 @@ class PixelToBaseNode(Node):
         out.channels = [
             ChannelFloat32(name=channel.name, values=list(channel.values))
             for channel in latest.channels]
-        return out
+        return out, rejected, (min(kept_counts) if kept_counts else 0)
 
     def on_place_result(self, message):
         """下位机 0x0B 放置结束：成功后累计第一层放置次数，达到阈值切换识别源。"""

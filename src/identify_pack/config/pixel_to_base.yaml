@@ -16,10 +16,13 @@ pixel_to_base:
     # 旧的“按放置次数自动切源”关闭；现在由 align_done 的 stage 决定源。
     ring_source_switch_count: 0
     place_result_topic: /arm/place_result
-    # 0x0C 三环中心投影：收到 align_done 后累积 ring_average_frames 帧
-    # 像素中心，逐点取均值后投影，只发一次 0x0C（一批三个环中心）。
+    # 0x0C 三环中心投影：收到 align_done 后观察 ring_measure_window_sec 秒，
+    # 剔除离群样本后逐点取均值，只发一次 0x0C（一批三个环中心）。
     ring_project_enabled: true
-    ring_average_frames: 5
+    # align_done 后观察 1 秒，剔除离群样本后逐点取均值，只发一次 0x0C。
+    ring_measure_window_sec: 1.0
+    ring_outlier_threshold_px: 20.0
+    ring_min_samples: 3
     targets_topic: /color/targets_base
     show: false
     tf_wait_sec: 0.5
