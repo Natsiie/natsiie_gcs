@@ -51,6 +51,7 @@ setup(
             'roi_overlay_node = identify_pack.scripts.roi_overlay_node:main',
             'color_calibrator = identify_pack.scripts.color_calibrator:main',
             'color_log_node = identify_pack.scripts.color_log_node:main',
+            'color_log_report = identify_pack.scripts.color_log_report:main',
             'race_supervisor_node = identify_pack.scripts.race_supervisor_node:main',
             'turntable_calibrator = identify_pack.scripts.turntable_calibrator:main',
             'turntable_align_calibrator = identify_pack.scripts.turntable_align_calibrator:main',
