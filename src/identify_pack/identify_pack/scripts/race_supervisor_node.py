@@ -128,12 +128,17 @@ class RaceSupervisorNode(Node):
             return
 
         phase = self._phase()
-        if self.step == 'ALIGN' and phase is not None and stage == phase[0]:
-            self.step = 'PLACE'
-            self.place_keys.clear()
-            self.log(
-                f'{phase[0]} 矫正完成，pixel_to_base 累积 5 帧均值后发 0x0C，'
-                f'等待本批 0x0B 完成')
+        if self.step == 'ALIGN' and phase is not None:
+            if stage == phase[0]:
+                self.step = 'PLACE'
+                self.place_keys.clear()
+                self.log(
+                    f'{phase[0]} 矫正完成，pixel_to_base 累积 5 帧均值后发 0x0C，'
+                    f'等待本批 0x0B 完成')
+            else:
+                self.log(
+                    f'收到 {stage} 矫正完成，但当前阶段是 {phase[0]}，忽略；'
+                    f'请检查下位机 0x11 的 stage 是否与阶段映射一致')
 
     def _on_pick_done(self, message):
         if self.step != 'COLOR':
