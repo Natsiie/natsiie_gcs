@@ -79,7 +79,7 @@ class ColorDetectNode(Node):
         self.declare_parameter('require_single_roi', False)
         # 停稳判定：hold_frames>0 时直接按帧数（便于实测调参），否则按
         # hold_sec × 实测 fps 换算。默认 1.0s，25fps 下约 25 帧。
-        self.declare_parameter('stationary_hold_sec', 1.0)
+        self.declare_parameter('stationary_hold_sec', 1.5)
         self.declare_parameter('stationary_hold_frames', 0)
         self.declare_parameter('stationary_max_pixel_move', 10.0)  # 允许抖动(px)
         self.declare_parameter('stationary_miss_frames', 2)   # 连续丢帧容忍

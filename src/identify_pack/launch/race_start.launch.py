@@ -71,8 +71,8 @@ def generate_launch_description():
         DeclareLaunchArgument('color_config', default_value=os.path.join(share, 'color_config.json')),
         # 物块停稳判定：ROI 内物块连续保持位置不变达到阈值后发抓取 OK；
         # 不再门控色块/坐标输出。hold_frames>0 时直接按帧数（便于实测调参）；
-        # 0 表示按 hold_sec × 实测 fps 换算，默认 1.0s 在 25fps 下约 25 帧。
-        DeclareLaunchArgument('stationary_hold_sec', default_value='1.0'),
+        # 0 表示按 hold_sec × 实测 fps 换算，默认 1.5s。
+        DeclareLaunchArgument('stationary_hold_sec', default_value='1.5'),
         DeclareLaunchArgument('stationary_hold_frames', default_value='0'),
         DeclareLaunchArgument('stationary_max_pixel_move', default_value='10.0'),
         DeclareLaunchArgument('stationary_miss_frames', default_value='2'),
