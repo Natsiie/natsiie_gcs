@@ -40,12 +40,15 @@ TOPIC_TYPES = {
     # 下位机 -> 上位机，底盘/区域矫正完成回传：stage,success(0/1)
     # stage: 1=转盘区, 2=三圆环区, 3=叠料区
     'AlignDone':     0x11,
+    # 下位机 -> 上位机，到位 + 云台动作完成：stage
+    # stage: 2=三圆环区, 3=叠料区；收到后才开始圆环测量并发 0x0C
+    'RegionReady':   0x12,
 }
 
 # 旧 String 发送话题；ColorTarget 由带时间戳的米制 PointCloud 单独转换发送。
 OUTGOING_TOPIC_TYPES = {
     topic: type_byte for topic, type_byte in TOPIC_TYPES.items()
-    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl', 'PickDone', 'NextBatch', 'AlignDone')
+    if topic not in ('GimbalYaw', 'ColorTarget', 'GrabCmd', 'PlaceCommand', 'PlaceResult', 'RingTarget', 'PlaceControl', 'PickDone', 'NextBatch', 'AlignDone', 'RegionReady')
 }
 GIMBAL_YAW_TYPE = TOPIC_TYPES['GimbalYaw']
 COLOR_TARGET_TYPE = TOPIC_TYPES['ColorTarget']
@@ -58,6 +61,7 @@ PICK_DONE_TYPE = TOPIC_TYPES['PickDone']
 NEXT_BATCH_TYPE = TOPIC_TYPES['NextBatch']
 TURNTABLE_ALIGN_TYPE = TOPIC_TYPES['TurntableAlign']
 ALIGN_DONE_TYPE = TOPIC_TYPES['AlignDone']
+REGION_READY_TYPE = TOPIC_TYPES['RegionReady']
 
 
 def validate_place_identity(task_id, command_id):
@@ -145,6 +149,20 @@ def parse_align_done(payload):
     if stage not in ALIGN_STAGE_NAMES:
         raise ValueError('Invalid align stage')
     return {'stage': stage, 'success': parts[1].strip() == '1'}
+
+
+def parse_region_ready(payload):
+    """下位机 -> 上位机 的“已到点且云台动作完成”：``stage``。
+
+    stage: 2=三圆环区, 3=叠料区。上位机收到后才开始圆环测量并发 0x0C。
+    """
+    parts = payload.split(',')
+    if len(parts) != 1 or not parts[0].strip().isdigit():
+        raise ValueError('Invalid region ready')
+    stage = int(parts[0].strip())
+    if stage not in (2, 3):
+        raise ValueError('Invalid region ready stage')
+    return {'stage': stage}
 
 
 TYPE_NAMES = {v: k for k, v in TOPIC_TYPES.items()}

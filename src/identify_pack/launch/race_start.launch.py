@@ -75,7 +75,9 @@ def generate_launch_description():
         DeclareLaunchArgument('stationary_hold_sec', default_value='1.5'),
         DeclareLaunchArgument('stationary_hold_frames', default_value='0'),
         DeclareLaunchArgument('stationary_max_pixel_move', default_value='10.0'),
-        DeclareLaunchArgument('stationary_miss_frames', default_value='2'),
+        # 0 = ROI 内目标一消失就立即复位，避免同色物块快速替换时沿用上一件的停稳计数；
+        # 想容忍偶发单帧漏检可改回 2（连续 2 帧丢失仍保持 ready）。
+        DeclareLaunchArgument('stationary_miss_frames', default_value='0'),
         # 帧率估计：0=按图像时间戳自动估计，调试时可固定成实测帧率。
         DeclareLaunchArgument('stationary_fps', default_value='0.0'),
         # 停稳后是否发抓取 OK（/arm/arrived -> 串口桥 GrabCmd 0x09）。
@@ -378,8 +380,8 @@ def generate_launch_description():
         #     parameters=[LaunchConfiguration('place_task_params_file')],
         # ),
 
-        # 比赛流程 supervisor：按批次/区域切换检测节点、累积 5 帧像素均值，
-        # 等待下位机 0x11 AlignDone 后启动放置阶段。
+        # 比赛流程 supervisor：按批次/区域切换检测节点；
+        # 等待 0x11 AlignDone + 0x12 RegionReady（到点+云台动作完成）后启动测量/放置。
         Node(
             package='identify_pack',
             executable='race_supervisor_node',

@@ -8,7 +8,7 @@
 发布：
   - /Color       色块位置，每段 ``color_id:x,y``（1~6 六色，多段用 / 连接）
   - /ColorMotion 停稳状态 ``state:count``（如 ``READY:15``）
-  - /arm/arrived 停稳后发一次抓取 OK（Bool，取代粉色到位 5s 的触发逻辑）
+  - /arm/arrived 停稳后发一次抓取 OK（Int32，值为停稳物块的颜色编号 1~6）
   - /color/centers_pixel 带原图时间戳的像素 PointCloud（x=u, y=v），附颜色/面积/分辨率
 
 不含数字圆环识别（那是 circle_detect_node 的职责）。
@@ -21,7 +21,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud, ChannelFloat32
 from geometry_msgs.msg import Point32
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 from cv_bridge import CvBridge
 import cv2
 
@@ -82,10 +82,11 @@ class ColorDetectNode(Node):
         self.declare_parameter('stationary_hold_sec', 1.5)
         self.declare_parameter('stationary_hold_frames', 0)
         self.declare_parameter('stationary_max_pixel_move', 10.0)  # 允许抖动(px)
-        self.declare_parameter('stationary_miss_frames', 2)   # 连续丢帧容忍
+        # 连续丢帧容忍；0 = ROI 内目标一消失就立即复位（下一件可重新触发抓取 OK）。
+        self.declare_parameter('stationary_miss_frames', 2)
         self.declare_parameter('stationary_fps', 0.0)         # 0=按时间戳自动估计
         self.declare_parameter('stationary_max_frame_interval_sec', 0.5)
-        # 停稳后给下位机的抓取 OK：走高电平 Bool，串口桥收到 true 后发 GrabCmd(0x09)。
+        # 停稳后给下位机的抓取 OK：Int32 携带停稳色编号，串口桥校验与期望色一致后发 GrabCmd(0x09)。
         # 每个物块只触发一次，物块离开 ROI 后重新武装（与旧的粉色到位逻辑一致）。
         self.declare_parameter('publish_arrived', True)
         self.declare_parameter('arrived_topic', '/arm/arrived')
@@ -134,7 +135,7 @@ class ColorDetectNode(Node):
         self._arrived_armed = True
         self.pub_centers = self.create_publisher(PointCloud, self.centers_topic, 10)
         self.pub_motion = self.create_publisher(String, 'ColorMotion', 10)
-        self.pub_arrived = self.create_publisher(Bool, self.arrived_topic, 10)
+        self.pub_arrived = self.create_publisher(Int32, self.arrived_topic, 10)
         self.enable_sub = self.create_subscription(
             Bool, enable_topic, self.on_enable, 10)
         if self.enabled:
@@ -247,10 +248,12 @@ class ColorDetectNode(Node):
             # 停稳 -> 给下位机抓取 OK（每个物块只发一次）。
             if getattr(self, 'publish_arrived', False):
                 if stationary['ready'] and self._arrived_armed:
-                    self.pub_arrived.publish(Bool(data=True))
+                    color_id = int(primary[0])
+                    self.pub_arrived.publish(Int32(data=color_id))
                     self._arrived_armed = False
                     self.get_logger().warning(
                         f'物块停稳 {stationary["count"]}/{required} 帧，'
+                        f'颜色 {color_id}({COLOR_NAMES.get(color_id, "?")})，'
                         f'发送抓取 OK -> {self.arrived_topic}')
                 elif stationary.get('reset') or stationary['state'] == 'WAITING':
                     # 首次出现、换目标、转走、被抓走或掉帧后重新武装，

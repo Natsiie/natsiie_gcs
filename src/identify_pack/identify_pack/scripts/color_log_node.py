@@ -8,7 +8,7 @@
   /Color                std_msgs/String   color_id:x,y/color_id:x,y
   /color/centers_pixel  sensor_msgs/PointCloud
   /ColorMotion          std_msgs/String   state:count
-  /arm/arrived          std_msgs/Bool
+  /arm/arrived          std_msgs/Int32（停稳色编号）
 
 参数：
   log_dir          日志目录（默认 log/color_debug）
@@ -27,7 +27,7 @@ from datetime import datetime
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Int32, String
 
 
 class ColorLogNode(Node):
@@ -76,7 +76,7 @@ class ColorLogNode(Node):
             String, str(self.get_parameter('motion_topic').value),
             self._on_motion, 10)
         self.create_subscription(
-            Bool, str(self.get_parameter('arrived_topic').value),
+            Int32, str(self.get_parameter('arrived_topic').value),
             self._on_arrived, 10)
 
     def _write(self, record: dict) -> None:
@@ -131,11 +131,11 @@ class ColorLogNode(Node):
         record['data'] = msg.data
         self._write(record)
 
-    def _on_arrived(self, msg: Bool) -> None:
+    def _on_arrived(self, msg: Int32) -> None:
         if self._throttled('arrived'):
             return
         record = self._base('arrived')
-        record['data'] = bool(msg.data)
+        record['data'] = int(msg.data)
         self._write(record)
 
     def destroy_node(self) -> None:

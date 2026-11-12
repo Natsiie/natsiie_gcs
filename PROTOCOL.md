@@ -41,6 +41,8 @@
 | 0x0E | TurntableAlign | 上→下 | `corr_x,corr_y,within(0/1)` | 转盘圆心对齐纠偏 | **未实现** ✗ | 无发送方 ✗ |
 | 0x0F | PickDone | 下→上 | 序号 `1~6` | 抓取完成（上位机 `/arm/pick_done`）；序号 = `轮*3 + 本工作区第几个 + 1` | 发 ✓ | 收 ✓ |
 | 0x10 | NextBatch | 下→上 | `1` | 第一批（前 3 次抓取）完成、回装就绪（上位机 `/arm/next_batch`） | 发 ✓ | 收 ✓ |
+| 0x11 | AlignDone | 下→上 | `stage,success` | 底盘区域矫正完成（1=转盘 2=三圆环 3=叠料） | 发 ✓ | 收 ✓ |
+| 0x12 | RegionReady | 下→上 | `stage` | 已到点且云台动作完成（2=三圆环 3=叠料）；上位机收到后才开始圆环测量并发 0x0C | 本地固件已加，需烧录 | 收 ✓ |
 
 > 类型号来源：固件 `Devices/Serial.h` 的 `SERIAL_TYPE_*`；上位机 `serial/protocol.py` 的 `TOPIC_TYPES`。两侧必须一致。
 

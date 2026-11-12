@@ -925,6 +925,7 @@ void Mission_Update(uint8_t key_pressed)
             /* 到站只换新 task_id, 不发 0x0B: 新视觉的识别源由 0x11 AlignDone stage 决定,
                0x0B 只在整批放完时发一条 (见 Mission_PlaceFeedDone) */
             Mission_PlaceFeedNewTask();
+            Kin_SetRegionStage(2);   /* 粗加工区 = 三圆环 */
             kin_flag.cmd = 3; mission.sub = 1;   /* Kin_UnloadStart */
         }
         else if (kin_flag.done)  /* else if: 发 cmd 那拍不判完成 (必须跨至少一拍) */
@@ -990,6 +991,7 @@ void Mission_Update(uint8_t key_pressed)
             kin_flag.done = 0;   /* 清残留: 要等的是这条堆叠链的 done, 不能是上一段的 */
             /* 到站只换新 task_id, 不发 0x0B (识别源由 AlignDone stage3 切) */
             Mission_PlaceFeedNewTask();
+            Kin_SetRegionStage(3);   /* 暂存叠料区 */
             kin_flag.cmd = 3; mission.sub = 1;
         }
         else if (kin_flag.done)  /* else if: 发 cmd 那拍不判完成 (必须跨至少一拍) */

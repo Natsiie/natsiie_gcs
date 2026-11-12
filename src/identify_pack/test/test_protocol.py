@@ -1,8 +1,8 @@
 import unittest
 
 from identify_pack.serial.protocol import (
-    GIMBAL_YAW_TYPE, PLACE_CONTROL_TYPE, extract_frames, make_frame, parse_frame,
-    parse_place_control,
+    GIMBAL_YAW_TYPE, PLACE_CONTROL_TYPE, REGION_READY_TYPE, extract_frames,
+    make_frame, parse_frame, parse_place_control, parse_region_ready,
 )
 
 
@@ -42,6 +42,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(parse_place_control('retry,7'), {'action': 'retry', 'command_id': 7})
         frame = make_frame(PLACE_CONTROL_TYPE, 'start,2,1')
         self.assertEqual(parse_frame(frame)[0], PLACE_CONTROL_TYPE)
+
+    def test_region_ready_stage(self):
+        self.assertEqual(parse_region_ready('2'), {'stage': 2})
+        self.assertEqual(parse_region_ready('3'), {'stage': 3})
+        frame = make_frame(REGION_READY_TYPE, '3')
+        self.assertEqual(parse_frame(frame)[0], REGION_READY_TYPE)
+        for bad in ('1', '4', '', '2,1', 'x'):
+            with self.assertRaises(ValueError):
+                parse_region_ready(bad)
 
     def test_place_control_rejects_bad_payloads(self):
         for bad in ('start', 'start,2', 'start,2,1,9', 'start,x,1', 'start,3,1',

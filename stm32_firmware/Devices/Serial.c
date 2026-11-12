@@ -111,6 +111,15 @@ void Serial_SendAlignDone(uint8_t stage, uint8_t success)
     Serial_SendFramed(SERIAL_TYPE_ALIGN_DONE, payload, len);
 }
 
+/* 0x12 RegionReady: arrived and gimbal action done; vision may start ring measurement and send 0x0C.
+   payload "stage": 2=ring_station, 3=stacked_ring. Send once per unload chain. */
+void Serial_SendRegionReady(uint8_t stage)
+{
+    char payload[8];
+    uint8_t len = (uint8_t)sprintf(payload, "%u", (unsigned)stage);
+    Serial_SendFramed(SERIAL_TYPE_REGION_READY, payload, len);
+}
+
 
 /* 0x10 NextBatch: ç¬ä¸æ‰(å‰ 3 æ¬¡æŠ“å)å®Œæˆã€å›è£…å°±ç»ã€‚ä¸Šä½æœº next_batch() åæ¥å— "1"ï¼
  * æ”¶åˆ°åæ‰ä» WAIT_NEXT_BATCH æ”¾èŒçäºŒæ‰¹ (åºå· 4/5/6)ã€ */

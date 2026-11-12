@@ -11,7 +11,7 @@ from cv_bridge import CvBridge
 from rclpy.time import Time
 from rclpy.clock import ClockType
 from sensor_msgs.msg import ChannelFloat32, PointCloud
-from std_msgs.msg import Bool, UInt32, String
+from std_msgs.msg import Int32, UInt32, String
 
 from identify_pack.scripts.color_config import build_default_color_config
 from identify_pack.scripts.pick_task import PickTask
@@ -38,6 +38,7 @@ class TaskPipelineTests(unittest.TestCase):
         self.bridge.motion_stamp_ns = 0
         self.bridge.grab_cmd_sent = False
         self.bridge.grab_cmd_pending = False
+        self.bridge.grab_arrival_color = None
         self.bridge.require_turntable_align = False
         self.bridge.turntable_within = True
         self.bridge.turntable_within_time = 0.0
@@ -92,7 +93,7 @@ class TaskPipelineTests(unittest.TestCase):
         SerialBridgeNode._send_color_targets(self.bridge, target)
         self.assertEqual(self.bridge.task.state, 'WAIT_PICK_DONE')
         self.bridge.ser.write.reset_mock()
-        SerialBridgeNode._on_arrived(self.bridge, Bool(data=True))
+        SerialBridgeNode._on_arrived(self.bridge, Int32(data=1))
         self.bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
 
     def test_moving_or_unknown_blocks_delayed_target_and_clears_projection_queue(self):
@@ -229,6 +230,7 @@ class TaskPipelineTests(unittest.TestCase):
         ColorDetectNode.image_cb(node, msg)
         self.assertEqual(node.pub_color.publish.call_args.args[0].data, '1:288,238')
         node.pub_arrived.publish.assert_called_once()
+        self.assertEqual(node.pub_arrived.publish.call_args.args[0].data, 1)
         # 多个 ROI 时仍拒绝输出目标，避免任务抓取选错物块。
         node.color_roi.append((0, 0, 100, 100))
         node.pub_color.publish.reset_mock()
@@ -255,6 +257,7 @@ class TaskPipelineTests(unittest.TestCase):
         node.stationary.update.return_value = ready
         ColorDetectNode.image_cb(node, msg)
         node.pub_arrived.publish.assert_called_once()
+        self.assertEqual(node.pub_arrived.publish.call_args.args[0].data, 1)
         # 物块继续停稳：不重复发 OK。
         ColorDetectNode.image_cb(node, msg)
         node.pub_arrived.publish.assert_called_once()

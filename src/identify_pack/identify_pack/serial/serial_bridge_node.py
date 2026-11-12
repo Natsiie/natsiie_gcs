@@ -12,7 +12,7 @@ import math
 import time
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, String, UInt32
+from std_msgs.msg import Bool, Int32, String, UInt32
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from sensor_msgs.msg import JointState
 from sensor_msgs.msg import PointCloud
@@ -22,7 +22,9 @@ from identify_pack.serial.protocol import (
     make_frame, COLOR_TARGET_TYPE, RING_TARGET_TYPE,
     PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE,
     PICK_DONE_TYPE, NEXT_BATCH_TYPE, TURNTABLE_ALIGN_TYPE, ALIGN_DONE_TYPE,
+    REGION_READY_TYPE,
     parse_place_result, parse_place_control, parse_align_done,
+    parse_region_ready,
     place_command_payload,
 )
 from identify_pack.scripts.pick_task import PickTask
@@ -101,6 +103,7 @@ class SerialBridgeNode(Node):
         self.task_code_send_deadline = None
         self.grab_cmd_sent = False
         self.grab_cmd_pending = False
+        self.grab_arrival_color = None
         self.turntable_within = False
         self.turntable_within_time = -math.inf
         self.pub_task_status = self.create_publisher(
@@ -139,6 +142,9 @@ class SerialBridgeNode(Node):
         self.pub_pick_done = self.create_publisher(UInt32, '/arm/pick_done', 10)
         self.pub_next_batch = self.create_publisher(UInt32, '/arm/next_batch', 10)
         self.pub_align_done = self.create_publisher(String, '/arm/align_done', 10)
+        self.declare_parameter('region_ready_topic', '/arm/region_ready')
+        self.pub_region_ready = self.create_publisher(
+            String, self.get_parameter('region_ready_topic').value, 10)
         self.create_subscription(String, '/arm/place_command', self._on_place_command, 10)
         self.declare_parameter('place_control_topic', '/arm/place_control')
         self.pub_place_control = self.create_publisher(
@@ -168,7 +174,7 @@ class SerialBridgeNode(Node):
                                  self._send_ring_targets, 1)
         arrived_topic = self.get_parameter('arrived_topic').value
         if arrived_topic:
-            self.create_subscription(Bool, arrived_topic, self._on_arrived, 10)
+            self.create_subscription(Int32, arrived_topic, self._on_arrived, 10)
 
     def _publish_task_status(self):
         pick = self.task.expected
@@ -359,6 +365,16 @@ class SerialBridgeNode(Node):
                     self.get_logger().warning(
                         f'忽略非法 AlignDone payload={payload!r}: {error}')
                 continue
+            if type_byte == REGION_READY_TYPE:
+                try:
+                    ready = parse_region_ready(payload)
+                    self.pub_region_ready.publish(String(data=json.dumps(ready)))
+                    self.get_logger().info(
+                        f'RX RegionReady: stage={ready["stage"]}')
+                except ValueError as error:
+                    self.get_logger().warning(
+                        f'忽略非法 RegionReady payload={payload!r}: {error}')
+                continue
             if type_byte != self.yaw_feedback_type:
                 self.get_logger().warning(
                     f'忽略反馈帧 type=0x{type_byte:02X} payload={payload!r}；'
@@ -463,6 +479,7 @@ class SerialBridgeNode(Node):
         self.turntable_within = False
         self.turntable_within_time = -math.inf
         self.grab_cmd_pending = False
+        self.grab_arrival_color = None
 
     def _update_turntable_align(self, text):
         """跟踪 /TurntableAlign 的 within；within 变 1 时补发挂起的 GrabCmd。"""
@@ -502,6 +519,9 @@ class SerialBridgeNode(Node):
             if self.grab_cmd_sent:
                 self.grab_cmd_pending = False
                 return
+            if getattr(self, 'grab_arrival_color', None) != expected.color:
+                self.grab_cmd_pending = False
+                return
         if not self._turntable_ready():
             self.get_logger().warning(
                 '抓取已到位，但转盘/底盘矫正尚未 within=1，暂缓 GrabCmd'
@@ -521,22 +541,39 @@ class SerialBridgeNode(Node):
             self.get_logger().warning(f'{align_note}，下发 GrabCmd')
 
     def _on_arrived(self, msg):
-        """收到夹爪到位信号 -> 颜色匹配后挂起，等转盘矫正 within=1 再发 GrabCmd。"""
-        if not msg.data:
+        """收到停稳信号（Int32=停稳色编号）-> 与期望色匹配后挂起，等转盘 within=1 再发 GrabCmd。
+
+        color_detect_node 对 ROI 内面积最大的色块计时，颜色变了会复位重新计。
+        因此这里必须再校验一次颜色，避免“期望黄色、但蓝色停稳”也授权 GrabCmd。
+        """
+        try:
+            arrived_color = int(msg.data)
+        except (TypeError, ValueError):
+            self.get_logger().warning(
+                f'忽略非法到位颜色: {msg.data!r}', throttle_duration_sec=2.0)
+            return
+        if arrived_color <= 0:
             return
         if self.task_mode:
             expected = self.task.expected
             if self.task.state != 'WAIT_PICK_DONE' or expected is None:
                 self.get_logger().warning(
-                    f'收到夹爪到位，但任务状态为 {self.task.state}，'
-                    '尚未发送匹配颜色的目标，忽略 GrabCmd',
+                    f'收到颜色 {arrived_color} 的停稳信号，但任务状态为 '
+                    f'{self.task.state}，尚未发送匹配颜色的目标，忽略 GrabCmd',
+                    throttle_duration_sec=2.0)
+                return
+            if arrived_color != expected.color:
+                self.get_logger().warning(
+                    f'收到颜色 {arrived_color} 的停稳信号，但当前期望 '
+                    f'{expected.color}，忽略 GrabCmd',
                     throttle_duration_sec=2.0)
                 return
             if self.grab_cmd_sent:
                 self.get_logger().warning(
-                    f'序号 {expected.sequence} 已发送过 GrabCmd，忽略重复到位信号',
+                    f'序号 {expected.sequence} 已发送过 GrabCmd，忽略重复停稳信号',
                     throttle_duration_sec=2.0)
                 return
+        self.grab_arrival_color = arrived_color
         self.grab_cmd_pending = True
         self._try_send_grab_cmd('gripper-arrived')
 
@@ -606,6 +643,7 @@ class SerialBridgeNode(Node):
                 if self.task_mode:
                     self.task.sent(stamp_ns)
                     self.grab_cmd_sent = False
+                    self.grab_arrival_color = None
                     self._publish_task_status()
                     break
 

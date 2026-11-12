@@ -5,12 +5,13 @@ import unittest
 from unittest.mock import Mock
 
 from builtin_interfaces.msg import Time
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Int32, String
 
 from identify_pack.scripts.pick_task import PickTask
 from identify_pack.serial.protocol import (
     GIMBAL_YAW_TYPE, GRAB_CMD_TYPE, OUTGOING_TOPIC_TYPES, make_frame,
-    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE, parse_frame,
+    PLACE_COMMAND_TYPE, PLACE_RESULT_TYPE, PLACE_CONTROL_TYPE, REGION_READY_TYPE,
+    parse_frame,
 )
 from identify_pack.serial.serial_bridge_node import SerialBridgeNode
 
@@ -28,10 +29,11 @@ class SerialFeedbackTests(unittest.TestCase):
             joint_states_topic='/gimbal/joint_states',
             get_clock=lambda: clock, get_logger=lambda: logger,
             target_frame='gimbal_base', pub_place_result=Mock(),
-            pub_place_control=Mock(), task_mode=False, grab_cmd_sent=False,
+            pub_place_control=Mock(), pub_region_ready=Mock(),
+            task_mode=False, grab_cmd_sent=False,
             require_turntable_align=False, turntable_within=True,
             turntable_within_time=0.0, turntable_align_max_age=1.0,
-            grab_cmd_pending=False,
+            grab_cmd_pending=False, grab_arrival_color=None,
         )
         # 测试替身：不真正打开串口，沿用上面准备好的 Mock 端口。
         bridge._ensure_serial = lambda: bridge.ser is not None and bridge.ser.is_open
@@ -89,10 +91,10 @@ class SerialFeedbackTests(unittest.TestCase):
         self.assertNotIn('GrabCmd', OUTGOING_TOPIC_TYPES)
         bridge = self.make_bridge()
         bridge._send = SerialBridgeNode._send.__get__(bridge)
-        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        SerialBridgeNode._on_arrived(bridge, Int32(data=1))
         bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
         bridge.ser.write.reset_mock()
-        SerialBridgeNode._on_arrived(bridge, Bool(data=False))
+        SerialBridgeNode._on_arrived(bridge, Int32(data=0))
         bridge.ser.write.assert_not_called()
 
     def test_arrived_requires_matching_color_sequence(self):
@@ -105,19 +107,38 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.ser.write.side_effect = lambda frame: len(frame)
 
         # 还没通过 _send_color_targets 接受「当前期望颜色」的目标
-        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        SerialBridgeNode._on_arrived(bridge, Int32(data=1))
         bridge.ser.write.assert_not_called()
 
         # 模拟颜色目标已匹配并成功发送：任务进入 WAIT_PICK_DONE
         bridge.task.sent(10)
-        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        SerialBridgeNode._on_arrived(bridge, Int32(data=1))
         bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
         self.assertTrue(bridge.grab_cmd_sent)
 
         # 同一个序号重复到位，不应重复下发
         bridge.ser.write.reset_mock()
-        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        SerialBridgeNode._on_arrived(bridge, Int32(data=1))
         bridge.ser.write.assert_not_called()
+
+    def test_arrived_color_must_match_expected(self):
+        bridge = self.make_bridge()
+        bridge.task_mode = True
+        bridge.grab_cmd_sent = False
+        bridge.task = PickTask()
+        bridge.task.load('123+123+456+123', 0)
+        bridge.task.sent(10)  # 当前期望颜色 = 1
+        bridge._send = SerialBridgeNode._send.__get__(bridge)
+        bridge.ser.write.side_effect = lambda frame: len(frame)
+
+        # 蓝色(3)停稳不能授权红色(1)抓取
+        SerialBridgeNode._on_arrived(bridge, Int32(data=3))
+        bridge.ser.write.assert_not_called()
+        self.assertFalse(bridge.grab_cmd_pending)
+
+        # 期望颜色一到就正常下发
+        SerialBridgeNode._on_arrived(bridge, Int32(data=1))
+        bridge.ser.write.assert_called_once_with(make_frame(GRAB_CMD_TYPE, '1'))
 
     def test_arrived_waits_for_turntable_within(self):
         bridge = self.make_bridge()
@@ -133,7 +154,7 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.turntable_align_max_age = 1.0
 
         # 抓取到位但转盘未 within：挂起，不下发
-        SerialBridgeNode._on_arrived(bridge, Bool(data=True))
+        SerialBridgeNode._on_arrived(bridge, Int32(data=1))
         bridge.ser.write.assert_not_called()
         self.assertTrue(bridge.grab_cmd_pending)
 
@@ -154,6 +175,13 @@ class SerialFeedbackTests(unittest.TestCase):
         bridge.pub_place_result.publish.assert_not_called()
         self.assertNotIn('PlaceResult', OUTGOING_TOPIC_TYPES)
         self.assertNotIn('PlaceCommand', OUTGOING_TOPIC_TYPES)
+
+    def test_region_ready_forwarded_to_ros_topic(self):
+        bridge = self.make_bridge()
+        self.feed(bridge, make_frame(REGION_READY_TYPE, '3'))
+        message = bridge.pub_region_ready.publish.call_args.args[0]
+        self.assertEqual(json.loads(message.data), {'stage': 3})
+        self.assertNotIn('RegionReady', OUTGOING_TOPIC_TYPES)
 
     def test_place_control_forwarded_to_ros_topic(self):
         self.assertNotIn('PlaceControl', OUTGOING_TOPIC_TYPES)

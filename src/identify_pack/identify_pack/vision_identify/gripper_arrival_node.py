@@ -2,8 +2,9 @@
 """ROS2 节点：夹爪到位判定（粉色舵机外壳进入 ROI 连续满阈值秒 -> 到位）。
 
 订阅副相机图像，在 ``arrival_roi_file``（独立于抓取 ROI）内检测粉色（第 7 号颜色），
-连续识别满 ``min_confirm_sec`` 秒后发布到位信号（``std_msgs/Bool`` 到
-``publish_topic``，默认 /arm/arrived）。只发信号，不控制下位机。
+连续识别满 ``min_confirm_sec`` 秒后发布到位信号（``std_msgs/Int32``，值为
+``PINK_COLOR_ID=7``；串口桥在任务模式下只接受 1~6 的期望色，不会误触发）。
+发布到 ``publish_topic``，默认 /arm/arrived。只发信号，不控制下位机。
 """
 import os
 import time
@@ -14,7 +15,7 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool
+from std_msgs.msg import Int32
 
 from identify_pack.scripts.arrival import GripperArrivalDetector
 from identify_pack.scripts.color_config import (
@@ -56,7 +57,7 @@ class GripperArrivalNode(Node):
         self.sub = self.create_subscription(
             Image, image_topic, self.image_cb, qos_profile_sensor_data)
         self.pub_arrived = self.create_publisher(
-            Bool, self.publish_topic,
+            Int32, self.publish_topic,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.get_logger().info(
             f'夹爪到位检测订阅 {image_topic}，阈值 {self.detector.min_confirm_ns / 1e9:.1f}s，'
@@ -119,7 +120,7 @@ class GripperArrivalNode(Node):
         present = bool(blobs)
 
         if self.detector.update(present, time.monotonic_ns()):
-            self.pub_arrived.publish(Bool(data=True))
+            self.pub_arrived.publish(Int32(data=PINK_COLOR_ID))
             self.get_logger().info('夹爪到位：粉色标记连续识别满阈值，发布到位信号')
 
         if self.show:

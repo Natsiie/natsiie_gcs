@@ -40,6 +40,7 @@ class RaceSupervisorNode(Node):
         for name, value in {
             'qr_topic': '/QR_Decode',
             'align_done_topic': '/arm/align_done',
+            'region_ready_topic': '/arm/region_ready',
             'pick_done_topic': '/arm/pick_done',
             'place_result_topic': '/arm/place_result',
             'place_control_topic': '/arm/place_control',
@@ -71,6 +72,8 @@ class RaceSupervisorNode(Node):
         self.create_subscription(
             String, self.param('align_done_topic'), self._on_align_done, 10)
         self.create_subscription(
+            String, self.param('region_ready_topic'), self._on_region_ready, 10)
+        self.create_subscription(
             UInt32, self.param('pick_done_topic'), self._on_pick_done, 10)
         self.create_subscription(
             String, self.param('place_result_topic'), self._on_place_result, 10)
@@ -79,6 +82,8 @@ class RaceSupervisorNode(Node):
         self.step = 'WAIT_QR'
         self.pick_seqs = set()
         self.place_keys = set()
+        self.align_done_stage = None
+        self.region_ready_stage = None
         self.log('等待二维码解码')
         self.log(
             '阶段: 粗加工区1(ring_station) -> 暂存区1(ring_station) -> '
@@ -128,17 +133,49 @@ class RaceSupervisorNode(Node):
             return
 
         phase = self._phase()
-        if self.step == 'ALIGN' and phase is not None:
+        if self.step in ('ALIGN', 'MEASURE') and phase is not None:
             if stage == phase[0]:
-                self.step = 'PLACE'
-                self.place_keys.clear()
-                self.log(
-                    f'{phase[0]} 矫正完成，pixel_to_base 累积 5 帧均值后发 0x0C，'
-                    f'等待本批 0x0B 完成')
+                self.align_done_stage = stage
+                if self.region_ready_stage == stage:
+                    self.step = 'PLACE'
+                    self.place_keys.clear()
+                    self.log(
+                        f'{phase[0]} 已到位且云台动作完成，pixel_to_base 开始测量 '
+                        f'0x0C，等待本批 0x0B 完成')
+                else:
+                    self.step = 'MEASURE'
+                    self.log(
+                        f'{phase[0]} 底盘矫正完成，等待 RegionReady'
+                        f'（到点+云台动作完成）后再测量')
             else:
                 self.log(
                     f'收到 {stage} 矫正完成，但当前阶段是 {phase[0]}，忽略；'
                     f'请检查下位机 0x11 的 stage 是否与阶段映射一致')
+
+    def _on_region_ready(self, message):
+        """下位机已到点且云台动作完成：与 AlignDone 一起满足后才进入 PLACE。"""
+        try:
+            data = json.loads(message.data)
+            stage = STAGE_NAME[int(data['stage'])]
+        except (ValueError, KeyError, TypeError):
+            return
+        if self.step not in ('ALIGN', 'MEASURE'):
+            return
+        phase = self._phase()
+        if phase is None or stage != phase[0]:
+            self.log(f'收到 {stage} RegionReady，但当前阶段是 '
+                     f'{phase[0] if phase else None}，忽略')
+            return
+        self.region_ready_stage = stage
+        if self.align_done_stage == stage:
+            self.step = 'PLACE'
+            self.place_keys.clear()
+            self.log(
+                f'{stage} 已到点且云台动作完成，pixel_to_base 开始测量 0x0C，'
+                f'等待本批 0x0B 完成')
+        else:
+            self.step = 'MEASURE'
+            self.log(f'{stage} RegionReady，等待底盘 AlignDone')
 
     def _on_pick_done(self, message):
         if self.step != 'COLOR':
@@ -152,6 +189,8 @@ class RaceSupervisorNode(Node):
         if phase is None:
             return
         self._enable(phase[0])
+        self.align_done_stage = None
+        self.region_ready_stage = None
         self.step = 'ALIGN'
         self.log(f'本批颜色识别完成，等待 {phase[0]} 区域矫正完成')
 
@@ -190,6 +229,8 @@ class RaceSupervisorNode(Node):
             self.log('第一批完成，等待转盘对位（第二批）')
             return
         phase = self._phase()
+        self.align_done_stage = None
+        self.region_ready_stage = None
         self.step = 'ALIGN'
         self._enable(phase[0])
         self.log(f'进入下一阶段 {phase[0]}:{phase[1]}，等待矫正完成')

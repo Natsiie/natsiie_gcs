@@ -12,6 +12,7 @@ from builtin_interfaces.msg import Time as Stamp
 from geometry_msgs.msg import Point32, TransformStamped
 from rclpy.clock import Clock, ClockType
 from sensor_msgs.msg import ChannelFloat32, PointCloud
+from std_msgs.msg import String
 from rclpy.time import Time
 from tf2_ros import Buffer
 
@@ -152,6 +153,24 @@ class PixelToBaseTests(unittest.TestCase):
         result('task-2', 1)  # 新任务重置回三圆环
         self.assertEqual(node.first_layer_placement_count, 1)
         self.assertEqual(node.active_ring_source, '/ring_station/centers_pixel')
+
+    def test_region_ready_starts_ring_measurement(self):
+        node = SimpleNamespace(
+            ring_project_enabled=True, ring_measure_window=1.0,
+            ring_centers_topic='/ring_station/centers_pixel',
+            ring_centers_topic_after='/stacked_ring/centers_pixel',
+            active_ring_source='/ring_station/centers_pixel',
+            measure_source=None, measure_pending=False,
+            measure_started=0.0, measure_buffer=deque(['stale']),
+            get_logger=lambda: Mock(),
+        )
+        PixelToBaseNode.on_region_ready(
+            node, String(data=json.dumps({'stage': 3})))
+        self.assertEqual(node.active_ring_source, '/stacked_ring/centers_pixel')
+        self.assertEqual(node.measure_source, '/stacked_ring/centers_pixel')
+        self.assertTrue(node.measure_pending)
+        self.assertFalse(node.measure_buffer)
+        self.assertGreater(node.measure_started, 0.0)
 
     def test_robust_ring_centers_rejects_outliers(self):
         messages = []

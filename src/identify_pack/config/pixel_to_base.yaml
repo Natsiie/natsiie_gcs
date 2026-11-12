@@ -16,10 +16,10 @@ pixel_to_base:
     # 旧的“按放置次数自动切源”关闭；现在由 align_done 的 stage 决定源。
     ring_source_switch_count: 0
     place_result_topic: /arm/place_result
-    # 0x0C 三环中心投影：收到 align_done 后观察 ring_measure_window_sec 秒，
-    # 剔除离群样本后逐点取均值，只发一次 0x0C（一批三个环中心）。
+    # 0x0C 三环中心投影：收到 RegionReady（到点+云台动作完成）后观察
+    # ring_measure_window_sec 秒，剔除离群样本后逐点取均值，只发一次 0x0C。
     ring_project_enabled: true
-    # align_done 后观察 1 秒，剔除离群样本后逐点取均值，只发一次 0x0C。
+    # RegionReady 后观察 1 秒，剔除离群样本后逐点取均值，只发一次 0x0C。
     ring_measure_window_sec: 1.0
     ring_outlier_threshold_px: 20.0
     ring_min_samples: 3
@@ -44,8 +44,8 @@ pixel_to_base:
     ring_geometry_enforce: true
     ring_center_spacing_mm: 150.0
     # 备选校正：视觉系与塔吊系有 yaw 偏置时，发 0x0C 前绕转轴原点旋转该角度。
-    # 正负号按实测落点方向试一次；0 = 不校正（推荐优先改下位机 gimbal_theta_offset）。
-    ring_frame_yaw_offset_deg: -6.40
+    # 正负号按实测落点方向试一次；0 = 不校正（推荐优先改下位机 gimbal_theta_offset）。//目前最优-6.40
+    ring_frame_yaw_offset_deg: -6.40 
     # 单环额外转角（°）：只转对应环，不影响另外两个（正=逆时针）。
     # 环1 偏右前说明实际转角偏小 → 填正数把它转回来。
     ring1_extra_yaw_deg: 0.0
@@ -53,3 +53,13 @@ pixel_to_base:
     ring3_extra_yaw_deg: 0.0
     # 径向补偿（mm）：物块整体偏内填正数、偏外填负数；只影响放置 0x0C。
     ring_radial_offset_mm: 15.0
+
+
+###目前最好参数配置：
+# ring_frame_yaw_offset_deg: -5.20
+#ring1_extra_yaw_deg: 2.0
+#ring2_extra_yaw_deg: 0.0
+#ring3_extra_yaw_deg: 0.0
+#ring_radial_offset_mm: 15.8
+
+

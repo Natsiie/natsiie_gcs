@@ -40,6 +40,7 @@
 #define SERIAL_TYPE_PICK_DONE     0x0F   /* 鎶撳彇瀹屾垚搴忓彿 (涓嬩綅鏈->涓婁綅鏈): ASCII 搴忓彿 1~6 */
 #define SERIAL_TYPE_NEXT_BATCH    0x10   /* 绗涓鎵 3 娆℃姄鍙栧畬鎴愩佸洖瑁呭氨缁 (涓嬩綅鏈->涓婁綅鏈): "1" */
 #define SERIAL_TYPE_ALIGN_DONE    0x11   /* 区域矫正完成 (下位机->上位机): stage,success; 1=物料转盘 2=粗加工三环 3=暂存叠料 */
+#define SERIAL_TYPE_REGION_READY  0x12   /* lower->upper: region ready, payload stage (2=ring_station, 3=stacked) */
 #define SERIAL_TYPE_PICK_COLOR    0x13   /* 抓取颜色 (下位机->上位机): 1~6; 0x11 已给视觉 AlignDone, 颜色挪到 0x13 */
 
 /* ================= AI PID 自动调参专有协议 (0x20~0x23) ================= */
@@ -162,6 +163,7 @@ void Serial_SendPickColor(uint8_t color);
 extern uint8_t Serial_AlignDoneEn;
 extern volatile uint8_t Serial_TrimFrameType;   /* 最近一帧纠偏帧类型 (0x04/0x05/0x0E), 发 AlignDone 时定 stage */
 void Serial_SendAlignDone(uint8_t stage, uint8_t success);
+void Serial_SendRegionReady(uint8_t stage);   /* 0x12: region ready */
 
 
 /* PID 自动调参交互接口 */

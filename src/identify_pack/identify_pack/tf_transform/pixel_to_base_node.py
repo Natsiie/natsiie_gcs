@@ -89,6 +89,7 @@ class PixelToBaseNode(Node):
             'ring_outlier_threshold_px': 20.0,
             'ring_min_samples': 3,
             'align_done_topic': '/arm/align_done',
+            'region_ready_topic': '/arm/region_ready',
             # 下位机放置结束回传（0x0B -> 串口桥 -> /arm/place_result）。
             'place_result_topic': '/arm/place_result',
             # 叠放区检测节点按需使能：切过去时发 true，新任务重置时发 false。
@@ -213,6 +214,7 @@ class PixelToBaseNode(Node):
         self.ring_center_after_subscription = None
         self.place_result_subscription = None
         self.align_done_subscription = None
+        self.region_ready_subscription = None
         if self.ring_project_enabled:
             self.ring_center_subscription = self.create_subscription(
                 PointCloud, self.ring_centers_topic,
@@ -229,6 +231,9 @@ class PixelToBaseNode(Node):
             self.align_done_subscription = self.create_subscription(
                 String, self.param('align_done_topic'),
                 self.on_align_done, 10)
+            self.region_ready_subscription = self.create_subscription(
+                String, self.param('region_ready_topic'),
+                self.on_region_ready, 10)
             if self.ring_source_switch_count > 0:
                 self.stacked_enable_publisher = self.create_publisher(
                     Bool, self.param('stacked_enable_topic'), 10)
@@ -241,7 +246,7 @@ class PixelToBaseNode(Node):
                     f' -> {self.ring_centers_topic_after}（之后）')
             if self.ring_measure_window > 0:
                 self.get_logger().info(
-                    f'ring 投影：align_done 后观察 '
+                    f'ring 投影：RegionReady 后观察 '
                     f'{self.ring_measure_window:.1f}s，剔除离群样本'
                     f'（>{self.ring_outlier_px:g}px）后取均值，发送一次 0x0C')
                 self.create_timer(0.05, self._measure_tick)
@@ -432,7 +437,7 @@ class PixelToBaseNode(Node):
             self.get_logger().warning(f'拒绝圆环圆心: {error}', throttle_duration_sec=2.0)
 
     def on_align_done(self, message):
-        """下位机区域矫正完成：切到对应识别源并开始累积像素均值。"""
+        """下位机底盘区域矫正完成：只记录，圆环测量改由 RegionReady 触发。"""
         if not self.ring_project_enabled:
             return
         try:
@@ -443,18 +448,39 @@ class PixelToBaseNode(Node):
             return
         if not success or stage not in (2, 3):
             return
+        self.get_logger().info(
+            f'AlignDone stage={stage}：等待 RegionReady（到点+云台动作完成）'
+            f'后再开始圆环测量', throttle_duration_sec=5.0)
+
+    def on_region_ready(self, message):
+        """下位机已到点且云台动作完成：切到对应识别源并开始 1s 圆环测量。"""
+        if not self.ring_project_enabled:
+            return
+        try:
+            data = json.loads(message.data)
+            stage = int(data['stage'])
+        except (ValueError, KeyError, TypeError):
+            self.get_logger().warning(
+                f'忽略非法 RegionReady: {message.data!r}', throttle_duration_sec=2.0)
+            return
+        if stage not in (2, 3):
+            return
         source = (self.ring_centers_topic if stage == 2
                   else self.ring_centers_topic_after)
         if not source:
             return
         self.active_ring_source = source
         self.measure_source = source
-        self.measure_buffer.clear()
-        self.measure_started = time.monotonic()
-        self.measure_pending = True
-        self.get_logger().info(
-            f'区域矫正完成 stage={stage}，开始观察 '
-            f'{self.ring_measure_window:.1f}s 的圆环中心')
+        if self.ring_measure_window > 0:
+            self.measure_buffer.clear()
+            self.measure_started = time.monotonic()
+            self.measure_pending = True
+            self.get_logger().info(
+                f'RegionReady stage={stage}，开始观察 '
+                f'{self.ring_measure_window:.1f}s 的圆环中心')
+        else:
+            self.get_logger().info(
+                f'RegionReady stage={stage}，逐帧发送 0x0C')
 
     def _measure_tick(self):
         if (not self.ring_project_enabled or self.ring_measure_window <= 0

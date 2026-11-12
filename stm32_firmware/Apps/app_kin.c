@@ -182,6 +182,9 @@ static uint8_t s_trim_qr_round = 0;
    KIN_STEP_TRIM_UNLOAD。mission 的 MS_TRIM 早就有自己的 trim_wait_10ms, 这里补上。 */
 uint16_t kin_trim_wait_10ms = 1000;
 static uint16_t s_trim_wait_cnt = 0;   /* 进 KIN_STEP_TRIM_UNLOAD 后的等待拍数 */
+/* 0x12 RegionReady: 2=三圆环, 3=叠料; 每次卸货链只发一次 */
+static uint8_t s_region_stage = 2;
+static uint8_t s_region_ready_sent = 0;
 
 /* cmd=11 的底盘微调: 姿态到位后只放开一次 (Chassis_TrimRelease) */
 static uint8_t s_trim_released = 0;
@@ -364,6 +367,11 @@ void Kin_GotoXY(float x, float y)
     kin_flag.active    = 1;
 }
 
+void Kin_SetRegionStage(uint8_t stage)
+{
+    if (stage == 2 || stage == 3) s_region_stage = stage;
+}
+
 /* 卸货启动 (kin_flag.cmd=3): 平台抓取(310/447/500) -> 600高位(135/600/0) -> 等 0x0C 落点 -> 依次放 3 个 -> 到落点后降50 -> 等放开 */
 void Kin_UnloadStart(void)
 {
@@ -378,6 +386,7 @@ void Kin_UnloadStart(void)
        而丢帧窗口必须是 0 —— 这一帧丢了本站就没落点了。 */
     kin_flag.unload_have = 0;
     kin_flag.unload_lock = 1;   /* 锁定坐标: 收到 0x0C 后不再更新 */
+    s_region_ready_sent = 0;    /* 本次卸货链还没发 0x12 RegionReady */
     s_unload_ignore_10ms = 0;   /* 不丢帧 (每阶段只有一帧) */
     kin_flag.step       = KIN_STEP_UNLOAD_GRAB_HOIST_UP;   /* m5 升到平台600 -> 云台310+电机6 500 -> 自动夹取 */
     kin_flag.phase      = 0;
@@ -690,6 +699,8 @@ void Kin_UnloadChainTest(void)
     chassis_flag.lock   = 0;
     s_trim_wait_cnt     = 0;      /* 微调等待超时计数从 0 开始 */
     s_trim_qr_bound     = 0;      /* 环序轮次仍看 kin_test_qr_round (Watch 手选) */
+    s_region_stage      = 2;      /* cmd=15 是粗加工三圆环 */
+    s_region_ready_sent = 0;
     kin_cal.drop_hoist_deg = HOIST_HEIGHT_DROP_GROUND;   /* 粗加工站 = 平地卸货 (car_config 唯一真值) */
     /* 识别源不用喂 0x0B 了: 新视觉在收到 0x11 AlignDone stage2 (本站 0x04 帧触发) 时
        自己切到三圆环并累积 5 帧, 然后只发一次 0x0C。台架一分钱都不用额外发。 */
@@ -718,6 +729,8 @@ void Kin_StagingUnloadTest(uint8_t stack)
     s_trim_wait_cnt       = 0;
     s_trim_qr_bound       = 1;               /* 环序轮次由本条命令自定, 不看 kin_test_qr_round */
     s_trim_qr_round       = stack ? 1 : 0;   /* 平地=二维码第1轮, 码垛=第2轮 */
+    s_region_stage        = stack ? 3 : 2;   /* 平地=三圆环, 码垛=叠料 */
+    s_region_ready_sent   = 0;
     chassis_flag.lock     = 0;   /* 不继承 mission MS_TRIM 留下的底盘锁 (否则纠偏帧全被挡) */
     kin_flag.auto_release = 1;   /* 到落点自动松夹爪: 手动命令没人给 release_cmd */
     kin_cal.drop_hoist_deg = stack ? HOIST_HEIGHT_PALLET : HOIST_HEIGHT_DROP_GROUND;
@@ -943,7 +956,7 @@ void Kin_Update(void)
     else if (kin_flag.cmd == 5) { kin_flag.cmd = 0; Kin_GoBoot(); }        /* 回 Tower_Boot_Task 姿态 310/600/500 */
     else if (kin_flag.cmd == 6) { kin_flag.cmd = 0; Kin_GotoPointXYZ(kin_tgt.goto_x, kin_tgt.goto_y, kin_tgt.goto_z); }  /* 前往坐标测试 */
     else if (kin_flag.cmd == 7) { kin_flag.cmd = 0; Kin_ReloadStart(); }   /* 一键回装: 反序3->2->1 平地抓回放平台 */
-    else if (kin_flag.cmd == 8) { kin_flag.cmd = 0; kin_flag.auto_release = 1; kin_cal.drop_hoist_deg = HOIST_HEIGHT_PALLET; Kin_UnloadStart(); }   /* 一键堆垛: 码垛高放 0x0C 三落点 */
+    else if (kin_flag.cmd == 8) { kin_flag.cmd = 0; kin_flag.auto_release = 1; kin_cal.drop_hoist_deg = HOIST_HEIGHT_PALLET; s_region_stage = 3; Kin_UnloadStart(); }   /* 一键堆垛: 码垛高放 0x0C 三落点 */
     else if (kin_flag.cmd == 9) { kin_flag.cmd = 0; Kin_GoMaterialProbe(); }     /* 物料区抓取预备位 134/460/260 (只摆姿态) */
     else if (kin_flag.cmd == 10){ kin_flag.cmd = 0; Kin_MaterialGrabStart(); }   /* 物料区固定位完整装货 */
     else if (kin_flag.cmd == 11){ kin_flag.cmd = 0; Kin_MaterialProbeTrimStart(); } /* 微调前姿态 134/460/0 + 等底盘微调 + 伸到 260 */
@@ -1218,6 +1231,13 @@ void Kin_Update(void)
     /* 卸货: 收回后停在640清障高度等坐标就绪(坐标在后台持续更新, 回去夹东西时已锁定) -> 直接去放 */
     if (kin_flag.step == KIN_STEP_UNLOAD_WAIT_VISION)
     {
+        /* 云台+电机6 已收回, 相机视场清空: 通知视觉可以开始圆环测量。
+           每个卸货链只发一次, 后续 3 个落点复用同一份 0x0C。 */
+        if (!s_region_ready_sent)
+        {
+            Serial_SendRegionReady(s_region_stage);
+            s_region_ready_sent = 1;
+        }
         if (kin_flag.unload_have)
             Kin_UnloadDrop();
         return;

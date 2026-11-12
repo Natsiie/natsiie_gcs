@@ -202,6 +202,7 @@ float Kin_HoistDegToMm(float deg);
 void Kin_GotoXY(float x, float y);   /* 上层给 (x,y), z 用 kin_cal.grab_z_mm; 按安全顺序走 */
 void Kin_GotoPointXYZ(float x, float y, float z);  /* 前往坐标测试: (x,y,z) 逆解->安全顺序走到, 不夹取 */
 void Kin_UnloadStart(void);          /* 卸货启动: 平台抓取 -> 收回 -> 落点 -> 等视觉 */
+void Kin_SetRegionStage(uint8_t stage);  /* 设置 0x12 RegionReady 的 stage: 2=三圆环 3=叠料 */
 void Kin_UnloadDrop(void);           /* 卸货放置: 用 kin_tgt.target_x/y 解 θ/r, 到落点后降, 到位等放开 */
 void Kin_ReloadStart(void);          /* 一键回装: 反序 3->2->1 从落点平地抓回放平台 (用已锁存的 0x0C 落点) */
 void Kin_BootPosture(void);          /* 上电引导位姿: 夹爪开 -> 平台A -> 和 Tower_Boot_Task 同一姿态 (boot_*: 270/600/550, 不夹) */
