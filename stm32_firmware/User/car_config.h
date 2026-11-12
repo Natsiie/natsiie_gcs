@@ -83,6 +83,8 @@
 #define CHASSIS_ROT_SETTLE_TICKS 10   /* 原地旋转到位稳定拍数 (10ms/拍): 进死区后连续这么拍都保持才判转完, 过滤"擦边判到位" */
 #define CHASSIS_TRIM_CONV_FRAMES 10   /* 底盘自判纠偏到位: 视觉 corr 已落进底盘死区(再纠车也不动)后,
                                          连续收到这么多帧 0x04/0x05 才认位(帧数, 不是拍数; 按视觉实际帧率调) */
+#define CHASSIS_TRIM_SETTLE_FRAMES 8  /* 纠偏到位/运动结束后丢弃的视觉帧数: 等车身停稳、拖影消失.
+                                         帧数, 不是拍数; 10~20Hz 下约 0.4~0.8s, 按现场帧率调 */
 #define CHASSIS_YAW_IBAND     5.0f    /* 度 */
 #define CHASSIS_YAW_INVERT    (-1)    /* 修正方向反了改 1 */
 

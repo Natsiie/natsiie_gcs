@@ -30,6 +30,7 @@ from identify_pack.scripts.turntable_align import (
     compute_turntable_correction, load_turntable_align_config,
 )
 from identify_pack.scripts.ring_station_detector import load_ring_station_config
+from identify_pack.scripts.trim_gate import should_publish_trim
 
 
 class TurntableDetectNode(Node):
@@ -49,6 +50,9 @@ class TurntableDetectNode(Node):
         # 常驻休眠：启动时不订阅图像；收到 enable_topic=true 才创建订阅。
         self.declare_parameter('enabled', False)
         self.declare_parameter('enable_topic', '/turntable/enable')
+        # 纠偏帧门控：运动拖影期间 stable/confidence 不达标时不发 0x0E。
+        self.declare_parameter('publish_require_stable', True)
+        self.declare_parameter('publish_min_confidence', 0.5)
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.turntable_config = self.get_parameter('turntable_config').get_parameter_value().string_value
@@ -61,6 +65,12 @@ class TurntableDetectNode(Node):
         self.image_topic = image_topic
         self.enabled = bool(self.get_parameter('enabled').value)
         enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
+        self.publish_require_stable = bool(
+            self.get_parameter('publish_require_stable').value)
+        self.publish_min_confidence = float(
+            self.get_parameter('publish_min_confidence').value)
+        if not 0.0 <= self.publish_min_confidence <= 1.0:
+            raise ValueError('publish_min_confidence must be in [0, 1]')
 
         self.detector = self._build_detector()
         self.align_config, self.chassis_matrix = self._build_align()
@@ -154,19 +164,27 @@ class TurntableDetectNode(Node):
                         f'{result.radius_px:.1f},{1 if result.stable else 0}')
             self.pub.publish(out)
             if self.align_config is not None:
-                try:
-                    corr_x, corr_y, within = compute_turntable_correction(
-                        (result.center_x_px, result.center_y_px), result.radius_px,
-                        self.align_config, self.chassis_matrix)
-                    align = String()
-                    align.data = f'{corr_x:.2f},{corr_y:.2f},{1 if within else 0}'
-                    self.pub_align.publish(align)
-                    self.get_logger().info(
-                        f'align corr=({corr_x:.2f},{corr_y:.2f})mm within={within}',
+                if not should_publish_trim(
+                        result, self.publish_require_stable,
+                        self.publish_min_confidence):
+                    self.get_logger().debug(
+                        f'跳过转盘纠偏帧: stable={result.stable} '
+                        f'conf={result.confidence:.2f}',
                         throttle_duration_sec=1.0)
-                except ValueError as error:
-                    self.get_logger().warn(f'转盘对齐计算失败：{error}',
-                                           throttle_duration_sec=2.0)
+                else:
+                    try:
+                        corr_x, corr_y, within = compute_turntable_correction(
+                            (result.center_x_px, result.center_y_px), result.radius_px,
+                            self.align_config, self.chassis_matrix)
+                        align = String()
+                        align.data = f'{corr_x:.2f},{corr_y:.2f},{1 if within else 0}'
+                        self.pub_align.publish(align)
+                        self.get_logger().info(
+                            f'align corr=({corr_x:.2f},{corr_y:.2f})mm within={within}',
+                            throttle_duration_sec=1.0)
+                    except ValueError as error:
+                        self.get_logger().warn(f'转盘对齐计算失败：{error}',
+                                               throttle_duration_sec=2.0)
             self.get_logger().info(
                 f'center=({result.center_x_px:.1f},{result.center_y_px:.1f}) '
                 f'r={result.radius_px:.1f} arc={result.visible_arc_deg:.0f} '

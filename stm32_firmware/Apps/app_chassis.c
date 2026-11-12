@@ -69,6 +69,8 @@ static uint8_t    chassis_yaw_rate_lpf_inited = 0;
 
 /* 底盘自判纠偏到位的连续帧计数 (见 Chassis_ApplyVisionTrim 的 trim_conv 部分) */
 static uint16_t s_trim_conv_cnt = 0;
+/* 运动/到位后丢弃的纠偏帧计数: 防止追着运动拖影反复重设目标 */
+static uint8_t s_trim_settle_frames = 0;
 /* 本次进站是否已经回过 0x11 AlignDone (每站只回一条, Chassis_TrimArm 清零) */
 static uint8_t  s_align_done_sent = 0;
 
@@ -361,6 +363,7 @@ void Chassis_TrimArm(void)
     chassis_flag.trim_fresh  = 0;
     chassis_flag.trim_conv   = 0;
     s_trim_conv_cnt          = 0;
+    s_trim_settle_frames     = 0;
     s_align_done_sent        = 0;   /* 新站: 允许再回一条 0x11 AlignDone */
     chassis_flag.trim_armed  = 1;
     chassis_flag.trim_hold   = 1;
@@ -381,6 +384,7 @@ void Chassis_TrimDisarm(void)
     chassis_flag.trim_fresh = 0;
     chassis_flag.trim_conv  = 0;
     s_trim_conv_cnt         = 0;
+    s_trim_settle_frames    = 0;
 }
 
 /* 本站纠偏封死: 本站不再收任何视觉纠偏帧, 直到下一次 Chassis_TrimArm() (进新站摆姿态) 解封。
@@ -396,6 +400,7 @@ void Chassis_TrimBlock(void)
     chassis_flag.trim_fresh   = 0;
     chassis_flag.trim_conv    = 0;
     s_trim_conv_cnt           = 0;
+    s_trim_settle_frames      = 0;
     chassis_flag.trim_block   = 1;
     Serial_ChassisTrimReady   = 0;
     Serial_TurntableTrimReady = 0;
@@ -624,6 +629,20 @@ void App_Chassis_Init(void)
   */
 void Chassis_ApplyVisionTrim(void)
 {
+    /* 运动门控: 底盘正在执行上一帧纠偏目标时, 摄像头有运动拖影; 这期间的新帧
+       一律丢弃, 避免追着模糊圆心反复重设目标(否则会左右摇摆). 到位后再丢
+       CHASSIS_TRIM_SETTLE_FRAMES 帧, 等车身停稳/拖影消失. */
+    if (chassis_flag.pos_active == 1)
+    {
+        s_trim_settle_frames = CHASSIS_TRIM_SETTLE_FRAMES;
+        return;
+    }
+    if (s_trim_settle_frames > 0)
+    {
+        s_trim_settle_frames--;
+        return;
+    }
+
     /* 可观测: 偏了多少 / 要矫正多少(含增益) / 是否矫正成功 */
     chassis_val.trim_err_x   = Serial_RxData.ring_err_x;
     chassis_val.trim_err_y   = Serial_RxData.ring_err_y;
@@ -697,6 +716,7 @@ void Chassis_ApplyVisionTrim(void)
         chassis_val.pos_target_y_mm = chassis_val.odom_y_mm + (bx * s + by * c);
         chassis_val.yaw_target      = yaw + chassis_val.trim_corr_yaw;
         chassis_flag.pos_active = 1;   /* 再定位到修正后目标 */
+        s_trim_settle_frames = CHASSIS_TRIM_SETTLE_FRAMES;  /* 走完后再丢帧等停稳 */
     }
 }
 

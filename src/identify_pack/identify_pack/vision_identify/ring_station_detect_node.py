@@ -31,6 +31,7 @@ from identify_pack.vision_identify.ring_centers import ring_centers_message
 from identify_pack.scripts.ring_station_digits import (
     load_templates, recognize_detection, DigitMappingTracker,
 )
+from identify_pack.scripts.trim_gate import should_publish_trim
 
 
 class RingStationDetectNode(Node):
@@ -56,6 +57,9 @@ class RingStationDetectNode(Node):
         # 常驻休眠：启动时不订阅图像；收到 enable_topic=true 才创建订阅。
         self.declare_parameter('enabled', False)
         self.declare_parameter('enable_topic', '/ring_station/enable')
+        # 纠偏帧门控：运动拖影期间 stable/confidence 不达标时不发 0x04。
+        self.declare_parameter('publish_require_stable', True)
+        self.declare_parameter('publish_min_confidence', 0.5)
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         self.ring_station_config = self.get_parameter('ring_station_config').get_parameter_value().string_value
@@ -66,6 +70,12 @@ class RingStationDetectNode(Node):
         self.enable_digit = bool(
             self.get_parameter('enable_digit_recognition').value)
         enable_topic = self.get_parameter('enable_topic').get_parameter_value().string_value
+        self.publish_require_stable = bool(
+            self.get_parameter('publish_require_stable').value)
+        self.publish_min_confidence = float(
+            self.get_parameter('publish_min_confidence').value)
+        if not 0.0 <= self.publish_min_confidence <= 1.0:
+            raise ValueError('publish_min_confidence must be in [0, 1]')
 
         self.detector = self._build_detector()
         inner, minimum, margin = (self.get_parameter(name).value for name in
@@ -184,16 +194,24 @@ class RingStationDetectNode(Node):
         self.pub_centers.publish(ring_centers_message(
             msg.header, result, img.shape[1::-1], self.get_parameter('camera_frame').value, report))
         if result.detected:
-            out = String()
-            out.data = (
-                f'{result.error_x_mm:.2f},{result.error_y_mm:.2f},'
-                f'{result.angle_error_deg:.2f},'
-                f'{result.correction_body_x_mm or 0.0:.2f},'
-                f'{result.correction_body_y_mm or 0.0:.2f},'
-                f'{result.correction_yaw_deg or 0.0:.2f},'
-                f'{1 if result.within_tolerance else 0}'
-            )
-            self.pub.publish(out)
+            if should_publish_trim(
+                    result, self.publish_require_stable,
+                    self.publish_min_confidence):
+                out = String()
+                out.data = (
+                    f'{result.error_x_mm:.2f},{result.error_y_mm:.2f},'
+                    f'{result.angle_error_deg:.2f},'
+                    f'{result.correction_body_x_mm or 0.0:.2f},'
+                    f'{result.correction_body_y_mm or 0.0:.2f},'
+                    f'{result.correction_yaw_deg or 0.0:.2f},'
+                    f'{1 if result.within_tolerance else 0}'
+                )
+                self.pub.publish(out)
+            else:
+                self.get_logger().debug(
+                    f'跳过纠偏帧: stable={result.stable} '
+                    f'conf={result.confidence:.2f}',
+                    throttle_duration_sec=1.0)
             self.get_logger().info(
                 f'centers={result.centers_px} '
                 f'err=({result.error_x_mm:.2f},{result.error_y_mm:.2f})mm '
