@@ -109,7 +109,10 @@ class SerialBridgeNode(Node):
         self.pub_task_status = self.create_publisher(
             String, '/arm/task_status', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         if self.task_mode:
-            self.create_subscription(String, 'QR_Decode', self._on_task, 10)
+            # TRANSIENT_LOCAL：补收相机在匹配完成前发布的任务码。
+            self.create_subscription(
+                String, 'QR_Decode', self._on_task,
+                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
             self.create_subscription(UInt32, '/arm/pick_done', self._on_pick_done, 10)
             self.create_subscription(UInt32, '/arm/next_batch', self._on_next_batch, 10)
             self.create_subscription(PointCloud, self.get_parameter('centers_topic').value,

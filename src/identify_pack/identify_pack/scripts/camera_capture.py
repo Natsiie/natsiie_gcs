@@ -17,7 +17,9 @@ def capture_worker(device, width, height, fps, fourcc, pixels, sequence, shape, 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         cap.set(cv2.CAP_PROP_FPS, fps)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # 双缓冲：单缓冲时相机必须等应用读完才能填下一帧，曝光/读出与解码
+        # 不能流水；640x480 MJPG 实测 1 缓冲约 16 fps，2 缓冲可跑满 30 fps。
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
         actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
         format_name = ''.join(chr((actual_fourcc >> (8 * i)) & 255) for i in range(4))
         print(f'[capture] {device}: negotiated '

@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import Bool, String, UInt32
 
 # 4 次放置：前三次都是平地圆环区（三圆环 + 上下边线约束），
@@ -51,11 +54,16 @@ class RaceSupervisorNode(Node):
             'picks_per_batch': 3,
             # 0x0C 批量模型：下位机放完一批 3 件后回一次 0x0B。
             'placements_per_phase': 1,
+            # 非 WAIT_QR 状态超过该秒数仍没收到预期消息时打告警（0=关闭）。
+            'step_timeout_sec': 30.0,
         }.items():
             self.declare_parameter(name, value)
 
         self.picks_per_batch = int(self.param('picks_per_batch'))
         self.placements_per_phase = int(self.param('placements_per_phase'))
+        self.step_timeout = float(self.param('step_timeout_sec'))
+        if not math.isfinite(self.step_timeout) or self.step_timeout < 0:
+            raise ValueError('step_timeout_sec must be finite and non-negative')
 
         self.enable_pubs = {
             'turntable': self.create_publisher(
@@ -67,8 +75,10 @@ class RaceSupervisorNode(Node):
             'stacked_ring': self.create_publisher(
                 Bool, self.param('stacked_enable_topic'), 10),
         }
+        # TRANSIENT_LOCAL：相机若在匹配完成前发布过一次，这里仍能补收到最后一条。
         self.create_subscription(
-            String, self.param('qr_topic'), self._on_qr, 10)
+            String, self.param('qr_topic'), self._on_qr,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(
             String, self.param('align_done_topic'), self._on_align_done, 10)
         self.create_subscription(
@@ -77,9 +87,12 @@ class RaceSupervisorNode(Node):
             UInt32, self.param('pick_done_topic'), self._on_pick_done, 10)
         self.create_subscription(
             String, self.param('place_result_topic'), self._on_place_result, 10)
+        self.create_timer(1.0, self._step_watchdog)
 
         self.phase_index = 0
         self.step = 'WAIT_QR'
+        self._last_step = self.step
+        self._step_since = time.monotonic()
         self.pick_seqs = set()
         self.place_keys = set()
         self.align_done_stage = None
@@ -96,6 +109,22 @@ class RaceSupervisorNode(Node):
         # 状态机/阶段计数用 warning，终端黄色更显眼，方便现场盯流程。
         self.get_logger().warning(
             f'[supervisor] step={self.step} phase={self.phase_index} {text}')
+
+    def _step_watchdog(self):
+        """状态超时告警：卡住时明确报出来，而不是静默死等。"""
+        now = time.monotonic()
+        if self.step != self._last_step:
+            self._last_step = self.step
+            self._step_since = now
+            return
+        if self.step_timeout <= 0 or self.step in ('WAIT_QR', 'DONE'):
+            return
+        elapsed = now - self._step_since
+        if elapsed >= self.step_timeout:
+            self.get_logger().warning(
+                f'[supervisor] step={self.step} 已等待 {elapsed:.0f}s 仍未收到'
+                f'预期消息（检查上游节点/串口/使能话题），必要时重启服务',
+                throttle_duration_sec=10.0)
 
     def _phase(self):
         return PHASES[self.phase_index] if self.phase_index < len(PHASES) else None

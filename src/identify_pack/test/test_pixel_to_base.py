@@ -154,14 +154,65 @@ class PixelToBaseTests(unittest.TestCase):
         self.assertEqual(node.first_layer_placement_count, 1)
         self.assertEqual(node.active_ring_source, '/ring_station/centers_pixel')
 
+    def test_empty_measure_window_retries_until_deadline(self):
+        node = SimpleNamespace(
+            ring_measure_window=0.5,
+            ring_measure_retry_timeout=3.0,
+            measure_buffer=deque(),
+            measure_pending=True,
+            measure_started=0.0,
+            measure_retry_deadline=time.monotonic() + 3.0,
+            measure_retry_count=0,
+            get_logger=lambda: Mock(),
+        )
+        PixelToBaseNode._publish_averaged_rings(node)
+        self.assertTrue(node.measure_pending)
+        self.assertEqual(node.measure_retry_count, 1)
+        self.assertGreater(node.measure_started, 0.0)
+
+    def test_empty_measure_window_times_out(self):
+        node = SimpleNamespace(
+            ring_measure_window=0.5,
+            ring_measure_retry_timeout=3.0,
+            measure_buffer=deque(),
+            measure_pending=True,
+            measure_started=0.0,
+            measure_retry_deadline=time.monotonic() - 1.0,
+            measure_retry_count=2,
+            get_logger=lambda: Mock(),
+        )
+        PixelToBaseNode._publish_averaged_rings(node)
+        self.assertFalse(node.measure_pending)
+        self.assertEqual(node.measure_retry_count, 2)
+
+    def test_per_ring_radial_offsets(self):
+        node = SimpleNamespace(
+            ring_radial_offset_mm=10.0,
+            ring_extra_radial_mm=(0.0, 20.0, -5.0),
+            get_logger=lambda: Mock(),
+        )
+        # 节点内部坐标单位是米；10mm/20mm/-5mm 额外量分别为 0.01/0.02/-0.005 m。
+        projected = [
+            np.array([0.1, 0.0, 0.0]),
+            np.array([0.0, 0.1, 0.0]),
+            np.array([-0.1, 0.0, 0.0]),
+        ]
+        shifted = PixelToBaseNode._offset_ring_radius(node, projected)
+        np.testing.assert_allclose(
+            [p[0] for p in shifted], [0.11, 0.0, -0.105], atol=1e-9)
+        np.testing.assert_allclose(
+            [p[1] for p in shifted], [0.0, 0.13, 0.0], atol=1e-9)
+
     def test_region_ready_starts_ring_measurement(self):
         node = SimpleNamespace(
             ring_project_enabled=True, ring_measure_window=1.0,
+            ring_measure_retry_timeout=3.0,
             ring_centers_topic='/ring_station/centers_pixel',
             ring_centers_topic_after='/stacked_ring/centers_pixel',
             active_ring_source='/ring_station/centers_pixel',
             measure_source=None, measure_pending=False,
-            measure_started=0.0, measure_buffer=deque(['stale']),
+            measure_started=0.0, measure_retry_deadline=0.0,
+            measure_retry_count=0, measure_buffer=deque(['stale']),
             get_logger=lambda: Mock(),
         )
         PixelToBaseNode.on_region_ready(

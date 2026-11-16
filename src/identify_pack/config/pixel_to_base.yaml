@@ -21,6 +21,8 @@ pixel_to_base:
     ring_project_enabled: true
     # RegionReady 后观察 1 秒，剔除离群样本后逐点取均值，只发一次 0x0C。
     ring_measure_window_sec: 1.0
+    # 空窗口重试总时长（秒）：窗口内没有有效中心时重新开窗，直到该超时；0=不重试。
+    ring_measure_retry_timeout_sec: 3.0
     ring_outlier_threshold_px: 20.0
     ring_min_samples: 3
     targets_topic: /color/targets_base
@@ -51,15 +53,19 @@ pixel_to_base:
     ring1_extra_yaw_deg: 0.0
     ring2_extra_yaw_deg: 0.0
     ring3_extra_yaw_deg: 0.0
-    # 径向补偿（mm）：物块整体偏内填正数、偏外填负数；只影响放置 0x0C。
+    # 单环额外径向补偿（mm）：叠加在 ring_radial_offset_mm 上；正=向外，负=向内。
+    ring1_radial_offset_mm: 0.0
+    ring2_radial_offset_mm: 0.0
+    ring3_radial_offset_mm: 0.0
+    # 径向补偿（mm）：三环共同基值；物块整体偏内填正数、偏外填负数；只影响放置 0x0C。
     ring_radial_offset_mm: 15.0
 
 
 ###目前最好参数配置：
-# ring_frame_yaw_offset_deg: -5.20
-#ring1_extra_yaw_deg: 2.0
+# ring_frame_yaw_offset_deg: -5.00
+#ring1_extra_yaw_deg: 2.5
 #ring2_extra_yaw_deg: 0.0
-#ring3_extra_yaw_deg: 0.0
-#ring_radial_offset_mm: 15.8
+#ring3_extra_yaw_deg: 1.0
+#ring_radial_offset_mm: 20.0
 
 

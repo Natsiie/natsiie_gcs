@@ -43,6 +43,9 @@ class CameraNode(Node):
         self.declare_parameter('qr_topic', 'QR_Decode')
         self.declare_parameter('qr_min_consistent', 3)
         self.declare_parameter('stop_after_qr', True)
+        # 首次读到码后继续采集的窗口（秒）：窗口内二维码还在视野里时会重复发布，
+        # 避免一次性 VOLATILE 消息在发现抖动时丢失后无法补发。0=保持旧行为(立即停)。
+        self.declare_parameter('qr_repeat_window_sec', 0.6)
         self.declare_parameter('show', False)  # cv2 调试窗口（需图形环境，无 DISPLAY 时自动关闭）
 
         self.device = self.get_parameter('device').value
@@ -65,6 +68,8 @@ class CameraNode(Node):
         self.qr_topic = self.get_parameter('qr_topic').value
         self.qr_min_consistent = int(self.get_parameter('qr_min_consistent').value)
         self.stop_after_qr = bool(self.get_parameter('stop_after_qr').value)
+        self.qr_repeat_window = max(
+            0.0, float(self.get_parameter('qr_repeat_window_sec').value))
         self.show = bool(self.get_parameter('show').value)
         self._window_name = f'{self.get_name()} [{self.device}]'
 
@@ -78,13 +83,18 @@ class CameraNode(Node):
                 self.get_logger().error(f'qr_decode 已开启但无法导入 pyzbar：{e}')
             else:
                 self.decode_qr = decode
-                self.qr_pub = self.create_publisher(String, self.qr_topic, 10)
+                # TRANSIENT_LOCAL：保留最后一条任务码，晚匹配上的订阅者也能补收。
+                self.qr_pub = self.create_publisher(
+                    String, self.qr_topic,
+                    QoSProfile(depth=1,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL))
                 self.get_logger().info(
                     f'QR 解码已开启 -> {self.qr_topic}；连续 {self.qr_min_consistent} 帧后'
                     f'{"关闭摄像头" if self.stop_after_qr else "持续解码"}')
         self.qr_last = None
         self.qr_count = 0
         self.qr_stopped = False
+        self.qr_stop_deadline = None
 
         self.br = CvBridge()
         image_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
@@ -165,6 +175,11 @@ class CameraNode(Node):
             self._capture.stop()
 
     def timer_cb(self):
+        if (self.qr_stop_deadline is not None
+                and time.monotonic() >= self.qr_stop_deadline):
+            self.qr_stop_deadline = None
+            self.qr_stopped = True
+            self.get_logger().info('QR 重复发布窗口结束，停止采集进程')
         try:
             generation, frame = self._frame_queue.get_nowait()
         except queue.Empty:
@@ -252,8 +267,15 @@ class CameraNode(Node):
         self.qr_last = None
         self.qr_count = 0
         if self.stop_after_qr:
-            self.qr_stopped = True
-            self.get_logger().info('QR 已读取，停止采集进程')
+            if self.qr_repeat_window > 0:
+                if self.qr_stop_deadline is None:
+                    self.qr_stop_deadline = (
+                        time.monotonic() + self.qr_repeat_window)
+                    self.get_logger().info(
+                        f'QR 已读取，{self.qr_repeat_window:g}s 内继续重复发布后停止采集')
+            else:
+                self.qr_stopped = True
+                self.get_logger().info('QR 已读取，停止采集进程')
         return objs
 
     def _show_frame(self, frame, qr_objs):

@@ -86,6 +86,8 @@ class PixelToBaseNode(Node):
             # align_done 后观察窗口（秒）：窗口内剔除离群样本后逐点取均值，
             # 只发一次 0x0C。0 = 保持逐帧投影旧行为。
             'ring_measure_window_sec': 1.0,
+            # 窗口内没有有效中心时的总重试时长（秒）；0 = 不重试（旧行为）。
+            'ring_measure_retry_timeout_sec': 3.0,
             'ring_outlier_threshold_px': 20.0,
             'ring_min_samples': 3,
             'align_done_topic': '/arm/align_done',
@@ -105,6 +107,10 @@ class PixelToBaseNode(Node):
             'ring1_extra_yaw_deg': 0.0,
             'ring2_extra_yaw_deg': 0.0,
             'ring3_extra_yaw_deg': 0.0,
+            # 单环额外径向补偿（mm）：叠加在全局 ring_radial_offset_mm 上。
+            'ring1_radial_offset_mm': 0.0,
+            'ring2_radial_offset_mm': 0.0,
+            'ring3_radial_offset_mm': 0.0,
             # 相似变换标定文件：视觉系 -> 塔吊系（scale/rotation/translation）。
             # 设置后直接作用于原始圆心，并跳过几何约束/旋转/径向/单环修正。
             'ring_similarity_file': '',
@@ -154,12 +160,16 @@ class PixelToBaseNode(Node):
         self.ring_radial_offset_mm = float(self.param('ring_radial_offset_mm'))
         self.ring_extra_yaw_deg = tuple(
             float(self.param(f'ring{i}_extra_yaw_deg')) for i in (1, 2, 3))
+        self.ring_extra_radial_mm = tuple(
+            float(self.param(f'ring{i}_radial_offset_mm')) for i in (1, 2, 3))
         if not math.isfinite(self.ring_frame_yaw_offset_deg):
             raise ValueError('ring_frame_yaw_offset_deg must be finite')
         if not math.isfinite(self.ring_radial_offset_mm):
             raise ValueError('ring_radial_offset_mm must be finite')
         if not all(math.isfinite(v) for v in self.ring_extra_yaw_deg):
             raise ValueError('ringN_extra_yaw_deg must be finite')
+        if not all(math.isfinite(v) for v in self.ring_extra_radial_mm):
+            raise ValueError('ringN_radial_offset_mm must be finite')
         self.ring_similarity = self._load_ring_similarity(
             self.param('ring_similarity_file'))
         self.tf_wait = self.param('tf_wait_sec')
@@ -183,10 +193,14 @@ class PixelToBaseNode(Node):
             qos_profile_sensor_data)
         self.ring_project_enabled = bool(self.param('ring_project_enabled'))
         self.ring_measure_window = float(self.param('ring_measure_window_sec'))
+        self.ring_measure_retry_timeout = float(
+            self.param('ring_measure_retry_timeout_sec'))
         self.ring_outlier_px = float(self.param('ring_outlier_threshold_px'))
         self.ring_min_samples = int(self.param('ring_min_samples'))
         if (not math.isfinite(self.ring_measure_window)
                 or self.ring_measure_window < 0
+                or not math.isfinite(self.ring_measure_retry_timeout)
+                or self.ring_measure_retry_timeout < 0
                 or not math.isfinite(self.ring_outlier_px)
                 or self.ring_outlier_px <= 0
                 or self.ring_min_samples < 1):
@@ -194,6 +208,8 @@ class PixelToBaseNode(Node):
         self.measure_pending = False
         self.measure_source = None
         self.measure_started = 0.0
+        self.measure_retry_deadline = 0.0
+        self.measure_retry_count = 0
         self.measure_buffer = deque(maxlen=300)
         self.ring_target_publisher = None
         self.stacked_enable_publisher = None
@@ -472,12 +488,16 @@ class PixelToBaseNode(Node):
         self.active_ring_source = source
         self.measure_source = source
         if self.ring_measure_window > 0:
+            now = time.monotonic()
             self.measure_buffer.clear()
-            self.measure_started = time.monotonic()
+            self.measure_started = now
+            self.measure_retry_deadline = now + self.ring_measure_retry_timeout
+            self.measure_retry_count = 0
             self.measure_pending = True
             self.get_logger().info(
                 f'RegionReady stage={stage}，开始观察 '
-                f'{self.ring_measure_window:.1f}s 的圆环中心')
+                f'{self.ring_measure_window:.1f}s 的圆环中心'
+                f'（空窗口最多重试 {self.ring_measure_retry_timeout:.1f}s）')
         else:
             self.get_logger().info(
                 f'RegionReady stage={stage}，逐帧发送 0x0C')
@@ -492,13 +512,27 @@ class PixelToBaseNode(Node):
 
     def _publish_averaged_rings(self):
         buffer = list(self.measure_buffer)
-        self.measure_pending = False
         self.measure_buffer.clear()
         if not buffer:
+            now = time.monotonic()
+            if (self.ring_measure_retry_timeout > 0
+                    and now < self.measure_retry_deadline):
+                # 圆环可能被机械臂短暂遮挡：重新开一个窗口继续等。
+                self.measure_retry_count += 1
+                self.measure_started = now
+                self.measure_pending = True
+                self.get_logger().warning(
+                    f'观察窗口 {self.ring_measure_window:.1f}s 内没有圆环中心，'
+                    f'重试第 {self.measure_retry_count} 次'
+                    f'（总超时 {self.ring_measure_retry_timeout:.1f}s）',
+                    throttle_duration_sec=1.0)
+                return
+            self.measure_pending = False
             self.get_logger().warning(
                 f'观察窗口 {self.ring_measure_window:.1f}s 内没有圆环中心，'
-                f'未发送 0x0C')
+                f'重试超时或未启用，未发送 0x0C')
             return
+        self.measure_pending = False
         averaged, rejected, kept = self._robust_centers(
             buffer, self.ring_outlier_px, self.ring_min_samples)
         self.pending_rings.append((averaged, time.monotonic()))
@@ -794,15 +828,20 @@ class PixelToBaseNode(Node):
         return adjusted
 
     def _offset_ring_radius(self, projected):
-        """沿各自径向平移三环圆心，补偿整体「落得偏内/偏外」。
+        """沿各自径向平移三环圆心，补偿整体/单环「落得偏内/偏外」。
 
+        全局 ``ring_radial_offset_mm`` 对三环共同生效，``ringN_radial_offset_mm``
+        作为单环额外量叠加（正=向外，负=向内）。
         只作用于发往下位机的 0x0C 放置坐标，不影响颜色抓取和底盘纠偏。
         """
-        offset = self.ring_radial_offset_mm
-        if not offset:
+        global_offset = self.ring_radial_offset_mm
+        offsets = tuple(
+            global_offset + extra for extra in self.ring_extra_radial_mm)
+        if not any(offsets):
             return projected
         shifted = []
-        for p in projected:
+        for index, p in enumerate(projected):
+            offset = offsets[index] if index < len(offsets) else global_offset
             x, y, z = float(p[0]), float(p[1]), float(p[2])
             radius = math.hypot(x, y)
             if radius < 1e-9:
@@ -810,8 +849,15 @@ class PixelToBaseNode(Node):
                 continue
             scale = (radius + offset / 1000.0) / radius
             shifted.append(np.asarray((x * scale, y * scale, z)))
-        self.get_logger().info(
-            f'三环径向补偿 {offset:+.1f}mm 后再发 0x0C', throttle_duration_sec=5.0)
+        if any(self.ring_extra_radial_mm):
+            self.get_logger().info(
+                f'三环径向补偿 全局{global_offset:+.1f}mm，单环额外'
+                f'{self.ring_extra_radial_mm}mm 后再发 0x0C',
+                throttle_duration_sec=5.0)
+        else:
+            self.get_logger().info(
+                f'三环径向补偿 {global_offset:+.1f}mm 后再发 0x0C',
+                throttle_duration_sec=5.0)
         return shifted
 
     @staticmethod
