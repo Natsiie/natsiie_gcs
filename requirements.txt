@@ -1,0 +1,13 @@
+# identify_pack 的 pip 兜底依赖。
+#
+# 优先使用 apt 安装（见 scripts/install_deps.sh）：
+#   python3-numpy / python3-scipy / python3-opencv / python3-pyzbar /
+#   python3-serial / python3-pytest / libzbar0
+#
+# 不要把 pip 版 OpenCV 放进来：ROS cv_bridge 链接的是系统 OpenCV，
+# 混用 pip 的 opencv-python / opencv-contrib-python 容易出现 ABI 冲突。
+numpy<2
+scipy
+pyzbar
+pyserial
+pytest
