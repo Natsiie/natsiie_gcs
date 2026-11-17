@@ -49,8 +49,6 @@ def generate_launch_description():
         DeclareLaunchArgument('show', default_value=show),
         DeclareLaunchArgument('tracking_color_params_file', default_value=os.path.join(
             share, 'config', 'tracking_color.yaml')),
-        DeclareLaunchArgument('ring_digit_templates', default_value=os.path.join(
-            share, 'ring_station_digit_templates')),
         # QR 任务码由主相机读取；主相机已在 Pi 上按串号绑定为 /dev/camera_front。
         # 当前先关闭主相机，单独验证转盘位姿矫正；需要扫码时再设为 true。
         DeclareLaunchArgument('start_main_camera', default_value='true'),
@@ -99,19 +97,8 @@ def generate_launch_description():
         DeclareLaunchArgument('start_turntable_detect', default_value='true'),
         DeclareLaunchArgument('turntable_show', default_value='true'),
         DeclareLaunchArgument('enable_turntable_seed', default_value='true'),
-        # 放置/堆料任务参数：阶段顺序、相机标定、平面高度与释放高度（enabled 默认 false）。
-        DeclareLaunchArgument('place_task_params_file', default_value=os.path.join(
-            share, 'config', 'place_task.yaml')),
-        # 夹爪到位检测（粉色在 ROI 连续 5s）：已由 color_detect_node 的停稳 OK 取代，
-        # 默认关闭；需要回退到旧的粉色触发逻辑时再设为 true。
-        DeclareLaunchArgument('start_gripper_arrival', default_value='false'),
-        # 到位信号话题：gripper_arrival 发布 / serial_bridge 订阅，两处共用同一参数。
+        # 到位信号话题：color_detect_node 发布 / serial_bridge 订阅，两处共用同一参数。
         DeclareLaunchArgument('arrived_topic', default_value='/arm/arrived'),
-        # 到位连续识别阈值（秒），调试时可调小加快测试。
-        DeclareLaunchArgument('arrive_confirm_sec', default_value='5.0'),
-        # 到位检测独立 ROI 文件（与抓取 ROI 分开，粉色舵机外壳出现区域）。
-        DeclareLaunchArgument('arrival_roi_file', default_value=os.path.join(
-            share, 'Arrival_ROI.txt')),
 
         # 主相机节点：自己解码 QR，读到内容后发布 /QR_Decode 并关闭摄像头。
         Node(
@@ -216,26 +203,6 @@ def generate_launch_description():
             }],
         ),
 
-        # # 夹爪到位检测：粉色标记进入 arrival_roi_file（独立 ROI）连续满 min_confirm_sec 秒发布到位信号。
-        # Node(
-        #     package='identify_pack',
-        #     executable='gripper_arrival',
-        #     name='gripper_arrival',
-        #     condition=IfCondition(LaunchConfiguration('start_gripper_arrival')),
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': secondary_image_topic,
-        #         'color_config': LaunchConfiguration('color_config'),
-        #         'arrival_roi_file': LaunchConfiguration('arrival_roi_file'),
-        #         'min_blob_area': 300,
-        #         'min_blob_dimension': 12,
-        #         'min_confirm_sec': ParameterValue(
-        #             LaunchConfiguration('arrive_confirm_sec'), value_type=float),
-        #         'publish_topic': LaunchConfiguration('arrived_topic'),
-        #         'show': ParameterValue(show, value_type=bool),
-        #     }],
-        # ),
-
         # TF：加载相机外参，结合下位机反馈角度发布底座到相机的变换链。
         Node(
             package='identify_pack',
@@ -244,21 +211,6 @@ def generate_launch_description():
             output='screen',
             parameters=[LaunchConfiguration('tf_params_file')],
         ),
-
-        # # 二维码任务码：已并入 camera_main（qr_decode=True），不再单独启动，
-        # # 否则两个节点会重复发布 /QR_Decode。
-        # Node(
-        #     package='identify_pack',
-        #     executable='qr_decode_node',
-        #     name='qr_decode_node',
-        #     condition=IfCondition(LaunchConfiguration('start_main_camera')),
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': MAIN_TOPIC,
-        #         'min_consistent': ParameterValue(min_consistent, value_type=int),
-        #         'show': ParameterValue(show, value_type=bool),
-        #     }],
-        # ),
 
         # 像素投影：按图像时刻 TF 和物块顶面高度计算基座 XYZ，ROS 输出单位为米。
         Node(
@@ -301,17 +253,6 @@ def generate_launch_description():
             }],
         ),
 
-        # 霍夫圆检测节点：订阅副相机（只做圆+数字，发布 /circle_detect、/Order）
-        # Node(
-        #     package='identify_pack',
-        #     executable='circle_detect_node',
-        #     name='circle_detect_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': SECONDARY_TOPIC,
-        #     }],
-        # ),
-
         # 转盘外圆检测节点：订阅副相机，发布 /Turntable (0x03) 与 /TurntableAlign (0x0E)。
         Node(
             package='identify_pack',
@@ -344,9 +285,6 @@ def generate_launch_description():
                 'show': ParameterValue(show, value_type=bool),
                 'camera_frame': 'camera_optical_frame',
                 'centers_topic': '/ring_station/centers_pixel',
-                'digit_templates': LaunchConfiguration('ring_digit_templates'),
-                # 0x0C 流程不需要数字模板识别，关闭以提升帧率。
-                'enable_digit_recognition': False,
                 # 常驻休眠：由 supervisor 按流程使能。
                 'enabled': False,
                 'enable_topic': '/ring_station/enable',
@@ -371,15 +309,6 @@ def generate_launch_description():
             }],
         ),
 
-        # 放置/堆料任务协调（0x0A 逐件命令）：当前用 0x0C 批量模型，暂不启动。
-        # Node(
-        #     package='identify_pack',
-        #     executable='place_task',
-        #     name='place_task',
-        #     output='screen',
-        #     parameters=[LaunchConfiguration('place_task_params_file')],
-        # ),
-
         # 比赛流程 supervisor：按批次/区域切换检测节点；
         # 等待 0x11 AlignDone + 0x12 RegionReady（到点+云台动作完成）后启动测量/放置。
         Node(
@@ -388,17 +317,6 @@ def generate_launch_description():
             name='race_supervisor_node',
             output='screen',
         ),
-
-        # ROI 叠加节点：订阅副相机（调试用）
-        # Node(
-        #     package='identify_pack',
-        #     executable='roi_overlay_node',
-        #     name='roi_overlay_node',
-        #     output='screen',
-        #     parameters=[{
-        #         'image_topic': SECONDARY_TOPIC,
-        #     }],
-        # ),
 
         # QR 结果也可由统一串口桥转发；不要再启动旧 qr_serial_bridge，以免重复占用串口。
     ])

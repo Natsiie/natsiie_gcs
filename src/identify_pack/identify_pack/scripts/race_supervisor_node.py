@@ -7,11 +7,11 @@
   粗加工区(三圆环) -> 暂存区叠料(叠料检测) -> 结束
 
 检测节点常驻但默认休眠（不订阅图像）；本节点通过 Bool 使能话题控制。
-基础设施节点（相机、串口桥、pixel_to_base、place_task）常驻，不重开相机。
-5 帧像素均值由 place_task 在收到 start 后自行累积，这里只负责发 start。
+基础设施节点（相机、串口桥、pixel_to_base）常驻，不重开相机。
+圆环测量由 pixel_to_base 在 RegionReady 后完成，本节点只负责流程推进。
 
-阶段与 place_task 的 phase_order 一致：
-  ring_station:1 -> stacked_ring:1 -> ring_station:2 -> stacked_ring:2
+阶段顺序：
+  ring_station:1 -> ring_station:1 -> ring_station:2 -> stacked_ring:2
 """
 
 from __future__ import annotations

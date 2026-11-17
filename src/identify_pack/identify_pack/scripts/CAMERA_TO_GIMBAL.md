@@ -20,7 +20,7 @@
 下面的 `0` 仅在标记平面恰好为坐标系 Z=0 时适用。
 
 ```bash
-python3 natsiie_gcs/src/identify_pack/identify_pack/scripts/calibrate_camera_extrinsics.py \
+python3 natsiie_gcs/src/identify_pack/identify_pack/scripts/calibration/calibrate_camera_extrinsics.py \
   --matrix camera_matrix.npy \
   --distortion dist_coeffs.npy \
   --device /dev/camera_upper \
@@ -74,7 +74,7 @@ parent 是 `gimbal_link`，child 是 `camera_optical_frame`；只应有一个节
 在 `/home/lulu/gcs` 下运行：
 
 ```bash
-python3 natsiie_gcs/src/identify_pack/identify_pack/scripts/validate_camera_extrinsics.py \
+python3 natsiie_gcs/src/identify_pack/identify_pack/scripts/calibration/validate_camera_extrinsics.py \
   --extrinsics camera_extrinsics.json \
   --device /dev/camera_upper \
   --plane-z-mm -72.5 \

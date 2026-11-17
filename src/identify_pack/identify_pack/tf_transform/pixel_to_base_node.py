@@ -111,9 +111,6 @@ class PixelToBaseNode(Node):
             'ring1_radial_offset_mm': 0.0,
             'ring2_radial_offset_mm': 0.0,
             'ring3_radial_offset_mm': 0.0,
-            # 相似变换标定文件：视觉系 -> 塔吊系（scale/rotation/translation）。
-            # 设置后直接作用于原始圆心，并跳过几何约束/旋转/径向/单环修正。
-            'ring_similarity_file': '',
             # 径向补偿：物块整体落得偏内(负)或偏外(正)时，发 0x0C 前把三点
             # 沿各自径向平移该距离（mm）。只影响放置，不影响抓取。
             'ring_radial_offset_mm': 0.0,
@@ -170,8 +167,6 @@ class PixelToBaseNode(Node):
             raise ValueError('ringN_extra_yaw_deg must be finite')
         if not all(math.isfinite(v) for v in self.ring_extra_radial_mm):
             raise ValueError('ringN_radial_offset_mm must be finite')
-        self.ring_similarity = self._load_ring_similarity(
-            self.param('ring_similarity_file'))
         self.tf_wait = self.param('tf_wait_sec')
         if not math.isfinite(self.tf_wait) or self.tf_wait <= 0:
             raise ValueError('tf_wait_sec must be finite and positive')
@@ -710,15 +705,12 @@ class PixelToBaseNode(Node):
                                  base_from_camera, self.planes['ring'] / 1000.0)
             projected.append(np.asarray(xyz, dtype=np.float64))
         self._log_ring_points('原始', projected)
-        if self.ring_similarity is not None:
-            projected = self._apply_ring_similarity(projected)
-        else:
-            if self.ring_geometry_enforce and len(projected) == 3:
-                projected = self._enforce_ring_geometry(projected)
-                self._log_ring_points('几何', projected)
-            projected = self._rotate_ring_targets(projected)
-            projected = self._apply_ring_extra_yaw(projected)
-            projected = self._offset_ring_radius(projected)
+        if self.ring_geometry_enforce and len(projected) == 3:
+            projected = self._enforce_ring_geometry(projected)
+            self._log_ring_points('几何', projected)
+        projected = self._rotate_ring_targets(projected)
+        projected = self._apply_ring_extra_yaw(projected)
+        projected = self._offset_ring_radius(projected)
         self._log_ring_points('发送', projected)
         for xyz in projected:
             out.points.append(Point32(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2])))
@@ -772,42 +764,6 @@ class PixelToBaseNode(Node):
         self.get_logger().info(
             f'三环整体旋转 {angle:+.2f}° 后再发 0x0C', throttle_duration_sec=5.0)
         return rotated
-
-    def _load_ring_similarity(self, path):
-        """读取视觉系 -> 塔吊系的相似变换：D = s * R(theta) * P + t。"""
-        if not path:
-            return None
-        document = json.loads(data_path(path).read_text(encoding='utf-8'))
-        if int(document.get('format_version', 0)) != 1:
-            raise ValueError('ring_similarity 版本不受支持')
-        scale = float(document['scale'])
-        rotation = float(document['rotation_deg'])
-        translation = [float(v) for v in document['translation_mm']]
-        if (not math.isfinite(scale) or scale <= 0
-                or not math.isfinite(rotation)
-                or len(translation) != 2
-                or not all(math.isfinite(v) for v in translation)):
-            raise ValueError('ring_similarity 数值无效')
-        self.get_logger().info(
-            f'已加载三环相似变换: scale={scale:.5f}, '
-            f'rot={rotation:+.3f}°, t=({translation[0]:+.2f},{translation[1]:+.2f})mm')
-        return scale, rotation, translation
-
-    def _apply_ring_similarity(self, projected):
-        """按相似变换把视觉系圆心映射到塔吊系，直接作为 0x0C 发送值。"""
-        scale, rotation, translation = self.ring_similarity
-        theta = math.radians(rotation)
-        c, s = math.cos(theta), math.sin(theta)
-        tx, ty = translation
-        mapped = []
-        for p in projected:
-            x, y, z = float(p[0]) * 1000.0, float(p[1]) * 1000.0, float(p[2])
-            mapped.append(np.asarray((
-                (scale * (c * x - s * y) + tx) / 1000.0,
-                (scale * (s * x + c * y) + ty) / 1000.0,
-                z)))
-        self.get_logger().info('三环应用相似变换后再发 0x0C', throttle_duration_sec=5.0)
-        return mapped
 
     def _apply_ring_extra_yaw(self, projected):
         """按环单独旋转（绕原点），修正各环独立的角误差。"""

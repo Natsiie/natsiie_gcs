@@ -1,6 +1,6 @@
 import unittest
 
-from identify_pack.scripts.color_log_report import (
+from identify_pack.scripts.tools.color_log_report import (
     build_rows, format_table, parse_bridge_lines,
 )
 

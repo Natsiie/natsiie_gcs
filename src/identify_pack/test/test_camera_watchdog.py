@@ -93,7 +93,7 @@ def test_old_generation_frame_is_not_published():
     frames = queue.Queue()
     frames.put((1, np.zeros((4, 4, 3), dtype=np.uint8)))
     node = SimpleNamespace(_frame_queue=frames, _generation=2, qr_stopped=False,
-                           _frame_watchdog=Mock(), pub=Mock())
+                           qr_stop_deadline=None, _frame_watchdog=Mock(), pub=Mock())
     CameraNode.timer_cb(node)
     node._frame_watchdog.observe.assert_not_called()
     node.pub.publish.assert_not_called()

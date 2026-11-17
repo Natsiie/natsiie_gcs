@@ -15,7 +15,6 @@ from std_msgs.msg import Int32, UInt32, String
 
 from identify_pack.scripts.color_config import build_default_color_config
 from identify_pack.scripts.pick_task import PickTask
-from identify_pack.scripts.turntable_motion import OpticalFlowMotion
 from identify_pack.serial.serial_bridge_node import SerialBridgeNode
 from identify_pack.serial.protocol import GRAB_CMD_TYPE, make_frame, parse_frame
 from identify_pack.tf_transform.pixel_to_base_node import PixelToBaseNode
@@ -279,24 +278,3 @@ class TaskPipelineTests(unittest.TestCase):
         ColorDetectNode.image_cb(node, msg)
         self.assertEqual(node.pub_arrived.publish.call_count, 3)
 
-    def test_optical_motion_initial_stop_motion_stop_motion_and_texture_loss(self):
-        rng = np.random.default_rng(5)
-        gray = rng.integers(0, 256, (240, 320), dtype=np.uint8)
-        image = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        motion = OpticalFlowMotion(moving_speed=15., near_stop_speed=3.,
-                                   required_moving_frames=2, required_low_speed_frames=3)
-        for i in range(5):
-            self.assertFalse(motion.update(image, 10. + i * .05)['ready'])
-        for i in range(1, 4):
-            moved = cv2.warpAffine(image, np.float32([[1, 0, i * 4], [0, 1, 0]]), (320, 240))
-            result = motion.update(moved, 10.2 + i * .05)
-            self.assertFalse(result['ready'])
-        for i in range(1, 4):
-            result = motion.update(moved, 10.35 + i * .05)
-        self.assertTrue(result['ready'], result)
-        moved = cv2.warpAffine(image, np.float32([[1, 0, 16], [0, 1, 0]]), (320, 240))
-        self.assertFalse(motion.update(moved, 10.55)['ready'])
-        blank = np.zeros_like(image)
-        for i in range(3):
-            result = motion.update(blank, 10.6 + i * .05)
-        self.assertFalse(result['ready'])

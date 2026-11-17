@@ -10,8 +10,6 @@
   - /ColorMotion 停稳状态 ``state:count``（如 ``READY:15``）
   - /arm/arrived 停稳后发一次抓取 OK（Int32，值为停稳物块的颜色编号 1~6）
   - /color/centers_pixel 带原图时间戳的像素 PointCloud（x=u, y=v），附颜色/面积/分辨率
-
-不含数字圆环识别（那是 circle_detect_node 的职责）。
 """
 import os
 import copy

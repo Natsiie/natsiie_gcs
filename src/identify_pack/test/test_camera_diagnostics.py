@@ -5,7 +5,8 @@ import time
 import cv2
 import numpy as np
 
-from identify_pack.scripts import camera_capture, camera_diagnostics
+from identify_pack.scripts import camera_capture
+from identify_pack.scripts.tools import camera_diagnostics
 
 
 def hanging_worker(*args):

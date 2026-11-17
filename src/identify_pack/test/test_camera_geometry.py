@@ -6,8 +6,8 @@ import cv2
 import numpy as np
 
 from identify_pack.scripts.camera_geometry import estimate_camera_transform, pixel_to_plane
-from identify_pack.scripts.calibrate_camera_extrinsics import build_result
-from identify_pack.scripts.validate_camera_extrinsics import evaluate_point
+from identify_pack.scripts.calibration.calibrate_camera_extrinsics import build_result
+from identify_pack.scripts.calibration.validate_camera_extrinsics import evaluate_point
 
 
 class CameraGeometryTests(unittest.TestCase):

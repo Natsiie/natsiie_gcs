@@ -140,7 +140,7 @@ class TrackingColorNode(Node):
         detect_material_tops(np.full((32, 32, 3), 255, np.uint8), self.color_config, self.top_config)
         self.show = self.options['show']
         if self.show:
-            from identify_pack.scripts.camera_diagnostics import require_display
+            from identify_pack.scripts.tools.camera_diagnostics import require_display
             require_display()
             cv2.namedWindow(self.WINDOW, cv2.WINDOW_AUTOSIZE)
         self.bridge = CvBridge()

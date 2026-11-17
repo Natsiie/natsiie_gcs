@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from identify_pack.scripts import calibrate_camera_extrinsics_arm as arm
+from identify_pack.scripts.calibration import calibrate_camera_extrinsics_arm as arm
 
 
 class ArmExtrinsicsTests(unittest.TestCase):
